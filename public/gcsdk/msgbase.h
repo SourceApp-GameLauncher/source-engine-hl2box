@@ -1,4 +1,4 @@
-//====== Copyright ©, Valve Corporation, All rights reserved. =======
+//====== Copyright Â©, Valve Corporation, All rights reserved. =======
 //
 // Purpose: Holds the CMsgBase_t class
 //

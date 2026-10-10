@@ -1,4 +1,4 @@
-//====== Copyright © 1996-2010, Valve Corporation, All rights reserved. =======
+//====== Copyright Â© 1996-2010, Valve Corporation, All rights reserved. =======
 //
 // Purpose: HTTP related enums and objects, stuff that both clients and server use should go here
 //

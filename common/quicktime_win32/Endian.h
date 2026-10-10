@@ -648,7 +648,7 @@ typedef OSType                          BigEndianOSType;
 
 
 /*
-    Implement ÅLtoB and ÅBtoL
+    Implement â‰ˆLtoB and â‰ˆBtoL
 */
 #define EndianS16_LtoB(value)              ((SInt16)Endian16_Swap(value))
 #define EndianS16_BtoL(value)                ((SInt16)Endian16_Swap(value))

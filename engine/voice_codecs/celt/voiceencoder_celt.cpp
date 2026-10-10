@@ -9,7 +9,7 @@
 /* This product contains Speex software.  The license terms of the Speex
 software, distributed with this product, are as follows:
 
-© 2002-2003, Jean-Marc Valin/Xiph.Org Foundation
+Â© 2002-2003, Jean-Marc Valin/Xiph.Org Foundation
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:

@@ -548,7 +548,10 @@ def configure(conf):
 			'/Zc:wchar_t',
 			'/GR',
 			'/TP',
-			'/EHsc'
+			'/EHsc',
+			# all sources are UTF-8 (legacy cp1252/mac_roman files converted);
+			# also ends the ACP comment line-swallow class of errors
+			'/utf-8'
 		]
 
 		if conf.options.BUILD_TYPE == 'debug':

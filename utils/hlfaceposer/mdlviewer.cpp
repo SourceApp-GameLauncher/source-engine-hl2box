@@ -1896,7 +1896,7 @@ int MDLViewer::handleEvent (mxEvent *event)
 				
 			case IDC_HELP_ABOUT:
 				mxMessageBox (this,
-					"v1.0  Copyright © 1996-2007, Valve Corporation. All rights reserved.\r\nBuild Date: " __DATE__ "",
+					"v1.0  Copyright Â© 1996-2007, Valve Corporation. All rights reserved.\r\nBuild Date: " __DATE__ "",
 					"Valve Face Poser", 
 					MX_MB_OK | MX_MB_INFORMATION);
 				break;

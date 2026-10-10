@@ -36,7 +36,7 @@ const wchar_t *GetLocalizedLoadingString()
 	case XC_LANGUAGE_ITALIAN:
 		return L"CARICAMENTO...";
 	case XC_LANGUAGE_GERMAN:
-		return L"LÄDT...";
+		return L"LÃ„DT...";
 	case XC_LANGUAGE_SPANISH:
 		return L"CARGANDO...";
 	}
@@ -459,8 +459,8 @@ void CXBoxLoader::FatalMediaError()
 	switch( XGetLanguage() )
 	{
 	case XC_LANGUAGE_FRENCH:
-		pLine1 = L"Le disque utilisé présente une anomalie."; 
-		pLine2 = L"Il est peut-être sale ou endommagé.";
+		pLine1 = L"Le disque utilisÃ© prÃ©sente une anomalie."; 
+		pLine2 = L"Il est peut-Ãªtre sale ou endommagÃ©.";
 		break;
 	case XC_LANGUAGE_ITALIAN:
 		pLine1 = L"Il disco in uso ha qualche problema.";
@@ -468,11 +468,11 @@ void CXBoxLoader::FatalMediaError()
 		break;
 	case XC_LANGUAGE_GERMAN:
 		pLine1 = L"Bei der benutzten CD ist ein Problem aufgetreten.";
-		pLine2 = L"Möglicherweise ist sie verschmutzt oder beschädigt.";
+		pLine2 = L"MÃ¶glicherweise ist sie verschmutzt oder beschÃ¤digt.";
 		break;
 	case XC_LANGUAGE_SPANISH:
-		pLine1 = L"Hay un problema con el disco que está usando.";
-		pLine2 = L"Puede estar sucio o dañado.";
+		pLine1 = L"Hay un problema con el disco que estÃ¡ usando.";
+		pLine2 = L"Puede estar sucio o daÃ±ado.";
 		break;
 	default:
 		pLine1 = L"There is a problem with the disc you are using.";

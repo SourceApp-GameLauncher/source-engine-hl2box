@@ -13,7 +13,7 @@
 
 #include <stdio.h>
 
-//========= Copyright © 1996-2001, Valve LLC, All rights reserved. ============
+//========= Copyright Â© 1996-2001, Valve LLC, All rights reserved. ============
 //
 // Purpose: 
 //

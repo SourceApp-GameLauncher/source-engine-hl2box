@@ -70,7 +70,7 @@ void CTFStatsApplication::printUsage()
 #ifdef WIN32
 	printf("(you should just be able to do \"start index.html\")\n");
 #endif
-	printf("TFStats uses Regex++:\nRegex++ © 1998-9 Dr John Maddock.\n");
+	printf("TFStats uses Regex++:\nRegex++ Â© 1998-9 Dr John Maddock.\n");
 	
 }
 

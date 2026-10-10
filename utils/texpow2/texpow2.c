@@ -45,7 +45,7 @@ void main(int argc, char *argv[])
 	t_i_image *in;
 	t_i_image *out;
 
-  printf("TEXPOW2 by Iikka Ker„nen 2001\n\n");
+  printf("TEXPOW2 by Iikka KerÃ¤nen 2001\n\n");
   if (argc<2)
 	{
     printf("Usage: TEXPOW2 <source> [source2] [source3] ... [options]\n");

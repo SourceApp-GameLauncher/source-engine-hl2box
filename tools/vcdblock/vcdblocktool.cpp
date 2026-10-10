@@ -400,7 +400,7 @@ CVcdBlockViewMenuButton::CVcdBlockViewMenuButton( CVcdBlockTool *parent, const c
 	m_pTool = parent;
 
 	AddCheckableMenuItem( "properties", "#VcdBlockProperties", new KeyValues( "OnToggleProperties" ), pActionSignalTarget );
-	AddCheckableMenuItem( "entityreport", "#VcdBlockEntityReport", new KeyValues( "O|‘glaEqîÌpyOeport" ), pActionSignalTarget );
+	AddCheckableMenuItem( "entityreport", "#VcdBlockEntityReport", new KeyValues( "O|√îglaEq‚Äù√≠pyOeport" ), pActionSignalTarget );
 
 	AddSeparator();
 

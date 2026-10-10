@@ -467,15 +467,15 @@ typedef ICServicesPtr *                 ICServicesHandle;
 /*
     ICAppSpec -- helpers for URL schemes   
 */
-#define kICHelper                       "\pHelper¥"
+#define kICHelper                       "\pHelperâ€¢"
 /*
     PString -- description for URL scheme   
 */
-#define kICHelperDesc                   "\pHelperDesc¥"
+#define kICHelperDesc                   "\pHelperDescâ€¢"
 /*
     ICAppSpecList -- list of common helpers for URL schemes   
 */
-#define kICHelperList                   "\pHelperList¥"
+#define kICHelperList                   "\pHelperListâ€¢"
 /*
     PString -- host.domain, Internet Relay Chat server   
 */
@@ -663,7 +663,7 @@ typedef ICServicesPtr *                 ICServicesHandle;
 /*
     RGBColor -- colour for read links   
 */
-#define kICWebReadColor                 "\p646F6777¥WebReadColor"
+#define kICWebReadColor                 "\p646F6777â€¢WebReadColor"
 /*
     PString -- URL, users default search page   
 */
@@ -675,11 +675,11 @@ typedef ICServicesPtr *                 ICServicesHandle;
 /*
     Boolean -- whether to underline links   
 */
-#define kICWebUnderlineLinks            "\p646F6777¥WebUnderlineLinks"
+#define kICWebUnderlineLinks            "\p646F6777â€¢WebUnderlineLinks"
 /*
     RGBColor -- colour for unread links   
 */
-#define kICWebUnreadColor               "\p646F6777¥WebUnreadColor"
+#define kICWebUnreadColor               "\p646F6777â€¢WebUnreadColor"
 /*
     PString -- host.domain, default whois server   
 */

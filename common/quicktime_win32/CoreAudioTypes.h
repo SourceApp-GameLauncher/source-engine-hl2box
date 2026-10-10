@@ -215,7 +215,7 @@ enum
     @constant       kAudioFormatMACE6
                         MACE 6:1, has no flags.
     @constant       kAudioFormatULaw
-                        µLaw 2:1, has no flags.
+                        ÂµLaw 2:1, has no flags.
     @constant       kAudioFormatALaw
                         aLaw 2:1, has no flags.
     @constant       kAudioFormatQDesign

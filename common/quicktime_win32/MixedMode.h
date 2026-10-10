@@ -228,13 +228,13 @@ typedef struct MixedModeStateRecord     MixedModeStateRecord;
         0,                                          /* reserved 2 */                \
         0,                                          /* selector info */             \
         0,                                          /* number of routines */        \
-        {                                           /* ItÕs an array */             \
-            {                                       /* ItÕs a struct */             \
+        {                                           /* Itâ€™s an array */             \
+            {                                       /* Itâ€™s a struct */             \
                 (procInfo),                         /* the ProcInfo */              \
                 0,                                  /* reserved */                  \
                 GetCurrentArchitecture(),           /* ISA and RTA */               \
-                kProcDescriptorIsAbsolute |         /* Flags - itÕs absolute addr */\
-                kFragmentIsPrepared |               /* ItÕs prepared */             \
+                kProcDescriptorIsAbsolute |         /* Flags - itâ€™s absolute addr */\
+                kFragmentIsPrepared |               /* Itâ€™s prepared */             \
                 kUseNativeISA,                      /* Always use native ISA */     \
                 (ProcPtr)(procedure),               /* the procedure */             \
                 0,                                  /* reserved */                  \
@@ -253,24 +253,24 @@ typedef struct MixedModeStateRecord     MixedModeStateRecord;
         0,                                          /* reserved */                  \
         0,                                          /* reserved */                  \
         1,                                          /* Array count */               \
-        {                                           /* ItÕs an array */             \
-            {                                       /* ItÕs a struct */             \
+        {                                           /* Itâ€™s an array */             \
+            {                                       /* Itâ€™s a struct */             \
                 (m68kProcInfo),                     /* the ProcInfo */              \
                 0,                                  /* reserved */                  \
                 kM68kISA |                          /* ISA */                       \
                 kOld68kRTA,                         /* RTA */                       \
-                kProcDescriptorIsAbsolute |         /* Flags - itÕs absolute addr */\
+                kProcDescriptorIsAbsolute |         /* Flags - itâ€™s absolute addr */\
                 kUseCurrentISA,                     /* Use current ISA */           \
                 (ProcPtr)(m68kProcPtr),             /* the procedure */             \
                 0,                                  /* reserved */                  \
                 0,                                  /* reserved */                  \
             },                                                                      \
-            {                                       /* ItÕs a struct */             \
+            {                                       /* Itâ€™s a struct */             \
                 (powerPCProcInfo),                  /* the ProcInfo */              \
                 0,                                  /* reserved */                  \
                 GetCurrentArchitecture(),           /* ISA and RTA */               \
-                kProcDescriptorIsAbsolute |         /* Flags - itÕs absolute addr */\
-                kFragmentIsPrepared |               /* ItÕs prepared */             \
+                kProcDescriptorIsAbsolute |         /* Flags - itâ€™s absolute addr */\
+                kFragmentIsPrepared |               /* Itâ€™s prepared */             \
                 kUseCurrentISA,                     /* Always use current ISA */    \
                 (ProcPtr)(powerPCProcPtr),          /* the procedure */             \
                 0,                                  /* reserved */                  \
@@ -612,7 +612,7 @@ RestoreMixedModeState(
 
 
 /* * * * * * * * * * * * * * 
- *   RESULT_SIZE -   Return the result field of a ProcInfo, given the return objectÕs size.
+ *   RESULT_SIZE -   Return the result field of a ProcInfo, given the return objectâ€™s size.
  *                   This is the same for all ProcInfos
  *       sizeCode - size code
  */
@@ -712,9 +712,9 @@ RestoreMixedModeState(
 
 
 /* * * * * * * * * * * * * * * 
- * STACK_UPP_TYPE    - used in typedefs to create ÅUPP type
- * REGISTER_UPP_TYPE - used in typedefs to create ÅUPP type
- * TVECTOR_UPP_TYPE  - used in typedefs to create ÅUPP type
+ * STACK_UPP_TYPE    - used in typedefs to create â‰ˆUPP type
+ * REGISTER_UPP_TYPE - used in typedefs to create â‰ˆUPP type
+ * TVECTOR_UPP_TYPE  - used in typedefs to create â‰ˆUPP type
  *
  *  Example:
  *
@@ -752,7 +752,7 @@ RestoreMixedModeState(
 
 
 /* * * * * * * * * * * * * * * 
- * CALL_Å_PARAMETER_UPP  - used in CallÅProc macros
+ * CALL_â‰ˆ_PARAMETER_UPP  - used in Callâ‰ˆProc macros
  *
  *  Example:
  *

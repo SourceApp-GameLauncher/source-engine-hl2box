@@ -404,7 +404,7 @@ void CDmxEditApp::PrintHelp( bool bWiki /* = false */ )
 	}
 
 	Msg( "CREDITS\n" );
-	Msg( "    Lua Copyright © 1994-2006 Lua.org, PUC-Rio.\n ");
+	Msg( "    Lua Copyright Â© 1994-2006 Lua.org, PUC-Rio.\n ");
 
 	Msg( "\n" );
 }

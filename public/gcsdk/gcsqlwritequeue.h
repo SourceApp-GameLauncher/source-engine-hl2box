@@ -1,4 +1,4 @@
-//====== Copyright ©, Valve Corporation, All rights reserved. =======
+//====== Copyright Â©, Valve Corporation, All rights reserved. =======
 // GCSqlWriteQueue.h
 //
 // A utility class that allows for templating based upon a SQL schema type, and then

@@ -1,4 +1,4 @@
-//====== Copyright ©, Valve Corporation, All rights reserved. =================
+//====== Copyright Â©, Valve Corporation, All rights reserved. =================
 //
 // Purpose: Defines a directory for all the GC processes for an app
 //

@@ -1,7 +1,7 @@
 /*
 	File:		QTLoadLibraryUtils.h
 
-	Copyright:	© 2002-2006 by Apple Computer, Inc., all rights reserved.
+	Copyright:	Â© 2002-2006 by Apple Computer, Inc., all rights reserved.
 
 	Set of utility functions for loading of QuickTime libraries, and finding of
 	the QuickTime directories.

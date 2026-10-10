@@ -194,7 +194,7 @@ extern "C" {
 
 
 #define MPCopyrightNotice   \
-    "Copyright © 1995-2000 Apple Computer, Inc.\n"
+    "Copyright Â© 1995-2000 Apple Computer, Inc.\n"
 #define MPLibraryName "MPLibrary"
 #define MPLibraryCName MPLibraryName
 #define MPLibraryPName "\p" MPLibraryName

@@ -10,7 +10,7 @@
                  <http://developer.apple.com/dev/techsupport/develop/issue11toc.shtml>
                  for the methodology behind these error handling and assertion macros.
 
-     Copyright:  © 2002 by Apple Computer, Inc., all rights reserved.
+     Copyright:  Â© 2002 by Apple Computer, Inc., all rights reserved.
   
      Bugs?:      For bug reports, consult the following page on
                  the World Wide Web:
