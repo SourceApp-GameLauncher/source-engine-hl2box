@@ -682,6 +682,31 @@ static int CBaseAnimating_GetBoneMatrix (lua_State *L) {
   return 1;
 }
 
+// HL2SB GMod compat (2026-10-10): Entity:CopyBoneMatrix( bone, matrix ) -
+// the same read as Entity:GetBoneMatrix, but the world-space 3x4 is copied
+// INTO the VMatrix the caller already owns instead of allocating a fresh one
+// (reference: "measurably faster when accessing bone matrices a lot").
+// Returns no values; a negative bone, a boneless entity or an entity whose
+// bones cannot be set up changes nothing.
+static int CBaseAnimating_CopyBoneMatrix (lua_State *L) {
+  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  int nBone = luaL_checkint(L, 2);
+  if ( nBone < 0 )
+    return 0;
+  VMatrix &vm = luaL_checkvmatrix(L, 3);
+
+  studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
+  if ( !pHdr )
+    return 0;
+  if ( !pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime ) )
+    return 0;
+  if ( nBone >= pHdr->numbones )
+    return 0;
+
+  vm.CopyFrom3x4( pEntity->GetBone( nBone ) );
+  return 0;
+}
+
 // HL2SB GMod compat (2026-09-24): Entity:SetBoneMatrix( bone, matrix ) -
 // writes through the live bone accessor so the change shows up in the current
 // frame's render (First Person Body's garbage-bone hiding / bone mirroring).
@@ -2263,6 +2288,7 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"DestroyShadow", CBaseAnimating_DestroyShadow},
   {"GetBoneCount", CBaseAnimating_GetBoneCount},
   {"GetBoneMatrix", CBaseAnimating_GetBoneMatrix},
+  {"CopyBoneMatrix", CBaseAnimating_CopyBoneMatrix},
   {"GetBoneName", CBaseAnimating_GetBoneName},
   {"GetBoneNames", CBaseAnimating_GetBoneNames},
   {"GetBoneParent", CBaseAnimating_GetBoneParent},

@@ -18,6 +18,8 @@
 #include "luasrclib.h"
 #include "lbaseentity_shared.h"
 #include "basescripted.h"
+#include "mathlib/vmatrix.h"	// HL2SB: VMatrix for the transform matrix getters
+#include "mathlib/lvmatrix.h"	// HL2SB: lua_pushvmatrix for Entity:GetWorldTransformMatrix
 #ifdef CLIENT_DLL
 #include "lc_baseanimating.h"
 #include "lc_recipientfilter.h"
@@ -5048,7 +5050,43 @@ void HL2SB_ProcessDeleteOnRemove( CBaseEntity *pGone )
 
 #endif
 
+// HL2SB GMod compat: Entity:GetWorldTransformMatrix() - the entity's position
+// and angle as a 3x4 matrix returned as a VMatrix (the fourth row is
+// 0,0,0,1).  EntityToWorldTransform() refreshes the cached transform before
+// handing it over, which is what the reference binding does.  Registered on
+// both realms, like the reference.
+static int CBaseEntity_GetWorldTransformMatrix (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  VMatrix vm;
+  vm.CopyFrom3x4( pEntity->EntityToWorldTransform() );
+  lua_pushvmatrix( L, vm );
+  return 1;
+}
+
+// HL2SB GMod compat: Entity:GetParentWorldTransformMatrix() - the move
+// parent's transform as a VMatrix.  Reference behaviour: no move parent ->
+// identity matrix; parented to an attachment (or to an entity that cannot
+// supply that attachment) -> that attachment's transform; otherwise the move
+// parent's own world transform.  GetParentToWorldTransform() is exactly that
+// three-way rule but asserts when there is no parent, so the parentless case
+// is answered here instead.
+static int CBaseEntity_GetParentWorldTransformMatrix (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  matrix3x4_t parentToWorld;
+  if ( pEntity->GetMoveParent() )
+    pEntity->GetParentToWorldTransform( parentToWorld );
+  else
+    SetIdentityMatrix( parentToWorld );
+
+  VMatrix vm;
+  vm.CopyFrom3x4( parentToWorld );
+  lua_pushvmatrix( L, vm );
+  return 1;
+}
+
 static const luaL_Reg CBaseEntitymeta[] = {
+  {"GetWorldTransformMatrix", CBaseEntity_GetWorldTransformMatrix},
+  {"GetParentWorldTransformMatrix", CBaseEntity_GetParentWorldTransformMatrix},
   {"GetForward", CBaseEntity_GetForward},
   {"GetRight", CBaseEntity_GetRight},
   {"GetLeft", CBaseEntity_GetLeft},

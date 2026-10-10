@@ -11,6 +11,8 @@
 #include "lbaseanimating.h"
 #include "lbaseentity_shared.h"	// HL2SB: HL2SB_PushNullEntityIndex for the NULL __index branch
 #include "mathlib/lvector.h"
+#include "mathlib/vmatrix.h"	// HL2SB: VMatrix for the bone matrix methods
+#include "mathlib/lvmatrix.h"	// HL2SB: lua_pushvmatrix / luaL_checkvmatrix (bone matrix methods)
 #include "lvphysics_interface.h"
 #include "ltakedamageinfo.h"	// luaL_checkdamageinfo (Entity:BecomeRagdoll)
 #include "physics_prop_ragdoll.h"	// CreateServerRagdoll (Entity:BecomeRagdoll)
@@ -150,6 +152,59 @@ static int CBaseAnimating_GetBonePosition (lua_State *L) {
   lua_pushvector(L, origin);
   lua_pushangle(L, angles);
   return 2;
+}
+
+// HL2SB GMod compat: Entity:GetBoneMatrix( bone ) - the serverside half of
+// the bone matrix reader.  Reference behaviour: reads the same bone cache
+// Entity:GetBonePosition reads (so it can answer the server's lagging matrix
+// under load, which the wiki documents), and answers nil for a bone outside
+// the model.
+static int CBaseAnimating_GetBoneMatrix (lua_State *L) {
+  CBaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  int nBone = luaL_checkint(L, 2);
+
+  CStudioHdr *pHdr = pEntity->GetModelPtr();
+  if ( !pHdr || nBone < 0 || nBone >= pHdr->numbones() )
+  {
+    lua_pushnil( L );
+    return 1;
+  }
+
+  matrix3x4_t boneToWorld;
+  pEntity->GetBoneTransform( nBone, boneToWorld );
+
+  VMatrix vm;
+  vm.CopyFrom3x4( boneToWorld );
+  lua_pushvmatrix( L, vm );
+  return 1;
+}
+
+// HL2SB GMod compat: Entity:SetBoneMatrix - the reference registers this name
+// serverside as an empty stub (the server never rewrites bones; the wiki says
+// "Despite existing serverside, it does nothing").  Without the binding a
+// scripted entity calling it would raise "attempt to call a nil value".
+static int CBaseAnimating_SetBoneMatrix (lua_State *L) {
+  return 0;
+}
+
+// HL2SB GMod compat: Entity:CopyBoneMatrix( bone, matrix ) - serverside half:
+// the same read as GetBoneMatrix, copied into the VMatrix the caller already
+// owns.  Returns no values; an out-of-range bone changes nothing.
+static int CBaseAnimating_CopyBoneMatrix (lua_State *L) {
+  CBaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  int nBone = luaL_checkint(L, 2);
+  if ( nBone < 0 )
+    return 0;
+  VMatrix &vm = luaL_checkvmatrix(L, 3);
+
+  CStudioHdr *pHdr = pEntity->GetModelPtr();
+  if ( !pHdr || nBone >= pHdr->numbones() )
+    return 0;
+
+  matrix3x4_t boneToWorld;
+  pEntity->GetBoneTransform( nBone, boneToWorld );
+  vm.CopyFrom3x4( boneToWorld );
+  return 0;
 }
 
 static int CBaseAnimating_GetCycle (lua_State *L) {
@@ -836,6 +891,9 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetBodygroupCount", CBaseAnimating_GetBodygroupCount},
   {"GetBodygroupName", CBaseAnimating_GetBodygroupName},
   {"GetBonePosition", CBaseAnimating_GetBonePosition},
+  {"GetBoneMatrix", CBaseAnimating_GetBoneMatrix},
+  {"SetBoneMatrix", CBaseAnimating_SetBoneMatrix},
+  {"CopyBoneMatrix", CBaseAnimating_CopyBoneMatrix},
   {"GetCycle", CBaseAnimating_GetCycle},
   {"GetFlexDescFacs", CBaseAnimating_GetFlexDescFacs},
   {"GetHitboxSet", CBaseAnimating_GetHitboxSet},

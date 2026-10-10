@@ -3382,6 +3382,11 @@ void C_BaseAnimating::DoInternalDrawModel( ClientModelRenderInfo_t *pInfo, DrawM
 // Purpose: Draws the object
 // Input  : flags - 
 //-----------------------------------------------------------------------------
+// HL2SB GMod compat: Entity:EnableMatrix storage lives beside the entity
+// code in c_baseentity.cpp; declared locally here so no shared header (and
+// therefore no include-closure rebuild) is needed for a client-only feature.
+extern bool HL2SB_RenderMatrix_Build( C_BaseEntity *pEntity, const matrix3x4_t *pSourceBones, int nBones, CUtlVector<matrix3x4_t> &outDest );
+
 int C_BaseAnimating::InternalDrawModel( int flags )
 {
 	if ( !GetModel() )
@@ -3453,7 +3458,23 @@ int C_BaseAnimating::InternalDrawModel( int flags )
 		}
 	}
 
-	DoInternalDrawModel( pInfo, ( bMarkAsDrawn && ( pInfo->flags & STUDIO_RENDER ) ) ? &state : NULL, pBoneToWorld );
+	// HL2SB GMod compat: Entity:EnableMatrix - when a render matrix is stored
+	// on this entity, draw a PRIVATE copy of the bone array multiplied by it
+	// (out = bone * matrix, i.e. the matrix applies in the model's own space
+	// about the entity origin).  A copy is used instead of writing the shared
+	// bone cache in place: the cache survives across frames, so an in-place
+	// multiply would compound every frame it stays valid.
+	matrix3x4_t *pBonesToDraw = pBoneToWorld;
+	CUtlVector<matrix3x4_t> renderMatrixBones;
+	if ( pBoneToWorld )
+	{
+		CStudioHdr *pHdr = GetModelPtr();
+		int nBones = pHdr ? pHdr->numbones() : 0;
+		if ( nBones > 0 && HL2SB_RenderMatrix_Build( this, pBoneToWorld, nBones, renderMatrixBones ) )
+			pBonesToDraw = renderMatrixBones.Base();
+	}
+
+	DoInternalDrawModel( pInfo, ( bMarkAsDrawn && ( pInfo->flags & STUDIO_RENDER ) ) ? &state : NULL, pBonesToDraw );
 
 	OnPostInternalDrawModel( pInfo );
 

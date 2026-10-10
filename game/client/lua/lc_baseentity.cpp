@@ -189,6 +189,36 @@ static int CBaseEntity_SetRenderBoundsWS (lua_State *L) {
   return 0;
 }
 
+// HL2SB GMod compat: Entity:EnableMatrix( matrixType, matrix ).
+//
+// Reference behaviour: the only supported matrixType is "RenderMultiply" -
+// any other string is silently ignored and changes nothing.  When the third
+// argument is not a matrix the stored matrix is CLEARED rather than set, and
+// the method returns no values.  The renderer consumes the stored matrix in
+// C_BaseAnimating::InternalDrawModel; the reference engine has no
+// server-side entry for either method, so both bindings are client only.
+static int CBaseEntity_EnableMatrix (lua_State *L) {
+  C_BaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszType = luaL_checkstring(L, 2);
+  if (Q_strcmp(pszType, "RenderMultiply") != 0)
+    return 0;
+  extern void HL2SB_RenderMatrix_Set( C_BaseEntity *pEntity, const VMatrix *pMatrix );
+  HL2SB_RenderMatrix_Set( pEntity, (const VMatrix *)luaL_testudata(L, 3, "VMatrix") );
+  return 0;
+}
+
+// HL2SB GMod compat: Entity:DisableMatrix( matrixType ) - clears whatever
+// Entity:EnableMatrix stored for this entity.  Same string gate.
+static int CBaseEntity_DisableMatrix (lua_State *L) {
+  C_BaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszType = luaL_checkstring(L, 2);
+  if (Q_strcmp(pszType, "RenderMultiply") != 0)
+    return 0;
+  extern void HL2SB_RenderMatrix_Clear( C_BaseEntity *pEntity );
+  HL2SB_RenderMatrix_Clear( pEntity );
+  return 0;
+}
+
 static int CBaseEntity_ComputeFxBlend (lua_State *L) {
   luaL_checkentity(L, 1)->ComputeFxBlend();
   return 0;
@@ -316,6 +346,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"DrawModel", CBaseEntity_DrawModel},
   {"SetRenderBounds", CBaseEntity_SetRenderBounds},
   {"SetRenderBoundsWS", CBaseEntity_SetRenderBoundsWS},
+  // HL2SB GMod compat: the render matrix pair (client only, like the reference).
+  {"EnableMatrix", CBaseEntity_EnableMatrix},
+  {"DisableMatrix", CBaseEntity_DisableMatrix},
   {"ComputeFxBlend", CBaseEntity_ComputeFxBlend},
   {"GetFxBlend", CBaseEntity_GetFxBlend},
   {"LODTest", CBaseEntity_LODTest},

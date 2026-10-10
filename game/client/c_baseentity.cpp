@@ -5182,6 +5182,99 @@ string_t C_BaseEntity::GetModelName( void ) const
 	return m_ModelName;
 }
 
+// ---------------------------------------------------------------------------
+// HL2SB GMod compat: Entity:EnableMatrix / Entity:DisableMatrix state.
+//
+// Reference behaviour: EnableMatrix( "RenderMultiply", matrix ) stores a
+// per-entity 4x4 that the model renderer multiplies into the bone matrices
+// right before drawing (out = bone * matrix, so the matrix applies in the
+// model's own space and the model is multiplied about its entity origin).
+// DisableMatrix( "RenderMultiply" ) clears it, and EnableMatrix with a
+// non-matrix third argument clears it too.  The state lives in this side
+// table instead of as new class members so no client class layout changes.
+// Entries are keyed by entity pointer AND entity index - a recycled
+// allocation can never inherit another entity's matrix - and are dropped in
+// UpdateOnRemove.
+// ---------------------------------------------------------------------------
+struct HL2SB_RenderMatrixState
+{
+	C_BaseEntity *m_pEntity;
+	int           m_nEntIndex;
+	VMatrix       m_Matrix;
+};
+
+static CUtlVector<HL2SB_RenderMatrixState> g_HL2SB_RenderMatrices;
+
+// pMatrix == NULL clears the matrix stored for this entity.
+void HL2SB_RenderMatrix_Set( C_BaseEntity *pEntity, const VMatrix *pMatrix )
+{
+	if ( pEntity == NULL )
+		return;
+
+	for ( int i = 0; i < g_HL2SB_RenderMatrices.Count(); ++i )
+	{
+		HL2SB_RenderMatrixState &entry = g_HL2SB_RenderMatrices[i];
+		if ( entry.m_pEntity != pEntity )
+			continue;
+
+		if ( pMatrix != NULL )
+			entry.m_Matrix = *pMatrix;
+		else
+			g_HL2SB_RenderMatrices.Remove( i );
+		return;
+	}
+
+	if ( pMatrix == NULL )
+		return;
+
+	HL2SB_RenderMatrixState entry;
+	entry.m_pEntity = pEntity;
+	entry.m_nEntIndex = pEntity->entindex();
+	entry.m_Matrix = *pMatrix;
+	g_HL2SB_RenderMatrices.AddToTail( entry );
+}
+
+void HL2SB_RenderMatrix_Clear( C_BaseEntity *pEntity )
+{
+	HL2SB_RenderMatrix_Set( pEntity, NULL );
+}
+
+// Multiplies the source bone matrices by the stored matrix on the right
+// (out[r][c] = sum_k in[r][k] * m[k][c], translation column gets in[r][3]
+// added), which is the entity-space product the reference renderer uses.
+// Returns false and leaves outDest untouched when this entity has no matrix
+// stored (or the entry belongs to a recycled allocation).
+bool HL2SB_RenderMatrix_Build( C_BaseEntity *pEntity, const matrix3x4_t *pSourceBones, int nBones, CUtlVector<matrix3x4_t> &outDest )
+{
+	if ( pEntity == NULL || pSourceBones == NULL || nBones <= 0 )
+		return false;
+
+	for ( int i = 0; i < g_HL2SB_RenderMatrices.Count(); ++i )
+	{
+		const HL2SB_RenderMatrixState &entry = g_HL2SB_RenderMatrices[i];
+		if ( entry.m_pEntity != pEntity || entry.m_nEntIndex != pEntity->entindex() )
+			continue;
+
+		const VMatrix &m = entry.m_Matrix;
+		outDest.SetCount( nBones );
+		for ( int b = 0; b < nBones; ++b )
+		{
+			const float *pIn = pSourceBones[b].Base();
+			float *pOut = outDest[b].Base();
+			for ( int r = 0; r < 3; ++r )
+			{
+				const float *pInRow = pIn + r * 4;
+				float *pOutRow = pOut + r * 4;
+				for ( int c = 0; c < 3; ++c )
+					pOutRow[c] = pInRow[0] * m[0][c] + pInRow[1] * m[1][c] + pInRow[2] * m[2][c];
+				pOutRow[3] = pInRow[0] * m[0][3] + pInRow[1] * m[1][3] + pInRow[2] * m[2][3] + pInRow[3];
+			}
+		}
+		return true;
+	}
+	return false;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Nothing yet, could eventually supercede Term()
 //-----------------------------------------------------------------------------
@@ -5192,6 +5285,10 @@ void C_BaseEntity::UpdateOnRemove( void )
 	Assert( !GetMoveParent() );
 	UnlinkFromHierarchy();
 	SetGroundEntity( NULL );
+
+	// HL2SB GMod compat: never leave an EnableMatrix entry behind - the entity
+	// memory (and its entity index) may be handed to the next entity.
+	HL2SB_RenderMatrix_Clear( this );
 }
 
 //-----------------------------------------------------------------------------

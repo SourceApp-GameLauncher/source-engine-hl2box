@@ -1123,9 +1123,28 @@ static int CBasePlayer_SetBloodColor (lua_State *L) {
   return 0;
 }
 
+// HL2SB GMod compat: Player:SetFOV( fov, [transitionTime], [requester] ).
+//
+// Reference behaviour: arg2 (the FOV in degrees) is required, arg3 is the
+// transition time in seconds and defaults to 0, arg4 is the entity that owns
+// the zoom and defaults to the player itself; the method returns nothing.
+// The binding used to expose the raw engine signature
+// ( requester, fov, time, speedup ), so every GMod call site - the classic
+// scoped bases do ply:SetFOV( 75/ScopeZoom, 0.15 ) from SWEP:Think - raised
+// "bad argument #3 to 'SetFOV'" and the caller's whole Think chain aborted
+// there (no FOV change, no sights offset, no viewmodel hide).  The engine
+// method itself (shared baseplayer_shared.cpp) is unchanged, both realms
+// compile this file, and the requester defaults to self so the zoom-owner
+// handshake inside SetFOV still sees a valid entity.
 static int CBasePlayer_SetFOV (lua_State *L) {
-  lua_pushboolean(L, luaL_checkplayer(L, 1)->SetFOV(luaL_checkentity(L, 2), luaL_checkint(L, 3), luaL_checknumber(L, 4), luaL_optint(L, 5, 0)));
-  return 1;
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  int iFOV = luaL_checkint(L, 2);
+  float flTime = (float)luaL_optnumber(L, 3, 0);
+  CBaseEntity *pRequester = pPlayer;
+  if ( !lua_isnoneornil(L, 4) )
+    pRequester = luaL_checkentity(L, 4);
+  pPlayer->SetFOV(pRequester, iFOV, flTime, 0);
+  return 0;
 }
 
 static int CBasePlayer_SetLadderNormal (lua_State *L) {

@@ -14,6 +14,7 @@
 #include "ltakedamageinfo.h"
 #include "mathlib/lvector.h"
 #include "entitylist.h"
+#include "baseviewmodel.h"	// HL2SB: CBaseViewModel for Player:DrawViewModel
 #include "ammodef.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -137,6 +138,38 @@ static int CBasePlayer_HideViewModels (lua_State *L) {
 
 static int CBasePlayer_DestroyViewModels (lua_State *L) {
   luaL_checkplayer(L, 1)->DestroyViewModels();
+  return 0;
+}
+
+// HL2SB GMod compat: Player:DrawViewModel( bDraw [, viewmodelIndex] ) --
+// serverside half.  The reference engine registers this name on BOTH realms,
+// and the classic scoped weapon bases call it from SWEP:Think behind
+// "if CLIENT then return end", i.e. server only - without this binding the
+// call raised "attempt to call a nil value" and the viewmodel never hid
+// (first-person arms stayed on screen under the scope overlay).
+// Reference behaviour: arg3, when it is a number, picks the viewmodel slot
+// clamped to 0..2; arg2 is read as a boolean and the chosen viewmodel is
+// either shown (EF_NODRAW cleared) or hidden (EF_NODRAW = 0x20 set).  The
+// effect bit is part of the networked m_fEffects, so the client stops
+// rendering it.  Returns nothing.
+static int CBasePlayer_DrawViewModel (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+
+  int iIndex = 0;
+  if ( lua_type(L, 3) == LUA_TNUMBER ) {
+    int nSlot = (int)luaL_checknumber(L, 3);
+    if ( nSlot < 0 ) nSlot = 0;
+    if ( nSlot > 2 ) nSlot = 2;
+    iIndex = nSlot;
+  }
+
+  CBaseViewModel *pVM = pPlayer->GetViewModel(iIndex);
+  if ( pVM != NULL ) {
+    if ( lua_toboolean(L, 2) )
+      pVM->RemoveEffects(EF_NODRAW);
+    else
+      pVM->AddEffects(EF_NODRAW);
+  }
   return 0;
 }
 
@@ -648,6 +681,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"CreateViewModel", CBasePlayer_CreateViewModel},
   {"HideViewModels", CBasePlayer_HideViewModels},
   {"DestroyViewModels", CBasePlayer_DestroyViewModels},
+  {"DrawViewModel", CBasePlayer_DrawViewModel},
   {"RequiredEdictIndex", CBasePlayer_RequiredEdictIndex},
   {"LockPlayerInPlace", CBasePlayer_LockPlayerInPlace},
   {"UnlockPlayer", CBasePlayer_UnlockPlayer},
