@@ -16,16 +16,12 @@ CFriendsGames::CFriendsGames(vgui::Panel *parent) :
 	CBaseGamesPage(parent, "FriendsGames",  eFriendsServer )
 {
 	m_iServerRefreshCount = 0;
-	
-	if ( !IsSteamGameServerBrowsingEnabled() )
-	{
-		m_pGameList->SetEmptyListText("#ServerBrowser_OfflineMode");
-		m_pConnect->SetEnabled( false );
-		m_pRefreshAll->SetEnabled( false );
-		m_pRefreshQuick->SetEnabled( false );
-		m_pAddServer->SetEnabled( false );
-		m_pFilter->SetEnabled( false );
-	}
+
+	// The friends list is fed by the Steam friends graph, which a nosteam
+	// build does not have; the tab stays present and answers with the
+	// "no friends playing" notice like the reference does when none of your
+	// friends are in a game.
+	m_pGameList->SetEmptyListText("#ServerBrowser_NoFriendsServers");
 }
 
 //-----------------------------------------------------------------------------
@@ -56,19 +52,16 @@ bool CFriendsGames::SupportsItem(InterfaceItem_e item)
 //-----------------------------------------------------------------------------
 // Purpose: called when the current refresh list is complete
 //-----------------------------------------------------------------------------
-void CFriendsGames::RefreshComplete( HServerListRequest hReq, EMatchMakingServerResponse response )
+void CFriendsGames::RefreshComplete( NServerResponse response )
 {
 	SetRefreshing(false);
 	m_pGameList->SortList();
 	m_iServerRefreshCount = 0;
 
-	if ( IsSteamGameServerBrowsingEnabled() )
-	{
-		// set empty message
-		m_pGameList->SetEmptyListText("#ServerBrowser_NoFriendsServers");
-	}
+	// set empty message
+	m_pGameList->SetEmptyListText("#ServerBrowser_NoFriendsServers");
 
-	BaseClass::RefreshComplete( hReq, response );
+	BaseClass::RefreshComplete( response );
 }
 
 //-----------------------------------------------------------------------------

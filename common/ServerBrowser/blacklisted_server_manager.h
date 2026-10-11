@@ -14,10 +14,9 @@
 #include "platform.h"
 #include "netadr.h"
 #include "utlvector.h"
+#include "engine/iserversinfo.h"
 
 #define BLACKLIST_DEFAULT_SAVE_FILE			"cfg/server_blacklist.txt"
-
-class gameserveritem_t;
 
 struct blacklisted_server_t 
 {
@@ -38,7 +37,7 @@ public:
 
 	void Reset( void );
 
-	blacklisted_server_t *AddServer( gameserveritem_t &server );
+	blacklisted_server_t *AddServer( newgameserver_t &server );
 	blacklisted_server_t *AddServer( const char *serverName, uint32 serverIP, int serverPort );
 	blacklisted_server_t *AddServer( const char *serverName, const char *netAddressString, uint64 timestamp );
 
@@ -52,10 +51,10 @@ public:
 
 	const CUtlVector< blacklisted_server_t > &GetServerVector( void ) const;
 
-	bool IsServerBlacklisted( const gameserveritem_t &server ) const;
+	bool IsServerBlacklisted( const newgameserver_t &server ) const;
 	bool IsServerBlacklisted( uint32 serverIP, int serverPort, const char *serverName ) const;
 
-	bool CanServerBeBlacklisted( gameserveritem_t &server ) const;
+	bool CanServerBeBlacklisted( newgameserver_t &server ) const;
 	bool CanServerBeBlacklisted( uint32 serverIP, int serverPort, const char *serverName ) const;
 
 private:

@@ -51,6 +51,15 @@ public:
 	// Adds a server to the list of favorites
 	void AddServerToFavorites(newgameserver_t &server);
 
+	// Adds a server to the blacklist
+	void AddServerToBlacklist(newgameserver_t &server);
+
+	// Returns true if the server is on the blacklist
+	bool IsServerBlacklisted(newgameserver_t &server);
+
+	// tells the pages to re-check the blacklist
+	void BlacklistsChanged();
+
 	// begins the process of joining a server from a game list
 	// the game info dialog it opens will also update the game list
 	CDialogGameInfo *JoinGame(IGameList *gameList, newgameserver_t *pServer);
@@ -82,10 +91,13 @@ public:
 	// forces the currently active page to refresh
 	void		RefreshCurrentPage();
 
-	virtual gameserveritem_t *GetCurrentConnectedServer()
+	virtual newgameserver_t *GetCurrentConnectedServer()
 	{
 		return &m_CurrentConnection;
 	}
+
+	// blacklist page accessor (the reference sorts through it from outside)
+	CBlacklistedServers *GetBlacklistPage() { return m_pBlacklist; }
 
 private:
 
@@ -120,10 +132,12 @@ private:
 	vgui::PropertySheet *m_pTabPanel;
 
 	CInternetGames *m_pInternetGames;
-	//CSpectateGames *m_pSpectateGames;
+	CSpectateGames *m_pSpectateGames;
 	CLanGames *m_pLanGames;
 	CFavoriteGames *m_pFavorites;
 	CHistoryGames *m_pHistory;
+	CFriendsGames *m_pFriendsGames;
+	CBlacklistedServers *m_pBlacklist;
 
 	KeyValues *m_pSavedData;
 	KeyValues *m_pFilterData;
@@ -138,7 +152,7 @@ private:
 
 	// currently connected game
 	bool m_bCurrentlyConnected;
-	gameserveritem_t m_CurrentConnection;
+	newgameserver_t m_CurrentConnection;
 };
 
 // singleton accessor

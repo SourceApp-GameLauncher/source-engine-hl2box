@@ -137,8 +137,13 @@ public:
 
 	// adds a server to the favorites
 	MESSAGE_FUNC( OnAddToFavorites, "AddToFavorites" );
+	MESSAGE_FUNC( OnAddToBlacklist, "AddToBlacklist" );
 
 	virtual void StartRefresh();
+
+	// Fills the address list this page wants queried (favorites/history).
+	// Internet/LAN/spectate leave it empty and use the master server instead.
+	virtual void GetServerAddressList( CUtlVector<netadr_t> &list ) {}
 
 	virtual void UpdateDerivedLayouts( void );
 	
@@ -216,6 +221,12 @@ protected:
 
 	// If true, then we automatically select the first item that comes into the games list.
 	bool m_bAutoSelectFirstItemInGameList;
+
+	// true while this page has a list query in flight
+	bool m_bRefreshing;
+
+	// how many servers the primary filters dropped because of the blacklist
+	int m_iServersBlacklisted;
 
 	CGameListPanel *m_pGameList;
 	vgui::PanelListPanel *m_pQuickList;

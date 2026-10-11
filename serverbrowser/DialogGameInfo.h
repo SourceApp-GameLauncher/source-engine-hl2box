@@ -20,7 +20,7 @@ struct challenge_s
 //-----------------------------------------------------------------------------
 // Purpose: Dialog for displaying information about a game server
 //-----------------------------------------------------------------------------
-class CDialogGameInfo : public vgui::Frame, public ISteamMatchmakingPlayersResponse, public ISteamMatchmakingPingResponse
+class CDialogGameInfo : public vgui::Frame, public IServerPingResponse, public IServerPlayersResponse
 {
 	DECLARE_CLASS_SIMPLE( CDialogGameInfo, vgui::Frame ); 
 
@@ -38,21 +38,20 @@ public:
 
 	// implementation of IServerRefreshResponse interface
 	// called when the server has successfully responded
-	virtual void ServerResponded( gameserveritem_t &server );
-
-	// called when a server response has timed out
-	virtual void ServerFailedToRespond();
+	virtual void ServerResponded( newgameserver_t &server );
 
 	// on individual player added
 	virtual void AddPlayerToList(const char *playerName, int score, float timePlayedSeconds);
-	virtual void PlayersFailedToRespond() {}
-	virtual void PlayersRefreshComplete() { m_hPlayersQuery = HSERVERQUERY_INVALID; }
-
-	// called when the current refresh list is complete
-	virtual void RefreshComplete( EMatchMakingServerResponse response );
 
 	// player list received
 	virtual void ClearPlayerList();
+
+	// IServerPlayersResponse completion callbacks
+	virtual void PlayersFailedToRespond();
+	virtual void PlayersRefreshComplete();
+
+	// called when a server response has timed out
+	void ServerFailedToRespond();
 
 	//virtual void SendChallengeQuery( const netadr_t & to );
 	virtual void SendPlayerQuery( uint32 unIP, uint16 usQueryPort );
@@ -89,8 +88,8 @@ private:
 	void RequestInfo();
 	void ConnectToServer();
 	void ShowAutoRetryOptions(bool state);
-	void ConstructConnectArgs( char *pchOptions, int cchOptions, const gameserveritem_t &server );
-	void ApplyConnectCommand( const gameserveritem_t &server );
+	void ConstructConnectArgs( char *pchOptions, int cchOptions, const newgameserver_t &server );
+	void ApplyConnectCommand( const newgameserver_t &server );
 
 	vgui::Button *m_pConnectButton;
 	vgui::Button *m_pCloseButton;
@@ -117,10 +116,7 @@ private:
 	uint64 m_SteamIDFriend;
 
 	CUtlString m_sConnectCode;
-	gameserveritem_t m_Server;
-	HServerQuery m_hPingQuery;
-	HServerQuery m_hPlayersQuery;
-	bool m_bPlayerListUpdatePending;
+	newgameserver_t m_Server;
 };
 
 #endif // DIALOGGAMEINFO_H

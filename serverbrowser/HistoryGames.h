@@ -10,6 +10,14 @@
 #pragma once
 #endif
 
+struct historyserver_t
+{
+	char m_szServerName[64];
+	char m_szMap[64];
+	uint64 m_ullTimeLastPlayed;
+	netadr_t m_NetAdr;
+};
+
 //-----------------------------------------------------------------------------
 // Purpose: History of all the servers joined
 //-----------------------------------------------------------------------------
@@ -21,9 +29,10 @@ public:
 	CHistoryGames(vgui::Panel *parent);
 	~CHistoryGames();
 
-	// favorites list, loads/saves into keyvalues
+	// history list, loads/saves into keyvalues
 	void LoadHistoryList();
-
+	void SaveHistoryList();
+	void AddServerToHistory( newgameserver_t &server );
 
 	// IGameList handlers
 	// returns true if the game list supports the specified ui elements
@@ -31,6 +40,9 @@ public:
 
 	// called when the current refresh list is complete
 	virtual void RefreshComplete( NServerResponse response );
+
+	// address list the base page queries for this tab
+	virtual void GetServerAddressList( CUtlVector<netadr_t> &list ) OVERRIDE;
 
 	void SetRefreshOnReload() { m_bRefreshOnListReload = true; }
 
@@ -40,6 +52,8 @@ private:
 	MESSAGE_FUNC( OnRemoveFromHistory, "RemoveFromHistory" );
 
 	bool m_bRefreshOnListReload;
+
+	CUtlVector<historyserver_t> m_History;
 };
 
 

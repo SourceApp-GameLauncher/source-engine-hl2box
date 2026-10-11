@@ -7,6 +7,7 @@
 #include "pch_serverbrowser.h"
 #include <vgui_controls/HTML.h>
 #include <vgui_controls/MessageDialog.h>
+#include <vgui_controls/QueryBox.h>
 
 using namespace vgui;
 
@@ -100,6 +101,8 @@ CCustomGames::CCustomGames(vgui::Panel *parent) :
 	m_pGameList->AddColumnHeader(10, "Tags", "#ServerBrowser_Tags", 200);
 	m_pGameList->SetSortFunc(10, TagsCompare);
 
+	// The reference browser gates the tag controls on the Steam offline keys;
+	// on a nosteam install these are never set, so the check stays dormant.
 	if ( !IsSteamGameServerBrowsingEnabled() )
 	{
 		m_pGameList->SetEmptyListText("#ServerBrowser_OfflineMode");
@@ -199,7 +202,7 @@ void CCustomGames::OnLoadFilter(KeyValues *filter)
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-bool CCustomGames::CheckTagFilter( gameserveritem_t &server )
+bool CCustomGames::CheckTagFilter( newgameserver_t &server )
 {
 	bool bRetVal = true;
 
@@ -227,7 +230,7 @@ bool CCustomGames::CheckTagFilter( gameserveritem_t &server )
 //-----------------------------------------------------------------------------
 // Purpose: Checks the workshop filtering setting, taking into account workshop filtering might be disabled
 //-----------------------------------------------------------------------------
-bool CCustomGames::CheckWorkshopFilter( gameserveritem_t &server )
+bool CCustomGames::CheckWorkshopFilter( newgameserver_t &server )
 {
 	eWorkshopMode workshopMode = WorkshopMode();
 	const char szWorkshopPrefix[] = "workshop/";
@@ -290,12 +293,12 @@ void CCustomGames::SetRefreshing(bool state)
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-void CCustomGames::ServerResponded( int iServer, gameserveritem_t *pServerItem )
+void CCustomGames::ServerResponded( newgameserver_t &server )
 {
-	CBaseGamesPage::ServerResponded( iServer, pServerItem );
+	BaseClass::ServerResponded( server );
 
 	// If we've found a server with some tags, enable the add tag button
-	if ( pServerItem->m_szGameTags[0] )
+	if ( server.m_szGameTags[0] )
 	{
 		m_pAddTagList->SetEnabled( true );
 	}
@@ -326,8 +329,8 @@ void CCustomGames::RecalculateCommonTags( void )
 	for ( int i = 0; i < iCount; i++ )
 	{
 		int serverID = m_pGameList->GetItemUserData( i );
-		gameserveritem_t *pServer = GetServer( serverID ); 
-		if ( pServer && pServer->m_szGameTags && pServer->m_szGameTags[0] )
+		newgameserver_t *pServer = GetServer( serverID );
+		if ( pServer && pServer->m_szGameTags[0] )
 		{
 			CUtlVector<char*> TagList;
 			V_SplitString( pServer->m_szGameTags, ",", TagList );

@@ -186,7 +186,7 @@ void CBlacklistedServers::SaveBlacklistedList()
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-void CBlacklistedServers::AddServer( gameserveritem_t &server )
+void CBlacklistedServers::AddServer( newgameserver_t &server )
 {
 	blacklisted_server_t *blackServer = m_blackList.AddServer( server );
 
@@ -219,7 +219,7 @@ blacklisted_server_t *CBlacklistedServers::GetBlacklistedServer( int iServerID )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-bool CBlacklistedServers::IsServerBlacklisted( gameserveritem_t &server )
+bool CBlacklistedServers::IsServerBlacklisted( const newgameserver_t &server )
 {
 	// if something has changed the blacklist file, reload it
 	if ( g_pFullFileSystem->GetFileTime( BLACKLIST_DEFAULT_SAVE_FILE ) != m_blackListTimestamp )
@@ -400,9 +400,9 @@ void CBlacklistedServers::ClearServerList( void )
 //-----------------------------------------------------------------------------
 void CBlacklistedServers::OnAddCurrentServer()
 {
-	gameserveritem_t *pConnected = ServerBrowserDialog().GetCurrentConnectedServer();
+	newgameserver_t *pConnected = ServerBrowserDialog().GetCurrentConnectedServer();
 
-	if ( pConnected )
+	if ( pConnected && pConnected->m_NetAdr.GetPort() )
 	{
 		blacklisted_server_t *blackServer = m_blackList.AddServer( *pConnected );
 
@@ -421,7 +421,7 @@ void CBlacklistedServers::OnAddCurrentServer()
 		{
 			// send command to propagate to the client so the client can send it on to the GC
 			char command[ 256 ];
-			Q_snprintf( command, Q_ARRAYSIZE( command ), "rbgc %s\n", pConnected->m_NetAdr.GetConnectionAddressString() );
+			Q_snprintf( command, Q_ARRAYSIZE( command ), "rbgc %s\n", pConnected->m_NetAdr.ToString() );
 			g_pRunGameEngine->AddTextCommand( command );
 		}
 	}

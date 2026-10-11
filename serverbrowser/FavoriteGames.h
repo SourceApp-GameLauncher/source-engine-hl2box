@@ -11,6 +11,13 @@
 #pragma once
 #endif
 
+struct favoriteserver_t
+{
+	char m_szServerName[64];
+	uint64 m_ullTimeFavorited;
+	netadr_t m_NetAdr;
+};
+
 //-----------------------------------------------------------------------------
 // Purpose: Favorite games list
 //-----------------------------------------------------------------------------
@@ -24,13 +31,18 @@ public:
 
 	// favorites list, loads/saves into keyvalues
 	void LoadFavoritesList();
-	
+	void SaveFavoritesList();
+	void AddServerToFavorites( newgameserver_t &server );
+
 	// IGameList handlers
 	// returns true if the game list supports the specified ui elements
 	virtual bool SupportsItem(InterfaceItem_e item);
 
 	// called when the current refresh list is complete
 	virtual void RefreshComplete( NServerResponse response );
+
+	// address list the base page queries for this tab
+	virtual void GetServerAddressList( CUtlVector<netadr_t> &list ) OVERRIDE;
 
 	// passed from main server browser window instead of messages
 	void OnConnectToGame();
@@ -49,6 +61,8 @@ private:
 	void OnCommand(const char *command);
 
 	bool m_bRefreshOnListReload;
+
+	CUtlVector<favoriteserver_t> m_Favorites;
 };
 
 

@@ -9,6 +9,10 @@
 
 using namespace vgui;
 
+// The nosteam build keeps favorites in a local file (the reference browser
+// stores them through the Steam matchmaking API, which doesn't exist here).
+#define FAVORITES_SAVE_FILE "ServerBrowserFavorites.vdf"
+
 //-----------------------------------------------------------------------------
 // Purpose: Constructor
 //-----------------------------------------------------------------------------
@@ -16,6 +20,8 @@ CFavoriteGames::CFavoriteGames(vgui::Panel *parent) :
 	CBaseGamesPage(parent, "FavoriteGames", eFavoritesServer )
 {
 	m_bRefreshOnListReload = false;
+
+	LoadFavoritesList();
 }
 
 //-----------------------------------------------------------------------------
@@ -30,16 +36,23 @@ CFavoriteGames::~CFavoriteGames()
 //-----------------------------------------------------------------------------
 void CFavoriteGames::LoadFavoritesList()
 {
-	if ( steamapicontext->SteamMatchmaking() && steamapicontext->SteamMatchmaking()->GetFavoriteGameCount() == 0 )
-	{
-		// set empty message
-		m_pGameList->SetEmptyListText("#ServerBrowser_NoFavoriteServers");
-	}
-	else
-	{
-		m_pGameList->SetEmptyListText("#ServerBrowser_NoInternetGamesResponded");
+	m_Favorites.RemoveAll();
 
+	KeyValues *kv = new KeyValues( "favorites" );
+	if ( kv->LoadFromFile( g_pFullFileSystem, FAVORITES_SAVE_FILE, "CONFIG" ) )
+	{
+		for ( KeyValues *pData = kv->GetFirstSubKey(); pData != NULL; pData = pData->GetNextKey() )
+		{
+			favoriteserver_t entry;
+			V_strncpy( entry.m_szServerName, pData->GetString( "name" ), sizeof( entry.m_szServerName ) );
+			entry.m_NetAdr.SetFromString( pData->GetString( "addr" ) );
+			entry.m_ullTimeFavorited = pData->GetUint64( "date" );
+			m_Favorites.AddToTail( entry );
+		}
 	}
+	kv->deleteThis();
+
+	m_pGameList->SetEmptyListText("#ServerBrowser_NoFavoriteServers");
 
 	if ( m_bRefreshOnListReload )
 	{
@@ -48,6 +61,67 @@ void CFavoriteGames::LoadFavoritesList()
 	}
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: saves favorites list to disk
+//-----------------------------------------------------------------------------
+void CFavoriteGames::SaveFavoritesList()
+{
+	KeyValues *kv = new KeyValues( "favorites" );
+
+	for ( int i = 0; i < m_Favorites.Count(); i++ )
+	{
+		KeyValues *pSubKey = new KeyValues( "server" );
+		pSubKey->SetString( "name", m_Favorites[i].m_szServerName );
+		pSubKey->SetUint64( "date", m_Favorites[i].m_ullTimeFavorited );
+		pSubKey->SetString( "addr", m_Favorites[i].m_NetAdr.ToString() );
+		kv->AddSubKey( pSubKey );
+	}
+
+	kv->SaveToFile( g_pFullFileSystem, FAVORITES_SAVE_FILE, "CONFIG" );
+	kv->deleteThis();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: adds a server to the favorites (called by the context menu and the
+//			add-server dialog; persists immediately)
+//-----------------------------------------------------------------------------
+void CFavoriteGames::AddServerToFavorites( newgameserver_t &server )
+{
+	// Make sure we don't already have this IP in the list somewhere
+	netadr_t netAdr = server.m_NetAdr;
+
+	for ( int i = 0; i < m_Favorites.Count(); i++ )
+	{
+		if ( m_Favorites[i].m_NetAdr.CompareAdr( netAdr ) )
+		{
+			return;
+		}
+	}
+
+	int iIdx = m_Favorites.AddToTail();
+	V_strncpy( m_Favorites[iIdx].m_szServerName, server.m_szServerName, sizeof( m_Favorites[iIdx].m_szServerName ) );
+
+	time_t today;
+	time( &today );
+	m_Favorites[iIdx].m_ullTimeFavorited = (uint64)today;
+	m_Favorites[iIdx].m_NetAdr = netAdr;
+
+	SaveFavoritesList();
+
+	m_bRefreshOnListReload = true;
+	LoadFavoritesList();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Fills the address list this page queries
+//-----------------------------------------------------------------------------
+void CFavoriteGames::GetServerAddressList( CUtlVector<netadr_t> &list )
+{
+	for ( int i = 0; i < m_Favorites.Count(); i++ )
+	{
+		list.AddToTail( m_Favorites[i].m_NetAdr );
+	}
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: returns true if the game list supports the specified ui elements
@@ -76,7 +150,7 @@ bool CFavoriteGames::SupportsItem(InterfaceItem_e item)
 void CFavoriteGames::RefreshComplete( NServerResponse response )
 {
 	SetRefreshing(false);
-	if ( steamapicontext->SteamMatchmaking() && steamapicontext->SteamMatchmaking()->GetFavoriteGameCount() == 0 )
+	if ( m_Favorites.Count() == 0 )
 	{
 		// set empty message
 		m_pGameList->SetEmptyListText("#ServerBrowser_NoFavoriteServers");
@@ -122,24 +196,40 @@ void CFavoriteGames::OnOpenContextMenu(int itemID)
 //-----------------------------------------------------------------------------
 void CFavoriteGames::OnRemoveFromFavorites()
 {
-	if ( !steamapicontext->SteamMatchmakingServers() || !steamapicontext->SteamMatchmaking() )
-		return;
-
-	// iterate the selection
-	for ( int iGame = 0; iGame < m_pGameList->GetSelectedItemsCount(); iGame++ )
+	// iterate the selection bottom-up so removing rows stays valid
+	for ( int iGame = m_pGameList->GetSelectedItemsCount() - 1; iGame >= 0; iGame-- )
 	{
 		int itemID = m_pGameList->GetSelectedItem( iGame );
 		int serverID = m_pGameList->GetItemData(itemID)->userData;
-		
-		gameserveritem_t *pServer = steamapicontext->SteamMatchmakingServers()->GetServerDetails( m_hRequest, serverID );
-		
+
+		newgameserver_t *pServer = GetServer( serverID );
 		if ( pServer )
 		{
-			steamapicontext->SteamMatchmaking()->RemoveFavoriteGame( pServer->m_nAppID, pServer->m_NetAdr.GetIP(), pServer->m_NetAdr.GetConnectionPort(), pServer->m_NetAdr.GetQueryPort(), k_unFavoriteFlagFavorite );
+			for ( int i = 0; i < m_Favorites.Count(); i++ )
+			{
+				if ( m_Favorites[i].m_NetAdr.CompareAdr( pServer->m_NetAdr ) )
+				{
+					m_Favorites.Remove( i );
+					break;
+				}
+			}
+
+			// the row leaves the list right away (reference behavior), and
+			// the dead mark keeps any in-flight reply from re-adding it
+			int iMap = m_mapServers.Find( serverID );
+			if ( iMap != m_mapServers.InvalidIndex() )
+			{
+				if ( m_pGameList->IsValidItemID( m_mapServers[iMap].m_iListID ) )
+					m_pGameList->RemoveItem( m_mapServers[iMap].m_iListID );
+				m_mapServers.RemoveAt( iMap );
+			}
+			m_serversInfo[serverID].m_bDoNotRefresh = true;
 		}
 	}
 
-	UpdateStatus();	
+	SaveFavoritesList();
+
+	UpdateStatus();
 	InvalidateLayout();
 	Repaint();
 }
@@ -160,20 +250,11 @@ void CFavoriteGames::OnAddServerByName()
 //-----------------------------------------------------------------------------
 void CFavoriteGames::OnAddCurrentServer()
 {
-	gameserveritem_t *pConnected = ServerBrowserDialog().GetCurrentConnectedServer();
+	newgameserver_t *pConnected = ServerBrowserDialog().GetCurrentConnectedServer();
 
-	if ( pConnected && steamapicontext->SteamMatchmaking() )
+	if ( pConnected && pConnected->m_NetAdr.GetPort() )
 	{
-		steamapicontext->SteamMatchmaking()->AddFavoriteGame( pConnected->m_nAppID, pConnected->m_NetAdr.GetIP(), pConnected->m_NetAdr.GetConnectionPort(), pConnected->m_NetAdr.GetQueryPort(), k_unFavoriteFlagFavorite, time( NULL ) );
-		m_bRefreshOnListReload = true;
-
-		if ( GameSupportsReplay() )
-		{
-			// send command to propagate to the client so the client can send it on to the GC
-			char command[ 256 ];
-			Q_snprintf( command, Q_ARRAYSIZE( command ), "rfgc %s\n", pConnected->m_NetAdr.GetConnectionAddressString() );
-			g_pRunGameEngine->AddTextCommand( command );
-		}
+		AddServerToFavorites( *pConnected );
 	}
 }
 

@@ -106,17 +106,16 @@ void CBlacklistedServerManager::SaveToFile( const char *pszFilename )
 //-----------------------------------------------------------------------------
 // Purpose: Add the given server to the blacklist. Return added server.
 //-----------------------------------------------------------------------------
-blacklisted_server_t *CBlacklistedServerManager::AddServer( gameserveritem_t &server )
+blacklisted_server_t *CBlacklistedServerManager::AddServer( newgameserver_t &server )
 {
 	// Make sure we don't already have this IP in the list somewhere
-	netadr_t netAdr( server.m_NetAdr.GetIP(), server.m_NetAdr.GetConnectionPort() );
+	netadr_t netAdr( server.m_NetAdr.GetIPHostByteOrder(), server.m_NetAdr.GetPort() );
 
-	// Don't let them add reserved addresses to their blacklists
- 	if ( netAdr.IsReservedAdr() )
- 		return NULL;
-
+	// LAN/private addresses are ordinary servers here (self-hosted masters,
+	// friends on a LAN), so unlike the stock browser every valid address may
+	// be blacklisted
 	int iIdx = m_Blacklist.AddToTail();
-	V_strncpy( m_Blacklist[iIdx].m_szServerName, server.GetName(), sizeof( m_Blacklist[iIdx].m_szServerName ) );
+	V_strncpy( m_Blacklist[iIdx].m_szServerName, server.m_szServerName, sizeof( m_Blacklist[iIdx].m_szServerName ) );
 
 	time_t today;
 	time( &today );
@@ -135,10 +134,7 @@ blacklisted_server_t *CBlacklistedServerManager::AddServer( const char *serverNa
 {
 	netadr_t netAdr( serverIP, serverPort );
 
-	// Don't let them add reserved addresses to their blacklists
- 	if ( netAdr.IsReservedAdr() )
- 		return NULL;
-
+	// LAN/private addresses may be blacklisted here (see AddServer above)
 	int iIdx = m_Blacklist.AddToTail();
 
 	V_strncpy( m_Blacklist[iIdx].m_szServerName, serverName, sizeof( m_Blacklist[iIdx].m_szServerName ) );
@@ -161,10 +157,7 @@ blacklisted_server_t *CBlacklistedServerManager::AddServer( const char *serverNa
 {
 	netadr_t netAdr( netAddressString );
 
-	// Don't let them add reserved addresses to their blacklists
-	if ( netAdr.IsReservedAdr() )
-		return NULL;
-
+	// LAN/private addresses may be blacklisted here (see AddServer above)
 	int iIdx = m_Blacklist.AddToTail();
 
 	V_strncpy( m_Blacklist[iIdx].m_szServerName, serverName, sizeof( m_Blacklist[iIdx].m_szServerName ) );
@@ -210,9 +203,9 @@ blacklisted_server_t *CBlacklistedServerManager::GetServer( int iServerID )
 //-----------------------------------------------------------------------------
 // Purpose: Returns true if given server is blacklisted
 //-----------------------------------------------------------------------------
-bool CBlacklistedServerManager::IsServerBlacklisted( const gameserveritem_t &server ) const
+bool CBlacklistedServerManager::IsServerBlacklisted( const newgameserver_t &server ) const
 {
-	return IsServerBlacklisted( server.m_NetAdr.GetIP(), server.m_NetAdr.GetConnectionPort(), server.GetName() );
+	return IsServerBlacklisted( server.m_NetAdr.GetIPHostByteOrder(), server.m_NetAdr.GetPort(), server.m_szServerName );
 }
 
 
@@ -257,9 +250,9 @@ bool CBlacklistedServerManager::IsServerBlacklisted( uint32 serverIP, int server
 //-----------------------------------------------------------------------------
 // Purpose: Returns true if the given server is allowed to be blacklisted at all
 //-----------------------------------------------------------------------------
-bool CBlacklistedServerManager::CanServerBeBlacklisted( gameserveritem_t &server ) const
+bool CBlacklistedServerManager::CanServerBeBlacklisted( newgameserver_t &server ) const
 {
-	return CanServerBeBlacklisted( server.m_NetAdr.GetIP(), server.m_NetAdr.GetConnectionPort(), server.GetName() );
+	return CanServerBeBlacklisted( server.m_NetAdr.GetIPHostByteOrder(), server.m_NetAdr.GetPort(), server.m_szServerName );
 }
 
 
@@ -273,10 +266,7 @@ bool CBlacklistedServerManager::CanServerBeBlacklisted( uint32 serverIP, int ser
 	if ( !netAdr.IsValid() )
 		return false;
 
-	// Don't let them add reserved addresses to their blacklists
-	if ( netAdr.IsReservedAdr() )
-		return false;
-
+	// LAN/private addresses are blacklisted like any other here
 	return true;
 }
 

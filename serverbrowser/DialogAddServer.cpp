@@ -108,11 +108,8 @@ CDialogAddServer::CDialogAddServer(vgui::Panel *parent, IGameList *gameList) : F
 //-----------------------------------------------------------------------------
 CDialogAddServer::~CDialogAddServer()
 {
-	FOR_EACH_VEC( m_Queries, i )
-	{
-		if ( steamapicontext->SteamMatchmakingServers() )
-			steamapicontext->SteamMatchmakingServers()->CancelServerQuery( m_Queries[ i ] );
-	}
+	if ( g_pServersInfo )
+		g_pServersInfo->StopAddressRefresh();
 }
 
 //-----------------------------------------------------------------------------
@@ -203,7 +200,7 @@ void CDialogAddServer::OnOK()
 //-----------------------------------------------------------------------------
 void CDialogAddServer::TestServers()
 {
-	if ( !steamapicontext->SteamMatchmakingServers() )
+	if ( !g_pServersInfo )
 		return;
 
 	m_pDiscoveredGames->SetEmptyListText( "" );
@@ -255,10 +252,7 @@ void CDialogAddServer::TestServers()
 	m_pTabPanel->AddPage( m_pDiscoveredGames, str );
 	m_pTabPanel->InvalidateLayout();
 	
-/*	FOR_EACH_VEC( vecAdress, iAddress )
-	{
-		m_Queries.AddToTail( steamapicontext->SteamMatchmakingServers()->PingServer( vecAdress[ iAddress ].GetIPHostByteOrder(), vecAdress[ iAddress ].GetPort(), this ) );
-	}*/
+	g_pServersInfo->RequestServerListByAddress( vecAdress.Base(), vecAdress.Count(), this );
 }
 
 
@@ -302,6 +296,17 @@ void CDialogAddServer::ServerResponded( newgameserver_t &server )
 void CDialogAddServer::ServerFailedToRespond()
 {
 	m_pDiscoveredGames->SetEmptyListText( "#ServerBrowser_ServerNotResponding" );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: our address query finished
+//-----------------------------------------------------------------------------
+void CDialogAddServer::RefreshComplete( NServerResponse response )
+{
+	if ( m_pDiscoveredGames->GetItemCount() == 0 )
+	{
+		ServerFailedToRespond();
+	}
 }
 
 void CDialogAddServer::ApplySchemeSettings( IScheme *pScheme )
@@ -355,4 +360,24 @@ void CDialogAddServer::OnItemSelected()
 void CDialogAddServer::FinishAddServer( newgameserver_t &pServer )
 {
 	ServerBrowserDialog().AddServerToFavorites( pServer );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+//-----------------------------------------------------------------------------
+void CDialogAddBlacklistedServer::FinishAddServer( newgameserver_t &pServer )
+{
+	ServerBrowserDialog().AddServerToBlacklist( pServer );
+	ServerBrowserDialog().BlacklistsChanged();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+//-----------------------------------------------------------------------------
+void CDialogAddBlacklistedServer::ApplySchemeSettings( vgui::IScheme *pScheme )
+{
+	BaseClass::ApplySchemeSettings( pScheme );
+
+	m_pAddServerButton->SetText( "#ServerBrowser_AddAddressToBlacklist" );
+	m_pAddSelectedServerButton->SetText( "#ServerBrowser_AddSelectedToBlacklist" );
 }

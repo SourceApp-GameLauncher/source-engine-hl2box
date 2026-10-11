@@ -69,16 +69,19 @@ CServerBrowserDialog::CServerBrowserDialog(vgui::Panel *parent) : Frame(parent, 
 	m_pFavorites = NULL;
 	m_pHistory = NULL;
 	m_pLanGames = NULL;
+	m_pBlacklist = NULL;
+
+	// Do this before LoadUserData() so it loads the blacklist file properly
+	m_pBlacklist = new CBlacklistedServers(this);
 
 	LoadUserData();
 
-	m_pInternetGames = new CInternetGames(this);
-/*
-	m_pFavorites = new CFavoriteGames(this);
-	m_pHistory = new CHistoryGames(this);
+	m_pInternetGames = new CCustomGames(this);
 	m_pSpectateGames = new CSpectateGames(this);
 	m_pLanGames = new CLanGames(this);
-*/
+	m_pFavorites = new CFavoriteGames(this);
+	m_pHistory = new CHistoryGames(this);
+	m_pFriendsGames = new CFriendsGames(this);
 
 	int w = 640; int h = 384;
 
@@ -96,10 +99,15 @@ CServerBrowserDialog::CServerBrowserDialog(vgui::Panel *parent) : Frame(parent, 
 	m_pTabPanel = new PropertySheet(this, "GameTabs");
 	m_pTabPanel->SetTabWidth(72);
 	m_pTabPanel->AddPage(m_pInternetGames, "#ServerBrowser_InternetTab");
-	//m_pTabPanel->AddPage(m_pFavorites, "#ServerBrowser_FavoritesTab");
-	//m_pTabPanel->AddPage(m_pHistory, "#ServerBrowser_HistoryTab");
-	//m_pTabPanel->AddPage(m_pSpectateGames, "#ServerBrowser_SpectateTab");
-	//m_pTabPanel->AddPage(m_pLanGames, "#ServerBrowser_LanTab");
+	m_pTabPanel->AddPage(m_pFavorites, "#ServerBrowser_FavoritesTab");
+	m_pTabPanel->AddPage(m_pHistory, "#ServerBrowser_HistoryTab");
+	m_pTabPanel->AddPage(m_pSpectateGames, "#ServerBrowser_SpectateTab");
+	m_pTabPanel->AddPage(m_pLanGames, "#ServerBrowser_LanTab");
+	m_pTabPanel->AddPage(m_pFriendsGames, "#ServerBrowser_FriendsTab");
+	if ( m_pBlacklist )
+	{
+		m_pTabPanel->AddPage(m_pBlacklist, "#ServerBrowser_BlacklistTab");
+	}
 
 	m_pTabPanel->AddActionSignalTarget(this);
 
@@ -112,12 +120,11 @@ CServerBrowserDialog::CServerBrowserDialog(vgui::Panel *parent) : Frame(parent, 
 	// load current tab
 	const char *gameList = m_pSavedData->GetString("GameList");
 
-/*	if (!Q_stricmp(gameList, "spectate"))
+	if (!Q_stricmp(gameList, "spectate"))
 	{
 		m_pTabPanel->SetActivePage(m_pSpectateGames);
 	}
-	else 
-	if (!Q_stricmp(gameList, "favorites"))
+	else if (!Q_stricmp(gameList, "favorites"))
 	{
 		m_pTabPanel->SetActivePage(m_pFavorites);
 	}
@@ -129,7 +136,15 @@ CServerBrowserDialog::CServerBrowserDialog(vgui::Panel *parent) : Frame(parent, 
 	{
 		m_pTabPanel->SetActivePage(m_pLanGames);
 	}
-	else*/
+	else if (!Q_stricmp(gameList, "friends"))
+	{
+		m_pTabPanel->SetActivePage(m_pFriendsGames);
+	}
+	else if (!Q_stricmp(gameList, "blacklist") && m_pBlacklist)
+	{
+		m_pTabPanel->SetActivePage(m_pBlacklist);
+	}
+	else
 	{
 		m_pTabPanel->SetActivePage(m_pInternetGames);
 	}
@@ -247,6 +262,11 @@ void CServerBrowserDialog::LoadUserData()
 			m_pFavorites->StartRefresh();
 	}
 
+	if ( m_pBlacklist )
+	{
+		m_pBlacklist->LoadBlacklistedList();
+	}
+
 	InvalidateLayout();
 	Repaint();
 }
@@ -260,12 +280,11 @@ void CServerBrowserDialog::SaveUserData()
 	m_pSavedData->LoadFromFile( g_pFullFileSystem, "ServerBrowser.vdf", "CONFIG");
 
 	// set the current tab
-	/*if (m_pGameList == m_pSpectateGames)
+	if (m_pGameList == m_pSpectateGames)
 	{
 		m_pSavedData->SetString("GameList", "spectate");
 	}
-	else
-	if (m_pGameList == m_pFavorites)
+	else if (m_pGameList == m_pFavorites)
 	{
 		m_pSavedData->SetString("GameList", "favorites");
 	}
@@ -277,7 +296,17 @@ void CServerBrowserDialog::SaveUserData()
 	{
 		m_pSavedData->SetString("GameList", "history");
 	}
-	else*/
+	else if (m_pGameList == m_pFriendsGames)
+	{
+		m_pSavedData->SetString("GameList", "friends");
+	}
+	else if ( m_pBlacklist && m_pTabPanel->GetActivePage() == m_pBlacklist )
+	{
+		// The blacklist page is not an IGameList (m_pGameList can never point
+		// at it), so identify it through the active page panel.
+		m_pSavedData->SetString("GameList", "blacklist");
+	}
+	else
 	{
 		m_pSavedData->SetString("GameList", "internet");
 	}
@@ -372,16 +401,51 @@ CServerBrowserDialog *CServerBrowserDialog::GetInstance()
 //-----------------------------------------------------------------------------
 void CServerBrowserDialog::AddServerToFavorites(newgameserver_t &server)
 {
-/*	if ( steamapicontext->SteamMatchmaking() )
+	if ( m_pFavorites )
 	{
-		steamapicontext->SteamMatchmaking()->AddFavoriteGame( 
-			server.m_nAppID, 
-			server.m_NetAdr.GetIP(), 
-			server.m_NetAdr.GetConnectionPort(),		
-			server.m_NetAdr.GetQueryPort(), 
-			k_unFavoriteFlagFavorite, 
-			time( NULL ) );
-	}*/
+		m_pFavorites->AddServerToFavorites( server );
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Adds a server to the blacklist
+//-----------------------------------------------------------------------------
+void CServerBrowserDialog::AddServerToBlacklist(newgameserver_t &server)
+{
+	if ( m_pBlacklist )
+	{
+		m_pBlacklist->AddServer( server );
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Returns true if the server is on the blacklist
+//-----------------------------------------------------------------------------
+bool CServerBrowserDialog::IsServerBlacklisted( newgameserver_t &server )
+{
+	if ( m_pBlacklist )
+	{
+		return m_pBlacklist->IsServerBlacklisted( server );
+	}
+
+	return false;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: notifies pages that the blacklist changed
+//-----------------------------------------------------------------------------
+void CServerBrowserDialog::BlacklistsChanged()
+{
+	if ( m_pInternetGames )
+		m_pInternetGames->ApplyGameFilters();
+	if ( m_pSpectateGames )
+		m_pSpectateGames->ApplyGameFilters();
+	if ( m_pFavorites )
+		m_pFavorites->ApplyGameFilters();
+	if ( m_pHistory )
+		m_pHistory->ApplyGameFilters();
+	if ( m_pLanGames )
+		m_pLanGames->ApplyGameFilters();
 }
 
 //-----------------------------------------------------------------------------
@@ -445,7 +509,7 @@ CDialogGameInfo *CServerBrowserDialog::OpenGameInfoDialog( IGameList *gameList, 
 	CDialogGameInfo *gameDialog = new CDialogGameInfo( NULL, pServer->m_NetAdr.GetIPHostByteOrder(), 0, pServer->m_NetAdr.GetPort(), gameList->GetConnectCode() );
 	gameDialog->SetParent(GetVParent());
 	gameDialog->AddActionSignalTarget(this);
-	gameDialog->Run( "Test" /*pServer->GetName()*/ );
+	gameDialog->Run( pServer->m_szServerName );
 	int i = m_GameInfoDialogs.AddToTail();
 	m_GameInfoDialogs[i] = gameDialog;
 	return gameDialog;
@@ -554,15 +618,13 @@ void CServerBrowserDialog::OnConnectToGame( KeyValues *pMessageValues )
 
 	uint32 unIP = htonl( ip );
 
-	memset( &m_CurrentConnection, 0, sizeof(gameserveritem_t) );
+	memset( &m_CurrentConnection, 0, sizeof(newgameserver_t) );
 	m_CurrentConnection.m_NetAdr.SetIP( unIP );
-	m_CurrentConnection.m_NetAdr.SetQueryPort( queryPort );
-	m_CurrentConnection.m_NetAdr.SetConnectionPort( (unsigned short)connectionPort );
+	m_CurrentConnection.m_NetAdr.SetPort( (unsigned short)queryPort );
 
-	if (m_pHistory && steamapicontext->SteamMatchmaking() )
+	if ( m_pHistory )
 	{
-		steamapicontext->SteamMatchmaking()->AddFavoriteGame( 0, unIP, connectionPort, queryPort, k_unFavoriteFlagHistory, time( NULL ) );
-		m_pHistory->SetRefreshOnReload();
+		m_pHistory->AddServerToHistory( m_CurrentConnection );
 	}
 
 	// tell the game info dialogs, so they can cancel if we have connected
@@ -579,7 +641,8 @@ void CServerBrowserDialog::OnConnectToGame( KeyValues *pMessageValues )
 	}
 
 	// forward to favorites
-	//m_pFavorites->OnConnectToGame();
+	if ( m_pFavorites )
+		m_pFavorites->OnConnectToGame();
 
 	m_bCurrentlyConnected = true;
 
@@ -629,10 +692,11 @@ void CServerBrowserDialog::OnConnectToGame( KeyValues *pMessageValues )
 void CServerBrowserDialog::OnDisconnectFromGame( void )
 {
 	m_bCurrentlyConnected = false;
-	memset( &m_CurrentConnection, 0, sizeof(gameserveritem_t) );
+	memset( &m_CurrentConnection, 0, sizeof(newgameserver_t) );
 
 	// forward to favorites
-	//m_pFavorites->OnDisconnectFromGame();
+	if ( m_pFavorites )
+		m_pFavorites->OnDisconnectFromGame();
 }
 
 //-----------------------------------------------------------------------------

@@ -13,6 +13,10 @@
 #define MAX_GAME_DESCRIPTION 8192
 #define MAX_SERVER_NAME 2048
 
+// Extra-data flag bits carried in the server info reply
+#define S2A_EXTRA_DATA_HAS_GAMETAG_DATA 0x01
+#define S2A_EXTRA_DATA_IS_SOURCETV 0x02
+
 enum NServerResponse
 {
 	nServerResponded = 0,
@@ -89,11 +93,22 @@ class IServersInfo
 public:
 	virtual void RequestInternetServerList( const char *gamedir, IServerListResponse *response ) = 0;
 	virtual void RequestLANServerList( const char *gamedir, IServerListResponse *response ) = 0;
+
+	// Queries an explicit address list (favorites/history/direct connect).  Every
+	// address that answers is reported through response; RefreshComplete follows
+	// once all addresses have answered or the query window expires.
+	virtual void RequestServerListByAddress( const netadr_t *pAdrs, int nCount, IServerListResponse *response ) = 0;
+
+	// Single-server queries for the game info dialog.  The reply arrives through
+	// the registered response object; a re-request supersedes the previous one.
+	virtual void PingServer( const netadr_t &adr, IServerPingResponse *response ) = 0;
+	virtual void RequestPlayerList( const netadr_t &adr, IServerPlayersResponse *response ) = 0;
+	virtual void CancelPlayerRequest() = 0;
+
+	// Stops whatever refresh the address-session (not the internet/LAN list) is running
+	virtual void StopAddressRefresh() = 0;
+
 	virtual void StopRefresh() = 0;
-
-	//virtual HServerQuery PingServer( uint32 unIP, uint16 usPort, ISteamMatchmakingPingResponse *pRequestServersResponse ) = 0; 
-	//virtual HServerQuery PlayerDetails( uint32 unIP, uint16 usPort, ISteamMatchmakingPlayersResponse *pRequestServersResponse ) = 0;
-
 };
 #define SERVERLIST_INTERFACE_VERSION "ServerList001"
 

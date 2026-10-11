@@ -24,7 +24,7 @@ public:
 	// property page handlers
 	virtual void OnPageShow();
 
-	virtual bool CheckTagFilter( gameserveritem_t &server );
+	virtual bool CheckTagFilter( newgameserver_t &server ) OVERRIDE;
 
 protected:
 	// filters by spectator games

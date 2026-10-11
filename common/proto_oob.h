@@ -96,6 +96,11 @@
 #define C2S_INFOREQUEST			'v'
 #define S2C_INFOREPLY			'K'
 
+// fork extension: the info reply carries no player list, so the browser asks
+// the server for one explicitly ('P' is taken by M2A_ACTIVEMODS3)
+#define C2S_PLAYERREQUEST		'p'
+#define S2C_PLAYERREPLY			'O'
+
 // SERVER TO CLIENT/ANY
 
 // Client connection is initiated by requesting a challenge value

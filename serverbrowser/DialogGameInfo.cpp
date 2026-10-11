@@ -55,9 +55,6 @@ CDialogGameInfo::CDialogGameInfo( vgui::Panel *parent, int serverIP, int queryPo
 	m_bServerNotResponding = false;
 	m_bShowingExtendedOptions = false;
 	m_SteamIDFriend = 0;
-	m_hPingQuery = HSERVERQUERY_INVALID;
-	m_hPlayersQuery = HSERVERQUERY_INVALID;
-	m_bPlayerListUpdatePending = false;
 
 	m_szPassword[0] = 0;
 
@@ -93,7 +90,8 @@ CDialogGameInfo::CDialogGameInfo( vgui::Panel *parent, int serverIP, int queryPo
 
 	// create a new server to watch
 	memset(&m_Server, 0, sizeof(m_Server) );
-	m_Server.m_NetAdr.Init( serverIP, queryPort, connectionPort );
+	m_Server.m_NetAdr.SetIP( serverIP );
+	m_Server.m_NetAdr.SetPort( (unsigned short)connectionPort );
 
 	// refresh immediately
 	RequestInfo();
@@ -112,13 +110,8 @@ CDialogGameInfo::CDialogGameInfo( vgui::Panel *parent, int serverIP, int queryPo
 //-----------------------------------------------------------------------------
 CDialogGameInfo::~CDialogGameInfo()
 {
-	if ( !steamapicontext->SteamMatchmakingServers() )
-		return;
-
-	if ( m_hPingQuery != HSERVERQUERY_INVALID )
-		steamapicontext->SteamMatchmakingServers()->CancelServerQuery( m_hPingQuery );
-	if ( m_hPlayersQuery != HSERVERQUERY_INVALID )
-		steamapicontext->SteamMatchmakingServers()->CancelServerQuery( m_hPlayersQuery );
+	if ( g_pServersInfo )
+		g_pServersInfo->CancelPlayerRequest();
 }
 
 //-----------------------------------------------------------------------------
@@ -126,13 +119,40 @@ CDialogGameInfo::~CDialogGameInfo()
 //-----------------------------------------------------------------------------
 void CDialogGameInfo::SendPlayerQuery( uint32 unIP, uint16 usQueryPort )
 {
-	if ( !steamapicontext->SteamMatchmakingServers() )
-		return;
+	netadr_t adr( unIP, usQueryPort );
+	g_pServersInfo->RequestPlayerList( adr, this );
+}
 
-	if ( m_hPlayersQuery != HSERVERQUERY_INVALID )
-		steamapicontext->SteamMatchmakingServers()->CancelServerQuery( m_hPlayersQuery );
-	m_hPlayersQuery = steamapicontext->SteamMatchmakingServers()->PlayerDetails( unIP, usQueryPort, this );
-	m_bPlayerListUpdatePending = true;
+//-----------------------------------------------------------------------------
+// Purpose: one player entry arrived from the server
+//-----------------------------------------------------------------------------
+void CDialogGameInfo::AddPlayerToList( const char *playerName, int score, float timePlayedSeconds )
+{
+	KeyValues *kv = new KeyValues( "player" );
+	kv->SetString( "PlayerName", playerName );
+	kv->SetInt( "Score", score );
+	kv->SetInt( "Time", (int)timePlayedSeconds );
+	m_pPlayerList->AddItem( kv, 0, false, false );
+	kv->deleteThis();
+	Repaint();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: the server never answered the player query
+//-----------------------------------------------------------------------------
+void CDialogGameInfo::PlayersFailedToRespond()
+{
+	ClearPlayerList();
+	Repaint();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: all player entries have been delivered
+//-----------------------------------------------------------------------------
+void CDialogGameInfo::PlayersRefreshComplete()
+{
+	InvalidateLayout();
+	Repaint();
 }
 
 
@@ -163,14 +183,15 @@ void CDialogGameInfo::ChangeGame( int serverIP, int queryPort, unsigned short co
 {
 	memset( &m_Server, 0x0, sizeof(m_Server) );
 
-	m_Server.m_NetAdr.Init( serverIP, queryPort, connectionPort );
+	m_Server.m_NetAdr.SetIP( serverIP );
+	m_Server.m_NetAdr.SetPort( (unsigned short)connectionPort );
 
 	// remember the dialogs position so we can keep it the same
 	int x, y;
 	GetPos( x, y );
 
 	// see if we need to change dialog state
-	if ( !m_Server.m_NetAdr.GetIP() || !m_Server.m_NetAdr.GetQueryPort() )
+	if ( !m_Server.m_NetAdr.GetIPHostByteOrder() || !m_Server.m_NetAdr.GetPort() )
 	{
 		// not in a server, load the simple settings dialog
 		SetMinimumSize(0, 0);
@@ -230,20 +251,14 @@ void CDialogGameInfo::SetFriend( uint64 ulSteamIDFriend )
 {
 	// set the title to include the friends name
 	SetTitle( "#ServerBrowser_GameInfoWithNameTitle", true );
-	SetDialogVariable( "game", steamapicontext->SteamFriends()->GetFriendPersonaName( ulSteamIDFriend ) );
-	SetDialogVariable( "friend", steamapicontext->SteamFriends()->GetFriendPersonaName( ulSteamIDFriend ) );
+
+	// The friends graph does not exist on a nosteam install, so only the
+	// association is recorded; the game-following half is unreachable anyway.
+	SetDialogVariable( "game", "" );
+	SetDialogVariable( "friend", "" );
 
 	// store the friend we're associated with
 	m_SteamIDFriend = ulSteamIDFriend;
-
-	FriendGameInfo_t friendGameInfo;
-	if ( steamapicontext->SteamFriends()->GetFriendGamePlayed( ulSteamIDFriend, &friendGameInfo ) )
-	{
-		uint16 usConnPort = friendGameInfo.m_usGamePort;
-		if ( friendGameInfo.m_usQueryPort < QUERY_PORT_ERROR )
-			usConnPort = friendGameInfo.m_usQueryPort;
-		ChangeGame( friendGameInfo.m_unGameIP, usConnPort, friendGameInfo.m_usGamePort );
-	}
 }
 
 
@@ -263,7 +278,7 @@ void CDialogGameInfo::PerformLayout()
 {
 	BaseClass::PerformLayout();
 
-	SetControlString( "ServerText", m_Server.GetName() );
+	SetControlString( "ServerText", m_Server.m_szServerName );
 	SetControlString( "GameText", m_Server.m_szGameDescription );
 	SetControlString( "MapText", m_Server.m_szMap );
 	SetControlString( "GameTags", m_Server.m_szGameTags );
@@ -273,7 +288,7 @@ void CDialogGameInfo::PerformLayout()
 	{
 		SetControlString("SecureText", "");
 	}
-	else if ( m_Server.m_bSecure )
+	else if ( false ) // no VAC data in the nosteam reply
 	{
 		SetControlString("SecureText", "#ServerBrowser_Secure");
 	}
@@ -293,12 +308,12 @@ void CDialogGameInfo::PerformLayout()
 	}
 	SetControlString("PlayersText", buf);
 
-	SetControlString("ServerIPText", m_Server.m_NetAdr.GetConnectionAddressString() );
+	SetControlString("ServerIPText", m_Server.m_NetAdr.ToString() );
 	m_pConnectButton->SetEnabled(true);
 
-/*	if ( m_Server.m_NetAdr.GetIP() && m_Server.m_NetAdr.GetQueryPort() )
+/*	if ( m_Server.m_NetAdr.GetIPHostByteOrder() && m_Server.m_NetAdr.GetPort() )
 	{
-		SetControlString("ServerIPText", m_Server.m_NetAdr.GetConnectionAddressString() );
+		SetControlString("ServerIPText", m_Server.m_NetAdr.ToString() );
 		m_pConnectButton->SetEnabled(true);
 		if ( m_pAutoRetry->IsSelected() )
 		{
@@ -409,10 +424,9 @@ void CDialogGameInfo::OnConnect()
 	// need to refresh server before attempting to connect, to make sure there is enough room on the server
 	m_iRequestRetry = 0;
 
-	ConnectToServer();
-
-	//TODO(nillerusr): restore this later
-	//RequestInfo();
+	// keep the dialog open and wait for the info reply; the reply re-enters
+	// here through ServerResponded (m_bConnecting) and only then joins
+	RequestInfo();
 }
 
 //-----------------------------------------------------------------------------
@@ -422,7 +436,7 @@ void CDialogGameInfo::OnConnectToGame( int ip, int port )
 {
 	// if we just connected to the server we were looking at, close the dialog
 	// important so that we don't auto-retry a server that we are already on
-	if ( m_Server.m_NetAdr.GetIP() == (uint32)ip && m_Server.m_NetAdr.GetConnectionPort() == (uint16)port )
+	if ( m_Server.m_NetAdr.GetIPHostByteOrder() == (uint32)ip && m_Server.m_NetAdr.GetPort() == (uint16)port )
 	{
 		// close this dialog
 		Close();
@@ -492,16 +506,15 @@ void CDialogGameInfo::ShowAutoRetryOptions(bool state)
 //-----------------------------------------------------------------------------
 void CDialogGameInfo::RequestInfo()
 {
-	if ( !steamapicontext->SteamMatchmakingServers() )
+	if ( !g_pServersInfo )
 		return;
 
 	if ( m_iRequestRetry == 0 )
 	{
 		// reset the time at which we auto-refresh
 		m_iRequestRetry = system()->GetTimeMillis() + RETRY_TIME;
-		if ( m_hPingQuery != HSERVERQUERY_INVALID )
-			steamapicontext->SteamMatchmakingServers()->CancelServerQuery( m_hPingQuery );
-		m_hPingQuery = steamapicontext->SteamMatchmakingServers()->PingServer( m_Server.m_NetAdr.GetIP(), m_Server.m_NetAdr.GetQueryPort(), this );
+		netadr_t adr( m_Server.m_NetAdr.GetIPHostByteOrder(), m_Server.m_NetAdr.GetPort() );
+		g_pServersInfo->PingServer( adr, this );
 	}
 }
 
@@ -521,29 +534,20 @@ void CDialogGameInfo::OnTick()
 //-----------------------------------------------------------------------------
 // Purpose: called when the server has successfully responded
 //-----------------------------------------------------------------------------
-void CDialogGameInfo::ServerResponded( gameserveritem_t &server )
+void CDialogGameInfo::ServerResponded( newgameserver_t &server )
 {
-	if( m_Server.m_NetAdr.GetQueryPort() &&
-		m_Server.m_NetAdr.GetQueryPort() != server.m_NetAdr.GetQueryPort() )
-	{
-		return; // this is not the guy we talked about
-	}
+	uint16 connectionPort = m_Server.m_NetAdr.GetPort();
 
-	uint16 connectionPort = m_Server.m_NetAdr.GetConnectionPort();
-
-	// FIXME(johns): This is a workaround for a steam bug, where it inproperly reads signed bytes out of the
-	//               message. Once the upstream fix makes it into our SteamSDK, this block can be removed.
-	server.m_nPlayers    = (uint8)(int8)server.m_nPlayers;
-	server.m_nBotPlayers = (uint8)(int8)server.m_nBotPlayers;
-	server.m_nMaxPlayers = (uint8)(int8)server.m_nMaxPlayers;
-
-	m_hPingQuery = HSERVERQUERY_INVALID;
 	m_Server = server;
 
-	// Preserve our connection port, since we may be querying the sourceTV port but getting a response for the real
-	// server. This is a limitation of the steam Matchmaking API where it doesn't properly send us a sourcetv response
-	// but instead the main server's response (unless we're connecting to a proxy, THEN we get the sourcetv response!)
-	m_Server.m_NetAdr.SetConnectionPort( connectionPort );
+	// Preserve our connection port: the reply came from the query port we sent to
+	m_Server.m_NetAdr.SetPort( connectionPort );
+	m_Server.m_bHadSuccessfulResponse = true;
+
+	// a fresh info reply makes the previous player roster stale; the player
+	// query below repopulates the list from scratch (appending onto the old
+	// rows used to double the players on every refresh)
+	ClearPlayerList();
 
 	if ( m_bConnecting )
 	{
@@ -567,7 +571,7 @@ void CDialogGameInfo::ServerResponded( gameserveritem_t &server )
 	}
 	else
 	{
-		SendPlayerQuery( server.m_NetAdr.GetIP(), server.m_NetAdr.GetQueryPort() );
+		SendPlayerQuery( server.m_NetAdr.GetIPHostByteOrder(), server.m_NetAdr.GetPort() );
 	}
 
 	m_bServerNotResponding = false;
@@ -603,7 +607,7 @@ void CDialogGameInfo::ServerFailedToRespond()
 // way we could ask the engine itself to construct arguments in ways that fit.
 // Might be worth the effort as we start to add more engines.
 //-----------------------------------------------------------------------------
-void CDialogGameInfo::ApplyConnectCommand( const gameserveritem_t &server )
+void CDialogGameInfo::ApplyConnectCommand( const newgameserver_t &server )
 {
 	char command[ 256 ];
 	// set the server password, if any
@@ -613,7 +617,7 @@ void CDialogGameInfo::ApplyConnectCommand( const gameserveritem_t &server )
 		g_pRunGameEngine->AddTextCommand( command );
 	}
 	// send engine command to change servers
-	Q_snprintf( command, Q_ARRAYSIZE( command ), "connect %s %s\n", server.m_NetAdr.GetConnectionAddressString(), m_sConnectCode.String() );
+	Q_snprintf( command, Q_ARRAYSIZE( command ), "connect %s %s\n", server.m_NetAdr.ToString(), m_sConnectCode.String() );
 	g_pRunGameEngine->AddTextCommand( command );
 }
 
@@ -621,9 +625,9 @@ void CDialogGameInfo::ApplyConnectCommand( const gameserveritem_t &server )
 //-----------------------------------------------------------------------------
 // Purpose: Constructs game options to use when running a game to connect to a server
 //-----------------------------------------------------------------------------
-void CDialogGameInfo::ConstructConnectArgs( char *pchOptions, int cchOptions, const gameserveritem_t &server )
+void CDialogGameInfo::ConstructConnectArgs( char *pchOptions, int cchOptions, const newgameserver_t &server )
 {
-	Q_snprintf( pchOptions, cchOptions, " +connect %s", server.m_NetAdr.GetConnectionAddressString() );
+	Q_snprintf( pchOptions, cchOptions, " +connect %s", server.m_NetAdr.ToString() );
 	if ( m_szPassword[0] )
 	{
 		Q_strcat( pchOptions, " +password \"", cchOptions );
@@ -645,7 +649,7 @@ void CDialogGameInfo::ConnectToServer()
 	{
 		CDialogServerPassword *box = new CDialogServerPassword(this);
 		box->AddActionSignalTarget(this);
-		box->Activate( m_Server.GetName(), 0 );
+		box->Activate( m_Server.m_szServerName, 0 );
 		return;
 	}
 
@@ -673,9 +677,9 @@ void CDialogGameInfo::ConnectToServer()
 		char connectArgs[256];
 		ConstructConnectArgs( connectArgs, Q_ARRAYSIZE( connectArgs ), m_Server );
 		
-		if ( ( m_Server.m_bSecure && JoiningSecureServerCall() )|| !m_Server.m_bSecure )
+		if ( true ) // no VAC data in the nosteam reply
 		{
-			switch ( g_pRunGameEngine->RunEngine( m_Server.m_nAppID, gameDir, connectArgs ) )
+			switch ( g_pRunGameEngine->RunEngine( 0, gameDir, connectArgs ) )
 			{
 			case IRunGameEngine::k_ERunResultModNotInstalled:
 				{
@@ -713,13 +717,6 @@ void CDialogGameInfo::ConnectToServer()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: called when the current refresh list is complete
-//-----------------------------------------------------------------------------
-void CDialogGameInfo::RefreshComplete( EMatchMakingServerResponse response )
-{
-}
-
-//-----------------------------------------------------------------------------
 // Purpose: handles response from the get password dialog
 //-----------------------------------------------------------------------------
 void CDialogGameInfo::OnJoinServerWithPassword(const char *password)
@@ -740,47 +737,6 @@ void CDialogGameInfo::ClearPlayerList()
 	Repaint();
 }
 
-//-----------------------------------------------------------------------------
-// Purpose: on individual player added
-//-----------------------------------------------------------------------------
-void CDialogGameInfo::AddPlayerToList(const char *playerName, int score, float timePlayedSeconds)
-{
-	if ( m_bPlayerListUpdatePending )
-	{
-		m_bPlayerListUpdatePending = false;
-		m_pPlayerList->RemoveAll();
-	}
-
-	KeyValues *player = new KeyValues("player");
-	player->SetString("PlayerName", playerName);
-	player->SetInt("Score", score);
-	player->SetInt("TimeSec", (int)timePlayedSeconds);
-	
-	// construct a time string
-	int seconds = (int)timePlayedSeconds;
-	int minutes = seconds / 60;
-	int hours = minutes / 60;
-	seconds %= 60;
-	minutes %= 60;
-	char buf[64];
-	buf[0] = 0;
-	if (hours)
-	{
-		Q_snprintf(buf, sizeof(buf), "%dh %dm %ds", hours, minutes, seconds);	
-	}
-	else if (minutes)
-	{
-		Q_snprintf(buf, sizeof(buf), "%dm %ds", minutes, seconds);	
-	}
-	else
-	{
-		Q_snprintf(buf, sizeof(buf), "%ds", seconds);	
-	}
-	player->SetString("Time", buf);
-	
-	m_pPlayerList->AddItem(player, 0, false, true);
-	player->deleteThis();
-}
 
 //-----------------------------------------------------------------------------
 // Purpose: Sorting function for time column

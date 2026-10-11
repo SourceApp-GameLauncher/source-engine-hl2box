@@ -28,7 +28,7 @@ public:
 	// blacklist list, loads/saves from file
 	void LoadBlacklistedList();
 	void SaveBlacklistedList();
-	void AddServer(gameserveritem_t &server);
+	void AddServer(newgameserver_t &server);
 
 	virtual void ApplySchemeSettings(vgui::IScheme *pScheme);
 	
@@ -37,7 +37,8 @@ public:
 	void OnDisconnectFromGame( void );
 
 	blacklisted_server_t *GetBlacklistedServer( int iServerID );
-	bool IsServerBlacklisted(gameserveritem_t &server); 
+	bool IsServerBlacklisted(const newgameserver_t &server);
+
 
 private:
 	// context menu message handlers
