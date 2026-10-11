@@ -1815,7 +1815,17 @@ void CBasePanel::ApplySchemeSettings(IScheme *pScheme)
 		m_iGameTitlePos.RemoveAll();
 		for ( i=0; i<m_pGameMenuButtons.Count(); ++i )
 		{
-			m_pGameMenuButtons[i]->SetFont(pClientScheme->GetFont("ClientTitleFont", true));
+			if ( i == 1 )
+			{
+				// Subtitle line (gameinfo title2): a normal text font; the
+				// ClientTitleFont logo face maps letters to artwork glyphs.
+				vgui::HFont hSubTitleFont = pClientScheme->GetFont("ClientTitleFont2", true);
+				m_pGameMenuButtons[i]->SetFont( hSubTitleFont ? hSubTitleFont : pClientScheme->GetFont("ClientTitleFont", true) );
+			}
+			else
+			{
+				m_pGameMenuButtons[i]->SetFont(pClientScheme->GetFont("ClientTitleFont", true));
+			}
 			m_iGameTitlePos.AddToTail( coord() );
 			m_iGameTitlePos[i].x = atoi(pClientScheme->GetResourceString( CFmtStr( "Main.Title%d.X", i+1 ) ) );
 			m_iGameTitlePos[i].x = scheme()->GetProportionalScaledValue( m_iGameTitlePos[i].x );
