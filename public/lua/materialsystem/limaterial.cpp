@@ -295,6 +295,18 @@ static int IMaterial___tostring (lua_State *L) {
   return 1;
 }
 
+//-----------------------------------------------------------------------------
+// HL2SB GMod compat (2026-10-11): IMaterial:Recompute() -- GMod's name for
+// RecomputeStateSnapshots.  Callers change a $-var (the pp/blurscreen "$blur"
+// in derma_utils and the NVG addon's DOF) and call this to refresh the
+// material's shader snapshots; GMod's own derma_utils.lua:31 is the canonical
+// call site.
+//-----------------------------------------------------------------------------
+static int IMaterial_Recompute (lua_State *L) {
+  luaL_checkmaterial(L, 1)->RecomputeStateSnapshots();
+  return 0;
+}
+
 
 //-----------------------------------------------------------------------------
 // Purpose: HL2SB - IMaterial:GetColor( x, y )
@@ -390,6 +402,7 @@ static const luaL_Reg IMaterialmeta[] = {
   {"NeedsSoftwareLighting", IMaterial_NeedsSoftwareLighting},
   {"NeedsSoftwareSkinning", IMaterial_NeedsSoftwareSkinning},
   {"NeedsTangentSpace", IMaterial_NeedsTangentSpace},
+  {"Recompute", IMaterial_Recompute},
   {"RecomputeStateSnapshots", IMaterial_RecomputeStateSnapshots},
   {"Refresh", IMaterial_Refresh},
   {"RefreshPreservingMaterialVars", IMaterial_RefreshPreservingMaterialVars},

@@ -37,11 +37,76 @@ LUA_API lua_CBaseCombatWeapon *lua_toweapon (lua_State *L, int idx) {
 */
 
 
-LUA_API void lua_pushweapon (lua_State *L, lua_CBaseCombatWeapon *pWeapon) {
+// HL2SB: the raw push (userdata + metatable), no side effects.  lua_pushweapon
+// needs it for the seeded method's upvalue below -- routing that upvalue back
+// through lua_pushweapon would recurse into the seed forever.
+static void HL2SB_PushWeaponRaw (lua_State *L, lua_CBaseCombatWeapon *pWeapon) {
   CBaseHandle *hWeapon = (CBaseHandle *)lua_newuserdata(L, sizeof(CBaseHandle));
   hWeapon->Set((CBaseEntity *)pWeapon);
   luaL_getmetatable(L, "CBaseCombatWeapon");
   lua_setmetatable(L, -2);
+}
+
+// HL2SB (2026-10-11): WEAPON:GetOwner() as seen from a callback dispatched
+// with the weapon's script TABLE as self.  A plain table can only answer
+// script fields; the C method set lives on the userdata metatable and the
+// instance table has no route to it -- stock weapon_base's FireAnimationEvent
+// calls self:GetOwner():GetViewModel() on every CS muzzle event and raised
+// "attempt to call a nil value (method 'GetOwner')" on the client.  The
+// weapon itself rides as the upvalue (a handle, so the answer stays live
+// after the weapon changes hands or is removed), and the lookup mirrors
+// CBaseCombatWeapon_GetOwner exactly: Player for player owners, plain Entity
+// otherwise, nil for none.  A script-defined GetOwner keeps priority -- the
+// seed only runs when the merged instance table has no GetOwner FUNCTION (a
+// non-function value is shadowed, matching the userdata __index order).
+static int HL2SB_WeaponTableGetOwner (lua_State *L) {
+  CBaseCombatWeapon *pWeapon = lua_toweapon(L, lua_upvalueindex(1));
+  if (pWeapon == NULL) {
+    lua_pushnil(L);
+    return 1;
+  }
+  CBaseCombatCharacter *pOwner = pWeapon->GetOwner();
+  if (pOwner == NULL)
+    lua_pushnil(L);
+  else if (pOwner->IsPlayer())
+    lua_pushplayer(L, (CBasePlayer *)pOwner);
+  else
+    lua_pushentity(L, pOwner);
+  return 1;
+}
+
+LUA_API void lua_pushweapon (lua_State *L, lua_CBaseCombatWeapon *pWeapon) {
+  HL2SB_PushWeaponRaw(L, pWeapon);
+
+  /* HL2SB (2026-10-11): keep the instance table's GetOwner seed in place.
+  ** Every callback dispatch refreshes the owner fields through this push
+  ** before it calls into the script (the viewmodel muzzle-flash path updates
+  ** self.Owner / self.Weapon first, Deploy does the same), so by the time a
+  ** table-self callback reads self:GetOwner() the method is already there.
+  ** Same precedent as basescripted's per-instance IsValid / NetworkVar seeds;
+  ** the check costs one getfield per push and stops once seeded. */
+  if ( pWeapon != NULL && lua_isrefvalid( L, pWeapon->m_nTableReference ) )
+  {
+    lua_getref( L, pWeapon->m_nTableReference );
+    if ( lua_istable( L, -1 ) )
+    {
+      lua_getfield( L, -1, "GetOwner" );
+      if ( !lua_isfunction( L, -1 ) )
+      {
+        // Missing, or a data field: the userdata __index answers a C method
+        // over a non-function table value, so do the same here.
+        lua_pop( L, 1 );                          // the non-function value
+        HL2SB_PushWeaponRaw( L, pWeapon );        // upvalue: the weapon itself
+        lua_pushcclosure( L, HL2SB_WeaponTableGetOwner, 1 );
+        lua_setfield( L, -2, "GetOwner" );        // [table] -> [table]
+      }
+      else
+      {
+        lua_pop( L, 1 );                          // the existing answer
+      }
+    }
+    lua_pop( L, 1 );                              // the instance table
+  }
 }
 
 
@@ -907,8 +972,8 @@ static int CBaseCombatWeapon___index (lua_State *L) {
     ** per-tick `IsValid(p:GetActiveWeapon())` hook -- e.g. combustible
     ** lemon's Tick_CombustibleLemonSwep_DropOnDeath -- flood the console
     ** with "attempt to index a NULL entity" at util.lua:318, 7000+ lines in
-    ** a single session.  Writes to NULL keep raising in __newindex, matching
-    ** CBaseEntity___newindex.
+    ** a single session.  Writes to NULL are silently discarded in
+    ** __newindex, matching CBaseEntity___newindex.
     */
     HL2SB_PushNullEntityIndex( L, lua_tostring( L, 2 ) );
     return 1;
@@ -1027,14 +1092,18 @@ static int CBaseCombatWeapon___index (lua_State *L) {
 
 static int CBaseCombatWeapon___newindex (lua_State *L) {
   CBaseCombatWeapon *pWeapon = lua_toweapon(L, 1);
-  if (pWeapon == NULL) {  /* avoid extra test when d is not 0 */
-    lua_Debug ar1;
-    lua_getstack(L, 1, &ar1);
-    lua_getinfo(L, "fl", &ar1);
-    lua_Debug ar2;
-    lua_getinfo(L, ">S", &ar2);
-	lua_pushfstring(L, "%s:%d: attempt to index a NULL entity", ar2.short_src, ar1.currentline);
-	return lua_error(L);
+  if (pWeapon == NULL) {
+    /* HL2SB (2026-10-12): silently discard the write, same as
+    ** CBaseEntity___newindex (2026-10-03).  The reference gives the weapon
+    ** class no __newindex of its own -- field writes inherit the entity one,
+    ** whose NULL path falls through every guard and returns without raising,
+    ** so `GetActiveWeapon().UseReleased = true` on an unarmed player is a
+    ** no-op there.  This branch used to raise "attempt to index a NULL
+    ** entity" and spammed the portalgun Think hook once per unarmed player
+    ** per tick.  (The PLAYER class is different on purpose: its reference
+    ** __newindex errors on NULL, so CHL2MP_Player___newindex keeps raising.)
+    */
+    return 0;
   }
   const char *field = luaL_checkstring(L, 2);
   if (Q_strcmp(field, "m_bAltFiresUnderwater") == 0)

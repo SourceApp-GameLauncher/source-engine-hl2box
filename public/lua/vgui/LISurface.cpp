@@ -20,6 +20,9 @@
 #include "lua/materialsystem/limaterial.h"
 #include "vgui/IInput.h"
 #include "ienginevgui.h"
+#include "iviewrender.h"       // HL2SB: gui.ScreenToVector -> view->GetViewSetup()
+#include "view_shared.h"       // HL2SB: CViewSetup fields (origin/angles/fov)
+#include "mathlib/lvector.h"   // HL2SB: lua_pushvector
 #include "hl2sb_framestats.h"	// HL2SB: hl2sb_framestats surface draw counter
 #include "hl2sb_framestats_cat.h"	// HL2SB: per-category wall-time buckets
 
@@ -540,6 +543,17 @@ static int HL2SB_gui_MouseY (lua_State *L) {
   return 1;
 }
 
+// HL2SB: GMod's gui.MousePos() -- the cursor as BOTH coordinates (the pair
+// the nvg addon feeds into gui.ScreenToVector, and the drag handlers in the
+// enhanced playermodel selector read).  One cursor query, two results.
+static int HL2SB_gui_MousePos (lua_State *L) {
+  int x = 0, y = 0;
+  HL2SB_GetCursorPos(x, y);
+  lua_pushinteger(L, x);
+  lua_pushinteger(L, y);
+  return 2;
+}
+
 static int HL2SB_gui_ScreenWidth (lua_State *L) {
   int w = 0, h = 0;
 
@@ -585,6 +599,42 @@ static int HL2SB_gui_OpenURL (lua_State *L) {
   }
 
   return 0;
+}
+
+// HL2SB: GMod's gui.ScreenToVector( x, y ) -- the unit direction of the ray
+// through the given screen pixel, built from the CURRENT render view (the
+// CViewSetup the frame was drawn with, so CalcView modifications are included).
+// Formula matches GMod's observable contract: offset the pixel from the screen
+// centre, scale by halfWidth / tan( halfFov ), combine forward/right/up, and
+// normalize.  The nvg addon traces with it every HUD frame; without the
+// binding the trace line died on a nil call.
+static int HL2SB_gui_ScreenToVector (lua_State *L) {
+  const float x = (float)luaL_checknumber(L, 1);
+  const float y = (float)luaL_checknumber(L, 2);
+
+  int w = 0, h = 0;
+  if ( surface() != NULL ) {
+    surface()->GetScreenSize(w, h);
+  }
+
+  Vector dir(0, 0, 0);
+  const CViewSetup *pView = (view != NULL) ? view->GetViewSetup() : NULL;
+  if ( pView != NULL && w > 0 && h > 0 ) {
+    const float fov = (pView->fov > 1.0f) ? pView->fov : 90.0f;
+
+    Vector fwd, right, up;
+    AngleVectors(pView->angles, &fwd, &right, &up);
+
+    const float halfW = w * 0.5f;
+    const float halfH = h * 0.5f;
+    const float dist = halfW / tanf(DEG2RAD(fov) * 0.5f);
+
+    dir = fwd * dist + right * (x - halfW) + up * (halfH - y);
+    VectorNormalize(dir);
+  }
+
+  lua_pushvector(L, dir);
+  return 1;
 }
 
 static int surface_DrawSetTextureFile (lua_State *L) {
@@ -804,21 +854,50 @@ static int surface_GetScreenSize (lua_State *L) {
 static HFont s_hLastSetTextFont = 0;
 static int surface_GetTextSize (lua_State *L) {
   HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_SURF_TEXTMEASURE );
-  // HL2SB GMod compat (2026-09-25): wiki - surface.GetTextSize( text )
-  // measures with the font last set by surface.SetFont.  The older
-  // Experiment:Source spelling GetTextSize( font, text ) still works.
-  if ( lua_gettop( L ) == 1 && lua_type( L, 1 ) == LUA_TSTRING )
+  // HL2SB (2026-10-12): single-argument contract verified against the
+  // reference engine's binding, four points:
+  //   1. ONE argument = the text, measured with the font last set by
+  //      surface.SetFont.
+  //   2. The argument is read with luaL_checkstring semantics -- numbers are
+  //      coerced to their string form (lua_tolstring converts numbers), so
+  //      surface.GetTextSize( math.Round( x ) ) measures "x" like it does in
+  //      the reference engine; non-convertible values raise the usual
+  //      "bad argument #1 to 'GetTextSize'".  The old gate
+  //      (gettop==1 AND lua_type==LUA_TSTRING) bounced every NUMBER into the
+  //      two-argument path, where the absent second argument died each frame
+  //      with "bad argument #2 to 'GetTextSize' (string expected, got nil)" --
+  //      the NVG addon's HUD aborted 1621 times per session because
+  //      cl_vrnvgs.lua:581 measures a math.Round result.
+  //   3. If surface.SetFont has never resolved a font the binding returns NO
+  //      values at all (checked BEFORE the argument, same as the reference).
+  //   4. A leading '#' is a localization token: resolve the phrase first and
+  //      measure the localized text, falling back to the raw '#'-prefixed
+  //      text when there is no phrase (reference resolves via its localize
+  //      tables; we use the engine's ILocalize, same result).
+  // Two arguments keep the legacy Experiment:Source spelling
+  // GetTextSize( font, text ).
+  if ( lua_gettop( L ) <= 1 )
   {
-    const char *szOnly = lua_tostring( L, 1 );
+    if ( s_hLastSetTextFont == 0 )
+      return 0;
+
+    const char *szOnly = luaL_checkstring( L, 1 );
+    // A '#'-prefixed string is a localization token: measure the phrase when
+    // the tables know it, otherwise fall through and measure the raw text.
+    const wchar_t *wszOnly = NULL;
+    if ( szOnly[0] == '#' )
+      wszOnly = g_pVGuiLocalize->Find( szOnly + 1 );
     int wideOnly = 0;
     int tallOnly = 0;
     int bufOnly = ( strlen( szOnly ) + 1 ) * sizeof( wchar_t );
     wchar_t *wOnly = static_cast<wchar_t *>( _alloca( bufOnly ) );
-    if ( wOnly )
+    if ( wszOnly == NULL && wOnly )
     {
       g_pVGuiLocalize->ConvertANSIToUnicode( szOnly, wOnly, bufOnly );
-      surface()->GetTextSize( s_hLastSetTextFont, wOnly, wideOnly, tallOnly );
+      wszOnly = wOnly;
     }
+    if ( wszOnly )
+      surface()->GetTextSize( s_hLastSetTextFont, wszOnly, wideOnly, tallOnly );
     lua_pushinteger( L, wideOnly );
     lua_pushinteger( L, tallOnly );
     return 2;
@@ -1176,6 +1255,8 @@ LUALIB_API int luaopen_surface (lua_State *L) {
   lua_setfield(L, -2, "MouseX");
   lua_pushcfunction(L, HL2SB_gui_MouseY);
   lua_setfield(L, -2, "MouseY");
+  lua_pushcfunction(L, HL2SB_gui_MousePos);
+  lua_setfield(L, -2, "MousePos");
   lua_pushcfunction(L, HL2SB_gui_ScreenWidth);
   lua_setfield(L, -2, "ScreenWidth");
   lua_pushcfunction(L, HL2SB_gui_ScreenHeight);
@@ -1193,6 +1274,8 @@ LUALIB_API int luaopen_surface (lua_State *L) {
   // browsers/explorer windows"), so that is the route taken here.
   lua_pushcfunction(L, HL2SB_gui_OpenURL);
   lua_setfield(L, -2, "OpenURL");
+  lua_pushcfunction(L, HL2SB_gui_ScreenToVector);
+  lua_setfield(L, -2, "ScreenToVector");
   lua_setglobal(L, "gui");
 
   return 1;

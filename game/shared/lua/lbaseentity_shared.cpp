@@ -3185,18 +3185,16 @@ static int CBaseEntity_SetPhysicsAttacker (lua_State *L) {
 // "attempt to call a nil value (method 'SetNWString')".  Values do NOT sync
 // between client and server; a real NW implementation is still a follow-up.
 //-----------------------------------------------------------------------------
-struct HL2SB_NWValue
-{
-  CUtlString s;
-  int        i;
-  float      f;
-  bool       b;
-  EHANDLE    hEnt;
-};
+// The struct, the wire tags and the two family dicts live in
+// lbaseentity_shared.h (lsrcinit.cpp's transport reads them).  GMod keeps NW
+// and NW2 in two independent tables, so the same key written through
+// SetNWInt and SetNW2Int must be two independent values - two dicts, not a
+// key prefix.
+CUtlDict<HL2SB_NWValue, unsigned short> g_HL2SB_NWVars;
+CUtlDict<HL2SB_NWValue, unsigned short> g_HL2SB_NW2Vars;
 
-static CUtlDict<HL2SB_NWValue, unsigned short> s_NWVars;
-
-static HL2SB_NWValue *NWVarGetOrCreate( CBaseEntity *pEntity, const char *pszName, bool bCreate )
+static HL2SB_NWValue *NWVarGetOrCreateIn( CUtlDict<HL2SB_NWValue, unsigned short> &dict,
+                                          CBaseEntity *pEntity, const char *pszName, bool bCreate )
 {
   if ( !pEntity || !pszName || !pszName[0] )
     return NULL;
@@ -3204,20 +3202,97 @@ static HL2SB_NWValue *NWVarGetOrCreate( CBaseEntity *pEntity, const char *pszNam
   char szKey[256];
   Q_snprintf( szKey, sizeof( szKey ), "%d_%s", pEntity->entindex(), pszName );
 
-  unsigned short idx = s_NWVars.Find( szKey );
-  if ( s_NWVars.IsValidIndex( idx ) )
-    return &s_NWVars[idx];
+  unsigned short idx = dict.Find( szKey );
+  if ( dict.IsValidIndex( idx ) )
+    return &dict[idx];
 
   if ( !bCreate )
     return NULL;
 
-  idx = s_NWVars.Insert( szKey );
-  if ( !s_NWVars.IsValidIndex( idx ) )
+  idx = dict.Insert( szKey );
+  if ( !dict.IsValidIndex( idx ) )
     return NULL;
 
-  HL2SB_NWValue &v = s_NWVars[idx];
+  HL2SB_NWValue &v = dict[idx];
   v.i = 0; v.f = 0.0f; v.b = false;
+  v.v.Init(); v.a.Init(); v.tag = 0;
   return &v;
+}
+
+static HL2SB_NWValue *NWVarGetOrCreate( CBaseEntity *pEntity, const char *pszName, bool bCreate )
+{
+  return NWVarGetOrCreateIn( g_HL2SB_NWVars, pEntity, pszName, bCreate );
+}
+
+static HL2SB_NWValue *NW2VarGetOrCreate( CBaseEntity *pEntity, const char *pszName, bool bCreate )
+{
+  return NWVarGetOrCreateIn( g_HL2SB_NW2Vars, pEntity, pszName, bCreate );
+}
+
+void HL2SB_NWDropLocalVar( int iFamily, int entindex, const char *pszName )
+{
+  if ( !pszName || !pszName[0] )
+    return;
+
+  CUtlDict<HL2SB_NWValue, unsigned short> &dict =
+      ( iFamily == HL2SB_NWFAMILY_NW2 ) ? g_HL2SB_NW2Vars : g_HL2SB_NWVars;
+  char szKey[256];
+  Q_snprintf( szKey, sizeof( szKey ), "%d_%s", entindex, pszName );
+  dict.Remove( szKey );
+}
+
+void HL2SB_NWFreeEntityVars( int entindex )
+{
+  // Collect matching keys first: Remove() invalidates the iterator mid-walk.
+  CUtlVector<CUtlString> kill;
+  char szPrefix[32];
+  Q_snprintf( szPrefix, sizeof( szPrefix ), "%d_", entindex );
+
+  CUtlDict<HL2SB_NWValue, unsigned short> *dicts[2] = { &g_HL2SB_NWVars, &g_HL2SB_NW2Vars };
+  for ( int d = 0; d < 2; ++d )
+  {
+    for ( unsigned short idx = dicts[d]->First();
+          dicts[d]->IsValidIndex( idx );
+          idx = dicts[d]->Next( idx ) )
+    {
+      const char *pszKey = dicts[d]->GetElementName( idx );
+      if ( pszKey && Q_strnicmp( pszKey, szPrefix, Q_strlen( szPrefix ) ) == 0 )
+        kill.AddToTail( pszKey );
+    }
+    for ( int k = 0; k < kill.Count(); ++k )
+      dicts[d]->Remove( kill[k].Get() );
+    kill.RemoveAll();
+  }
+}
+
+// Server-side Set* broadcast on change; a client-side Set stays realm-local
+// (the same split GMod has: a client SetNW2* only sets the local copy).  The
+// wire is the shared "HL2SB_NW" user message with a family byte.
+static void HL2SB_NWSetterReplicate( int iFamily, CBaseEntity *pEntity,
+                                     const char *pszName, char tag, lua_State *L, bool bChanged )
+{
+#ifndef CLIENT_DLL
+  if ( pEntity && bChanged )
+    HL2SB_NWReplicateValue( iFamily, pEntity, pszName, tag, L, 3 );
+#else
+  (void)iFamily; (void)pEntity; (void)pszName; (void)tag; (void)L; (void)bChanged;
+#endif
+}
+
+// Getter fallback: when the local store has no entry for the key, consult the
+// replicated copy (client realm only).  The receiver drops the local entry on
+// every server update, so after that drop this path is what answers.
+static bool HL2SB_NWGetterFallback( lua_State *L, int iFamily,
+                                    CBaseEntity *pEntity, const char *pszName )
+{
+#ifdef CLIENT_DLL
+  if ( pEntity )
+    return HL2SB_NWReplicatedPushFamily( L, iFamily, pEntity->entindex(), pszName );
+  return false;
+#else
+  (void)L; (void)iFamily; (void)pEntity; (void)pszName;
+  return false;
+#endif
 }
 
 static int CBaseEntity_SetNWString (lua_State *L) {
@@ -3225,7 +3300,13 @@ static int CBaseEntity_SetNWString (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   const char *pszValue = luaL_optstring(L, 3, "");
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
-  if (p) p->s = pszValue;
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_STRING ) ||
+                          ( Q_strcmp( p->s.Get(), pszValue ) != 0 );
+    p->s = pszValue;
+    p->tag = HL2SB_NWTAG_STRING;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_STRING, L, bChanged );
+  }
   return 0;
 }
 
@@ -3234,7 +3315,13 @@ static int CBaseEntity_GetNWString (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   const char *pszDefault = luaL_optstring(L, 3, "");
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
-  lua_pushstring( L, ( p && p->s.Length() ) ? p->s.Get() : pszDefault );
+  if ( p && p->s.Length() ) {
+    lua_pushstring( L, p->s.Get() );
+    return 1;
+  }
+  if ( !p && HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  lua_pushstring( L, pszDefault );
   return 1;
 }
 
@@ -3243,7 +3330,12 @@ static int CBaseEntity_SetNWInt (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   int iValue = (int)luaL_checknumber(L, 3);
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
-  if (p) p->i = iValue;
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_INT ) || ( p->i != iValue );
+    p->i = iValue;
+    p->tag = HL2SB_NWTAG_INT;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_INT, L, bChanged );
+  }
   return 0;
 }
 
@@ -3252,7 +3344,13 @@ static int CBaseEntity_GetNWInt (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   int iDefault = (int)luaL_optnumber(L, 3, 0);
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
-  lua_pushinteger( L, p ? p->i : iDefault );
+  if ( p ) {
+    lua_pushinteger( L, p->i );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  lua_pushinteger( L, iDefault );
   return 1;
 }
 
@@ -3261,7 +3359,12 @@ static int CBaseEntity_SetNWFloat (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   float flValue = (float)luaL_checknumber(L, 3);
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
-  if (p) p->f = flValue;
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_FLOAT ) || ( p->f != flValue );
+    p->f = flValue;
+    p->tag = HL2SB_NWTAG_FLOAT;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_FLOAT, L, bChanged );
+  }
   return 0;
 }
 
@@ -3270,7 +3373,13 @@ static int CBaseEntity_GetNWFloat (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   float flDefault = (float)luaL_optnumber(L, 3, 0.0f);
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
-  lua_pushnumber( L, p ? p->f : flDefault );
+  if ( p ) {
+    lua_pushnumber( L, p->f );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  lua_pushnumber( L, flDefault );
   return 1;
 }
 
@@ -3279,7 +3388,12 @@ static int CBaseEntity_SetNWBool (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   bool bValue = lua_toboolean(L, 3) != 0;
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
-  if (p) p->b = bValue;
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_BOOL ) || ( p->b != bValue );
+    p->b = bValue;
+    p->tag = HL2SB_NWTAG_BOOL;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_BOOL, L, bChanged );
+  }
   return 0;
 }
 
@@ -3288,7 +3402,13 @@ static int CBaseEntity_GetNWBool (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   bool bDefault = lua_toboolean(L, 3) != 0;
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
-  lua_pushboolean( L, p ? p->b : bDefault );
+  if ( p ) {
+    lua_pushboolean( L, p->b );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  lua_pushboolean( L, bDefault );
   return 1;
 }
 
@@ -3297,7 +3417,13 @@ static int CBaseEntity_SetNWEntity (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   CBaseEntity *pValue = lua_toentity(L, 3);
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
-  if (p) p->hEnt = pValue;
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_ENTITY ) ||
+                          ( p->hEnt.Get() != pValue );
+    p->hEnt = pValue;
+    p->tag = HL2SB_NWTAG_ENTITY;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_ENTITY, L, bChanged );
+  }
   return 0;
 }
 
@@ -3306,9 +3432,13 @@ static int CBaseEntity_GetNWEntity (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
   CBaseEntity *pResult = p ? p->hEnt.Get() : NULL;
-  if ( pResult )
+  if ( pResult ) {
     lua_pushentity( L, pResult );
-  else if ( lua_gettop( L ) >= 3 && !lua_isnil( L, 3 ) )
+    return 1;
+  }
+  if ( !p && HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  if ( lua_gettop( L ) >= 3 && !lua_isnil( L, 3 ) )
     lua_pushvalue( L, 3 );
   else
     /* HL2SB (2026-10-03): GMod answers an unset (or invalid) entity var with
@@ -3319,6 +3449,298 @@ static int CBaseEntity_GetNWEntity (lua_State *L) {
     ** before a portal could exist.  A non-nil third argument is the default
     ** and is passed through (GetNWEntity("Potal:Other", NULL)). */
     lua_pushentity( L, NULL );
+  return 1;
+}
+
+static int CBaseEntity_SetNWVector (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  Vector vecValue = luaL_checkvector(L, 3);
+  HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_VECTOR ) || ( p->v != vecValue );
+    p->v = vecValue;
+    p->tag = HL2SB_NWTAG_VECTOR;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_VECTOR, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNWVector (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  Vector vecDefault( 0, 0, 0 );
+  if ( lua_gettop(L) >= 3 && luaL_testudata(L, 3, "Vector") )
+    vecDefault = *(Vector *)luaL_testudata(L, 3, "Vector");
+  HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushvector( L, p->v );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  lua_pushvector( L, vecDefault );
+  return 1;
+}
+
+static int CBaseEntity_SetNWAngle (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  QAngle angValue = luaL_checkangle(L, 3);
+  HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_ANGLE ) || ( p->a != angValue );
+    p->a = angValue;
+    p->tag = HL2SB_NWTAG_ANGLE;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW, pEntity, pszName, HL2SB_NWTAG_ANGLE, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNWAngle (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  QAngle angDefault( 0, 0, 0 );
+  if ( lua_gettop(L) >= 3 && luaL_testudata(L, 3, "Angle") )
+    angDefault = *(QAngle *)luaL_testudata(L, 3, "Angle");
+  HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushangle( L, p->a );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW, pEntity, pszName ) )
+    return 1;
+  lua_pushangle( L, angDefault );
+  return 1;
+}
+
+//-----------------------------------------------------------------------------
+// HL2SB GMod compat: the NW2 family (SetNW2*/GetNW2*).  GMod keeps NW and NW2
+// in separate tables, so the same key written through SetNWInt and SetNW2Int
+// is two independent values; storage otherwise mirrors the NW1 family above
+// (per-realm dict, keyed by entindex + name).  Issue #47 adds these
+// interfaces so scripts like sv_vrnvgs stop dying on
+// "attempt to call a nil value (method 'SetNW2Bool')".  Cross-realm sync runs
+// over the shared "HL2SB_NW" user message with the NW2 family byte: the
+// server broadcast on change, the client receiver stores into the replicated
+// copy and drops the local one, and a joining client gets a full resend from
+// the sign-on resync (HL2SB_NWResyncClient).
+//-----------------------------------------------------------------------------
+
+static int CBaseEntity_SetNW2String (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  const char *pszValue = luaL_optstring(L, 3, "");
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_STRING ) ||
+                          ( Q_strcmp( p->s.Get(), pszValue ) != 0 );
+    p->s = pszValue;
+    p->tag = HL2SB_NWTAG_STRING;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_STRING, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2String (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  const char *pszDefault = luaL_optstring(L, 3, "");
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    // GMod answers a SET key with the stored value as-is: an explicitly
+    // written empty string is "", not the default.
+    lua_pushstring( L, p->s.Get() );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  lua_pushstring( L, pszDefault );
+  return 1;
+}
+
+static int CBaseEntity_SetNW2Int (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  int iValue = (int)luaL_checknumber(L, 3);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_INT ) || ( p->i != iValue );
+    p->i = iValue;
+    p->tag = HL2SB_NWTAG_INT;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_INT, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2Int (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  int iDefault = (int)luaL_optnumber(L, 3, 0);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushinteger( L, p->i );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  lua_pushinteger( L, iDefault );
+  return 1;
+}
+
+static int CBaseEntity_SetNW2Float (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  float flValue = (float)luaL_checknumber(L, 3);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_FLOAT ) || ( p->f != flValue );
+    p->f = flValue;
+    p->tag = HL2SB_NWTAG_FLOAT;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_FLOAT, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2Float (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  float flDefault = (float)luaL_optnumber(L, 3, 0.0f);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushnumber( L, p->f );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  lua_pushnumber( L, flDefault );
+  return 1;
+}
+
+static int CBaseEntity_SetNW2Bool (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  bool bValue = lua_toboolean(L, 3) != 0;
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_BOOL ) || ( p->b != bValue );
+    p->b = bValue;
+    p->tag = HL2SB_NWTAG_BOOL;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_BOOL, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2Bool (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  bool bDefault = lua_toboolean(L, 3) != 0;
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushboolean( L, p->b );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  lua_pushboolean( L, bDefault );
+  return 1;
+}
+
+static int CBaseEntity_SetNW2Entity (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  CBaseEntity *pValue = lua_toentity(L, 3);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_ENTITY ) ||
+                          ( p->hEnt.Get() != pValue );
+    p->hEnt = pValue;
+    p->tag = HL2SB_NWTAG_ENTITY;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_ENTITY, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2Entity (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    // Key exists: an invalid handle answers the NULL sentinel and never the
+    // default (GMod's GetNW2Entity does not fall back for a dead entity).
+    lua_pushentity( L, p->hEnt.Get() );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  // Key missing: a non-nil third argument is the default, else the NULL
+  // sentinel (same shape as GetNWEntity).
+  if ( lua_gettop( L ) >= 3 && !lua_isnil( L, 3 ) )
+    lua_pushvalue( L, 3 );
+  else
+    lua_pushentity( L, NULL );
+  return 1;
+}
+
+static int CBaseEntity_SetNW2Vector (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  Vector vecValue = luaL_checkvector(L, 3);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_VECTOR ) || ( p->v != vecValue );
+    p->v = vecValue;
+    p->tag = HL2SB_NWTAG_VECTOR;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_VECTOR, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2Vector (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  Vector vecDefault( 0, 0, 0 );
+  if ( lua_gettop(L) >= 3 && luaL_testudata(L, 3, "Vector") )
+    vecDefault = *(Vector *)luaL_testudata(L, 3, "Vector");
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushvector( L, p->v );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  lua_pushvector( L, vecDefault );
+  return 1;
+}
+
+static int CBaseEntity_SetNW2Angle (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  QAngle angValue = luaL_checkangle(L, 3);
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, true );
+  if (p) {
+    const bool bChanged = ( p->tag != HL2SB_NWTAG_ANGLE ) || ( p->a != angValue );
+    p->a = angValue;
+    p->tag = HL2SB_NWTAG_ANGLE;
+    HL2SB_NWSetterReplicate( HL2SB_NWFAMILY_NW2, pEntity, pszName, HL2SB_NWTAG_ANGLE, L, bChanged );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetNW2Angle (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  QAngle angDefault( 0, 0, 0 );
+  if ( lua_gettop(L) >= 3 && luaL_testudata(L, 3, "Angle") )
+    angDefault = *(QAngle *)luaL_testudata(L, 3, "Angle");
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, pszName, false );
+  if ( p ) {
+    lua_pushangle( L, p->a );
+    return 1;
+  }
+  if ( HL2SB_NWGetterFallback( L, HL2SB_NWFAMILY_NW2, pEntity, pszName ) )
+    return 1;
+  lua_pushangle( L, angDefault );
   return 1;
 }
 
@@ -3484,19 +3906,6 @@ static int HL2SB_NullEntityMethod (lua_State *L) {
   return 1;
 }
 
-// HL2SB: the shared NULL branch for every entity-class __index (Player,
-// CHL2MP_Player, CBaseAnimating on both realms).  GMod's NULL sentinel answers
-// IsValid with a boolean false and every other key with a method that returns
-// false -- it does NOT raise.  Raising on reads made the global IsValid()
-// (util.lua:318, `object.IsValid`) throw "attempt to index a NULL entity"
-// from every hook that probes a player who has already left.
-void HL2SB_PushNullEntityIndex (lua_State *L, const char *pszField) {
-  if (pszField != NULL && Q_stricmp(pszField, "IsValid") == 0)
-    lua_pushboolean(L, false);
-  else
-    lua_pushcfunction(L, HL2SB_NullEntityMethod);
-}
-
 // HL2SB (2026-10-07): one class-metatable lookup for the dynamic-type fallback
 // at the bottom of CBaseEntity___index.  Answers false and leaves the stack
 // untouched when the class has no metatable in this Lua state or the key is
@@ -3518,46 +3927,74 @@ static bool HL2SB_PushClassField (lua_State *L, const char *pszMetatable, const 
   return true;
 }
 
+// HL2SB: the shared NULL branch for every entity-class __index (Player,
+// CHL2MP_Player, CBaseCombatWeapon, NPC/NextBot, CBaseAnimating on both
+// realms).  Reference behavior for the NULL sentinel, settled against the
+// reference binary (2026-10-12, portalgun spam round):
+//
+//   known class method key -> the method resolves (weapon_medkit's CanHeal()
+//     calls ent:IsPlayer() on a trace miss and gets false back);
+//   any other key          -> nil, and nothing raises.
+//
+// Two past failures sit at the two ends of this rule.  Raising made the
+// global IsValid() (util.lua:318, `object.IsValid`) throw on every hook that
+// probes a player who has already left.  Stubbing EVERY key with the
+// false-returning method went too far the other way: data-field probes read
+// truthy, so the portalgun HUDPaint hook did
+//     IsValid( LocalPlayer():GetActiveWeapon().ViewModelOverride )
+// on an unarmed player, got the stub FUNCTION where the reference yields nil,
+// and util.lua:318 died indexing a function ("attempt to index a function
+// value") every frame.  Known keys still get the stub rather than the real
+// binding: the reference hands out the real function (its bindings tolerate a
+// NULL self), fork bindings assume a live C++ pointer and would crash on one
+// -- and the stub keeps the 2026-09-20 fix (NULL:IsValid() must be callable,
+// never the literal false).
+void HL2SB_PushNullEntityIndex (lua_State *L, const char *pszField) {
+  if (pszField == NULL) {
+    lua_pushnil(L);
+    return;
+  }
+
+  bool bKnown = false;
+
+  // The receiver's own class metatable rides along on the NULL sentinel
+  // userdata; then the same parent chain the live path walks (each class
+  // keeps its own level, CBaseAnimating/CBaseEntity are the shared bases).
+  if ( lua_getmetatable( L, 1 ) ) {
+    lua_pushstring( L, pszField );
+    lua_rawget( L, -2 );
+    if ( !lua_isnil( L, -1 ) ) {
+      lua_remove( L, -2 );
+      bKnown = true;
+    } else {
+      lua_pop( L, 2 );
+    }
+  }
+
+  static const char *const s_pszNullIndexParents[] = {
+    "CBasePlayer", "CHL2MP_Player", "CBaseCombatWeapon",
+    "NPC", "NextBot", "CBaseAnimating", "CBaseEntity"
+  };
+  for ( int i = 0; !bKnown && i < (int)ARRAYSIZE( s_pszNullIndexParents ); i++ )
+    bKnown = HL2SB_PushClassField( L, s_pszNullIndexParents[i], pszField );
+
+  if ( bKnown ) {
+    lua_pop( L, 1 );   /* drop the looked-up value; answer the call-safe stub */
+    lua_pushcfunction( L, HL2SB_NullEntityMethod );
+  } else {
+    lua_pushnil( L );
+  }
+}
+
 static int CBaseEntity___index (lua_State *L) {
   CBaseEntity *pEntity = lua_toentity(L, 1);
   if (pEntity == NULL) {
-    /* HL2SB: return nil instead of raising.
-    **
-    ** GMod's engine does the same, and it matters because GMod's own
-    ** lua/includes/util.lua:314 defines the global IsValid() as
-    **
-    **     local isvalid = object.IsValid      -- its FIRST operation
-    **
-    ** so `IsValid( <entity that was removed> )` indexed a NULL entity userdata
-    ** and this used to raise
-    **
-    **     attempt to index a NULL entity
-    **
-    ** instead of returning false.  That is what made the undo command fail with
-    **     ConCommand 'undo' Failed: lua/includes/util.lua:318: attempt to index a NULL entity
-    ** once a recorded entity had been removed.  Pushing nil makes the lookup
-    ** yield nil, `isvalid` is nil, and IsValid() correctly answers false.
-    **
-    ** A NULL entity also has to answer METHOD CALLS the way GMod's does: false.
-    ** weapon_medkit's CanHeal() opens with
-    **     if ( ent:IsPlayer() or ent:IsNPC() ) then
-    ** on a trace entity that is NULL whenever the trace hit nothing, and the
-    ** nil lookup above turned that into "attempt to call a nil value (method
-    ** 'IsPlayer')" -- a throw, which aborted the whole heal path.  IsValid stays
-    ** an explicit false (the global IsValid() reads it first, and a function is
-    ** truthy in Lua), every other key yields a function that returns false.
+    /* HL2SB: delegate to the shared NULL branch -- see the rule and both
+    ** past failures (raise vs. stub-everything) on HL2SB_PushNullEntityIndex
+    ** above.  Reference behavior: known method keys resolve, unknown keys
+    ** read as nil, nothing raises.
     */
-    const char *pszField = lua_tostring(L, 2);
-
-    // HL2SB (2026-09-20): IsValid used to be answered with the literal
-    // `false`, so the global IsValid() worked but the METHOD call
-    // Rocket:IsValid() on a NULL entity died with "attempt to call a boolean
-    // value (method 'IsValid')" (weapon_nukestrike/shared.lua:94).  GMod's
-    // NULL entity answers BOTH with a function that returns false -- the
-    // global IsValid() still gets its false back (it CALLS the function), and
-    // direct method calls no longer throw.
-    lua_pushcfunction(L, HL2SB_NullEntityMethod);
-
+    HL2SB_PushNullEntityIndex( L, lua_tostring( L, 2 ) );
     return 1;
   }
   const char *field = luaL_checkstring(L, 2);
@@ -5528,6 +5965,26 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetNWBool", CBaseEntity_GetNWBool},
   {"SetNWEntity", CBaseEntity_SetNWEntity},
   {"GetNWEntity", CBaseEntity_GetNWEntity},
+  {"SetNWVector", CBaseEntity_SetNWVector},
+  {"GetNWVector", CBaseEntity_GetNWVector},
+  {"SetNWAngle", CBaseEntity_SetNWAngle},
+  {"GetNWAngle", CBaseEntity_GetNWAngle},
+  // HL2SB GMod compat: NW2 family (issue #47) - separate store, same local
+  // per-realm semantics as the NW1 entries above.
+  {"SetNW2String", CBaseEntity_SetNW2String},
+  {"GetNW2String", CBaseEntity_GetNW2String},
+  {"SetNW2Int", CBaseEntity_SetNW2Int},
+  {"GetNW2Int", CBaseEntity_GetNW2Int},
+  {"SetNW2Float", CBaseEntity_SetNW2Float},
+  {"GetNW2Float", CBaseEntity_GetNW2Float},
+  {"SetNW2Bool", CBaseEntity_SetNW2Bool},
+  {"GetNW2Bool", CBaseEntity_GetNW2Bool},
+  {"SetNW2Entity", CBaseEntity_SetNW2Entity},
+  {"GetNW2Entity", CBaseEntity_GetNW2Entity},
+  {"SetNW2Vector", CBaseEntity_SetNW2Vector},
+  {"GetNW2Vector", CBaseEntity_GetNW2Vector},
+  {"SetNW2Angle", CBaseEntity_SetNW2Angle},
+  {"GetNW2Angle", CBaseEntity_GetNW2Angle},
   // HL2SB GMod compat: per-entity Lua variables + overlay text.
   {"SetVar", CBaseEntity_SetVar},
   {"GetVar", CBaseEntity_GetVar},

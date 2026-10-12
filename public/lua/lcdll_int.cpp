@@ -112,6 +112,21 @@ static int engine_GetDXSupportLevel (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-11): GMod's engine.GetAddons() -- the workshop subscription
+// list, each entry a table with title/wsid/mounted fields.  This fork mounts
+// local addon folders only and has no workshop backend, so the honest answer
+// is an empty sequential table: consumer scripts (addon probes like
+// "for _, v in ipairs( engine.GetAddons() ) do if v.wsid == ... and
+// v.mounted ...", the duplicator's save filter, workshop_files.lua) only ever
+// ask whether a SPECIFIC subscription is present and mounted, and no workshop
+// subscription ever is here.  The entry being absent made the call answer nil
+// and killed every addon script that probed it at load time (the same failure
+// shape util.lua's IsMounted guard answers).
+static int engine_GetAddons (lua_State *L) {
+  lua_newtable(L);
+  return 1;
+}
+
 static int engine_GetEngineBuildNumber (lua_State *L) {
   lua_pushinteger(L, engine->GetEngineBuildNumber());
   return 1;
@@ -479,6 +494,7 @@ static const luaL_Reg enginelib[] = {
   {"GameLumpSize",   engine_GameLumpSize},
   {"GetAppID",   engine_GetAppID},
   {"GetDXSupportLevel", engine_GetDXSupportLevel},
+  {"GetAddons", engine_GetAddons},
   {"GetEngineBuildNumber",   engine_GetEngineBuildNumber},
   {"GetGameDirectory", engine_GetGameDirectory},
   {"GetLastTimeStamp", engine_GetLastTimeStamp},

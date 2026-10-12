@@ -12,6 +12,7 @@
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lbaseplayer_shared.h"
+#include "mathlib/lvector.h"	// HL2SB: luaL_checkangle for SetEyeAngles
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -97,6 +98,24 @@ static int CBasePlayer_ShouldDrawLocalPlayer (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-11): Player:SetEyeAngles( ang ) on the CLIENT too (server
+// binding: game/server/lua/lplayer.cpp).  Reference behavior: the angle is
+// applied only when the receiver IS the local player -- a client cannot steer
+// another client's view, and the other-player case is a silent no-op rather
+// than an error.  The write goes through the engine's view-angle setter, the
+// same path mouse input uses, so the new angles render on this frame and
+// reach the server with the next usercmd.  First consumer: awpdragon's
+// clout_gun_base applies per-shot eye recoil from shared code
+// (self.Owner:SetEyeAngles inside ShootBullet) and used to raise "attempt to
+// call a nil value (method 'SetEyeAngles')" on every client-side shot.
+static int CBasePlayer_SetEyeAngles (lua_State *L) {
+  C_BasePlayer *pPlayer = luaL_checkplayer( L, 1 );
+  QAngle angles = luaL_checkangle( L, 2 );
+  if ( pPlayer != NULL && pPlayer == C_BasePlayer::GetLocalPlayer() )
+    engine->SetViewAngles( angles );
+  return 0;
+}
+
 static const luaL_Reg CBasePlayermeta[] = {
   {"GetLocalPlayer", CBasePlayer_GetLocalPlayer},
   {"UniqueID", CBasePlayer_UniqueID},
@@ -104,6 +123,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"CrosshairDisable", CBasePlayer_CrosshairDisable},
   {"CrosshairEnable", CBasePlayer_CrosshairEnable},
   {"ShouldDrawLocalPlayer", CBasePlayer_ShouldDrawLocalPlayer},
+  {"SetEyeAngles", CBasePlayer_SetEyeAngles},
   {NULL, NULL}
 };
 

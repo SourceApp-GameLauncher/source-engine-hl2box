@@ -1750,7 +1750,17 @@ static int CBaseAnimating_ResetLatched (lua_State *L) {
 }
 
 static int CBaseAnimating_ResetSequence (lua_State *L) {
-  luaL_checkanimating(L, 1)->ResetSequence(luaL_checkint(L, 2));
+  // HL2SB: GMod's Entity:ResetSequence takes number OR string -- a string is
+  // the sequence NAME and is resolved through LookupSequence first (the
+  // documented contract).  The nvg addon plays named sequences on
+  // ClientsideModels ("idleoff", "equip", ...); number-only checking aborted
+  // its model creation block on the first frame and left the night-vision
+  // camera entity permanently unset.
+  C_BaseAnimating *pAnimating = luaL_checkanimating(L, 1);
+  if ( lua_type(L, 2) == LUA_TSTRING )
+    pAnimating->ResetSequence(pAnimating->LookupSequence(luaL_checkstring(L, 2)));
+  else
+    pAnimating->ResetSequence(luaL_checkint(L, 2));
   return 0;
 }
 

@@ -2804,10 +2804,31 @@ IMaterial* CMaterialSystem::FindMaterialEx( char const* pMaterialName, const cha
 	
 	Assert( nLen >= Q_strlen( pTemp ) + 1 );
 
-	IMaterialInternal *pExistingMaterial = m_MaterialDict.FindMaterial( pTemp, false );	// 'false' causes the search to find only file-created materials
+	// HL2SB (2026-10-13): GMod marks procedural lookups by the leading '!' of
+	// the name (Material("x.png") products are named "!<digits><path>").  The
+	// flag selects manually-created materials in the dictionary instead of
+	// file-created ones, so a '!' query finds the runtime material that owns
+	// that name.  The old hard 'false' could never find them here.
+	bool bProceduralName = ( pTemp[0] == '!' );
+	IMaterialInternal *pExistingMaterial = m_MaterialDict.FindMaterial( pTemp, bProceduralName );	// 'false' causes the search to find only file-created materials
 
 	if ( pExistingMaterial )
 		return pExistingMaterial->GetQueueFriendlyVersion();
+
+	// HL2SB (2026-10-13): GMod parity -- an unregistered '!' name returns the
+	// error material right here: no .vmt probe, no image synthesis and no
+	// registration under this name (GMod's FindMaterialEx goes straight to the
+	// error material for '!' names, silently).  Synthesizing used to register a
+	// second, shader-param-less material under the SAME '!' name -- the image
+	// path strips the prefix, finds the .png, AddMaterial signs it up -- and
+	// the file-created lookup then preferred that copy over the real one
+	// forever: every bind re-ran PrecacheVars with no KeyValues, failed the
+	// .vmt load and printed "error loading vmt file for !0000000caramel/nvg_hud"
+	// every frame (nvg HUD on the first draw after a map change).
+	if ( bProceduralName )
+	{
+		return g_pErrorMaterial->GetRealTimeVersion();
+	}
 
 	// It hasn't been seen yet, so let's check to see if it's in the filesystem.
 	nLen = Q_strlen( "materials/" ) + Q_strlen( pTemp ) + Q_strlen( ".vmt" ) + 1;

@@ -2271,14 +2271,14 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 		// screen-space stage, with the 3D context still valid (their render
 		// loop order: PreDrawViewModels, effects, PreDrawEffects, screen
 		// space).  Same in-game guard as the two pumps below.
-		{
-			extern bool g_bRenderingReflection;
-			if ( L != NULL && !g_bRenderingReflection && engine->IsInGame() )
 			{
-				BEGIN_LUA_CALL_HOOK( "PreDrawEffects" );
-				END_LUA_CALL_HOOK( 0, 0 );
+				extern bool g_bRenderingReflection;
+				if ( L != NULL && !g_bRenderingReflection && engine->IsInGame() )
+				{
+					BEGIN_LUA_CALL_HOOK( "PreDrawEffects" );
+					END_LUA_CALL_HOOK( 0, 0 );
+				}
 			}
-		}
 
 		// HL2SB GMod compat: fire GM:RenderScreenspaceEffects once per frame,
 		// after the 3D scene and its screen-space effects and before the HUD --
@@ -2298,8 +2298,22 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 				double flHookStart = 0.0;
 				if ( bFrameStats )
 					flHookStart = Plat_FloatTime();
+				// Reference bracket: push the currently bound target with the
+				// screen rect as a 2D view around the hook, then pop it.
+				CViewSetup view2d;
+				view2d.x = 0;
+				view2d.y = 0;
+				view2d.width = view.width;
+				view2d.height = view.height;
+				ITexture *pHookRenderTarget = NULL;
+				{
+					CMatRenderContextPtr pRenderContext( materials );
+					pHookRenderTarget = pRenderContext->GetRenderTarget();
+				}
+				render->Push2DView( view2d, 0, pHookRenderTarget, GetFrustum() );
 				BEGIN_LUA_CALL_HOOK( "RenderScreenspaceEffects" );
 				END_LUA_CALL_HOOK( 0, 0 );
+				render->PopView( GetFrustum() );
 				if ( bFrameStats )
 					HL2SB_FrameStats_NoteLuaHook( "RenderScreenspaceEffects", Plat_FloatTime() - flHookStart );
 			}

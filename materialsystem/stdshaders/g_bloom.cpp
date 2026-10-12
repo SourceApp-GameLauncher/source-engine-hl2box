@@ -50,13 +50,19 @@ BEGIN_VS_SHADER_FLAGS( g_bloom, "GMod bloom composite", SHADER_NOT_EDITABLE )
 		}
 		DYNAMIC_STATE
 		{
-			// c0..c3 = levelr levelg levelb colormul (ps reads .x only).
-			float flLevels[4];
-			flLevels[0] = params[LEVELR]->GetFloatValue();
-			flLevels[1] = params[LEVELG]->GetFloatValue();
-			flLevels[2] = params[LEVELB]->GetFloatValue();
-			flLevels[3] = params[COLORMUL]->GetFloatValue();
-			pShaderAPI->SetPixelShaderConstant( 0, flLevels, 1 );
+			// One parameter per constant register (c0 levelr, c1 levelg,
+			// c2 levelb, c3 colormul) -- the compiled ps20 reads c0.x..c3.x
+			// as four independent gains.  Packing all four into c0 left
+			// c1..c3 holding whatever the previous draw had parked there,
+			// so the composite quad was added with garbage gains.
+			float flR[4] = { params[LEVELR]->GetFloatValue(), 0.0f, 0.0f, 0.0f };
+			float flG[4] = { params[LEVELG]->GetFloatValue(), 0.0f, 0.0f, 0.0f };
+			float flB[4] = { params[LEVELB]->GetFloatValue(), 0.0f, 0.0f, 0.0f };
+			float flM[4] = { params[COLORMUL]->GetFloatValue(), 0.0f, 0.0f, 0.0f };
+			pShaderAPI->SetPixelShaderConstant( 0, flR, 1 );
+			pShaderAPI->SetPixelShaderConstant( 1, flG, 1 );
+			pShaderAPI->SetPixelShaderConstant( 2, flB, 1 );
+			pShaderAPI->SetPixelShaderConstant( 3, flM, 1 );
 
 			BindTexture( SHADER_SAMPLER0, BASETEXTURE, -1 );
 			pShaderAPI->SetVertexShaderIndex( 0 );

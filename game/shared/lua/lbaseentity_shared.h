@@ -44,6 +44,74 @@ void HL2SB_PushNullEntityIndex (lua_State *L, const char *pszField);
 ** instance table yet (bCreate=false) or is not a Lua-backed entity. */
 bool HL2SB_EntityPushVarsTable (lua_State *L, CBaseEntity *pEntity, bool bCreate);
 
+/* HL2SB (2026-10-11): the SetNW / SetNW2 variable store (issue #47).
+** One struct per (entindex, name) key per family -- family NW and family NW2
+** are two separate CUtlDicts, mirroring GMod's two independent tables.  The
+** struct and dicts live in this header because the replication transport
+** (lsrcinit.cpp) reads them for sign-on resync and drops local copies when a
+** server update arrives.  Transport: the existing "HL2SB_NW" user message with
+** a family byte -- family NETWORKVAR is the legacy Lua-NetworkVar channel
+** (byte value 0, unchanged), NW and NW2 are the SetNW and SetNW2 families. */
+
+struct HL2SB_NWValue
+{
+  CUtlString s;
+  int        i;
+  float      f;
+  bool       b;
+  EHANDLE    hEnt;
+  Vector     v;
+  QAngle     a;
+  char       tag;   // HL2SB_NWTAG_* of the last Set, 0 = never set (drives resync)
+};
+
+// Wire tags (first byte of a stored payload), shared with lsrcinit.cpp.
+enum HL2SB_NWTag_t
+{
+  HL2SB_NWTAG_FLOAT = 'F',
+  HL2SB_NWTAG_VECTOR = 'V',
+  HL2SB_NWTAG_ANGLE = 'A',
+  HL2SB_NWTAG_BOOL = 'B',
+  HL2SB_NWTAG_INT = 'I',
+  HL2SB_NWTAG_STRING = 'S',
+  HL2SB_NWTAG_ENTITY = 'E',
+};
+
+enum HL2SB_NWFamily_t
+{
+  HL2SB_NWFAMILY_NETWORKVAR = 0,  // legacy Lua NetworkVar transport (wire compat)
+  HL2SB_NWFAMILY_NW = 1,          // SetNW*/GetNW*
+  HL2SB_NWFAMILY_NW2 = 2,         // SetNW2*/GetNW2*
+};
+
+extern CUtlDict<HL2SB_NWValue, unsigned short> g_HL2SB_NWVars;
+extern CUtlDict<HL2SB_NWValue, unsigned short> g_HL2SB_NW2Vars;
+
+#ifndef CLIENT_DLL
+/* server -> lsrcinit.cpp: broadcast one value on the "HL2SB_NW" user message
+** (family byte included).  Called by the SetNW and SetNW2 setters on change. */
+void HL2SB_NWReplicateValue( int iFamily, CBaseEntity *pEntity, const char *pszName,
+                             char tag, lua_State *L, int iValue );
+#endif
+
+#ifdef CLIENT_DLL
+/* lsrcinit.cpp -> getters: push the replicated copy for
+** (family, entindex, name); answers false when there is none. */
+bool HL2SB_NWReplicatedPushFamily( lua_State *L, int iFamily, int entindex,
+                                   const char *pszName );
+#endif
+
+/* lsrcinit.cpp receiver -> store: drop the realm-local copy of one key so the
+** server update wins (the local write re-shadows on the next Set, mirroring
+** the legacy NetworkVar receiver's drop). */
+void HL2SB_NWDropLocalVar( int iFamily, int entindex, const char *pszName );
+
+/* server: purge both family dicts for a dying entity -- the dicts are keyed by
+** bare entindex, so a recycled slot would otherwise inherit the previous
+** entity's values (GMod frees its NW1 slot on EntityRemoved and its NW2 table
+** dies with the entity). */
+void HL2SB_NWFreeEntityVars( int entindex );
+
 /*
 ** HL2SB: GMod gives a drivable vehicle its own "Vehicle" metatable on top of the
 ** per-class push functions above (game/shared/lua/lvehicle_shared.cpp).  These

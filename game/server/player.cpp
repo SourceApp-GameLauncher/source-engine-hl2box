@@ -91,6 +91,11 @@
 #include "mathlib/lvector.h"
 #endif
 
+#ifdef HL2SB
+#include "hl2sb_pickupnotice.h"
+#include "utldict.h"
+#endif
+
 ConVar autoaim_max_dist( "autoaim_max_dist", "2160" ); // 2160 = 180 feet
 ConVar autoaim_max_deflect( "autoaim_max_deflect", "0.99" );
 
@@ -6964,6 +6969,49 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 
 extern bool UTIL_ItemCanBeTouchedByPlayer( CBaseEntity *pItem, CBasePlayer *pPlayer );
 
+#ifdef HL2SB
+//-----------------------------------------------------------------------------
+// HL2SB: server-side store behind Player:SetSuppressPickupNotices( bool ).
+// Side table instead of a CBasePlayer member so no class layout changes; the
+// key carries the handle serial alongside the entindex so a recycled player
+// slot cannot inherit a previous occupant's mute.
+//-----------------------------------------------------------------------------
+static CUtlDict<byte, unsigned short> s_HL2SBPickupNoticeSuppressed;
+
+void HL2SB_SetPickupNoticeSuppressed( CBasePlayer *pPlayer, bool bSuppressed )
+{
+	if ( !pPlayer )
+		return;
+
+	char szKey[48];
+	Q_snprintf( szKey, sizeof( szKey ), "%d_%d", pPlayer->entindex(),
+		pPlayer->GetRefEHandle().GetSerialNumber() );
+
+	unsigned short idx = s_HL2SBPickupNoticeSuppressed.Find( szKey );
+	if ( bSuppressed )
+	{
+		if ( !s_HL2SBPickupNoticeSuppressed.IsValidIndex( idx ) )
+			s_HL2SBPickupNoticeSuppressed.Insert( szKey );
+	}
+	else if ( s_HL2SBPickupNoticeSuppressed.IsValidIndex( idx ) )
+	{
+		s_HL2SBPickupNoticeSuppressed.Remove( szKey );
+	}
+}
+
+bool HL2SB_IsPickupNoticeSuppressed( CBasePlayer *pPlayer )
+{
+	if ( !pPlayer )
+		return false;
+
+	char szKey[48];
+	Q_snprintf( szKey, sizeof( szKey ), "%d_%d", pPlayer->entindex(),
+		pPlayer->GetRefEHandle().GetSerialNumber() );
+	return s_HL2SBPickupNoticeSuppressed.IsValidIndex(
+		s_HL2SBPickupNoticeSuppressed.Find( szKey ) );
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: Player reacts to bumping a weapon. 
 // Input  : pWeapon - the weapon that the player bumped into.
@@ -7038,7 +7086,7 @@ bool CBasePlayer::BumpWeapon( CBaseCombatWeapon *pWeapon )
 			// and duplicate-weapon ammo).  "weapon" = true per the GMod design: the
 			// SERVER declares the kind, the client translates -- SWEP classnames
 			// carry no "weapon_" prefix (nyangun, cf packs), so name guessing fails.
-			if ( IsPlayer() )
+			if ( IsPlayer() && !HL2SB_IsPickupNoticeSuppressed( this ) )
 			{
 				IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
 				if ( event )

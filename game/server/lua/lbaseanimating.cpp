@@ -375,7 +375,14 @@ static int CBaseAnimating_LookupSequence (lua_State *L) {
 }
 
 static int CBaseAnimating_ResetSequence (lua_State *L) {
-  luaL_checkanimating(L, 1)->ResetSequence(luaL_checkinteger(L, 2));
+  // HL2SB: match the client and GMod -- a string argument is the sequence
+  // NAME and goes through LookupSequence first (Entity:ResetSequence
+  // contract); numbers pass through unchanged.
+  CBaseAnimating *pAnimating = luaL_checkanimating(L, 1);
+  if ( lua_type(L, 2) == LUA_TSTRING )
+    pAnimating->ResetSequence(pAnimating->LookupSequence(luaL_checkstring(L, 2)));
+  else
+    pAnimating->ResetSequence(luaL_checkinteger(L, 2));
   return 0;
 }
 

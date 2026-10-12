@@ -1286,6 +1286,14 @@ void CNotifyList::OnEntityDeleted( CBaseEntity *pEntity )
 	}
 
 #if defined ( LUA_SDK )
+	// HL2SB (2026-10-11, issue #47): the SetNW*/SetNW2* dicts are keyed by bare
+	// entindex, so a recycled slot would inherit the previous occupant's values
+	// (GMod frees its NW table when the entity dies).  Purge before the slot
+	// can be handed out again.  No Lua state involved, runs during shutdown too.
+	HL2SB_NWFreeEntityVars( pEntity->entindex() );
+#endif
+
+#if defined ( LUA_SDK )
 	// HL2SB: GMod's EntityRemoved hook.  Fired before the notify list drops its
 	// reference so Lua can still inspect the entity (that is what GMod does).
 	// undo.lua uses it to prune stale undos, and CallOnRemove is built on it.

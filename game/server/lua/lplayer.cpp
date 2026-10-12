@@ -16,6 +16,7 @@
 #include "entitylist.h"
 #include "baseviewmodel.h"	// HL2SB: CBaseViewModel for Player:DrawViewModel
 #include "ammodef.h"
+#include "hl2sb_pickupnotice.h"	// Player:SetSuppressPickupNotices
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -409,7 +410,9 @@ static int CBasePlayer_SetFlashlightEnabled (lua_State *L) {
 }
 
 static int CBasePlayer_FlashlightIsOn (lua_State *L) {
-  lua_pushinteger(L, luaL_checkplayer(L, 1)->FlashlightIsOn());
+  // HL2SB: GMod returns a boolean here -- a number 0 reads truthy in Lua and
+  // would invert every "if not ply:FlashlightIsOn()" check addons write.
+  lua_pushboolean(L, luaL_checkplayer(L, 1)->FlashlightIsOn() != 0);
   return 1;
 }
 
@@ -420,6 +423,19 @@ static int CBasePlayer_FlashlightTurnOn (lua_State *L) {
 
 static int CBasePlayer_FlashlightTurnOff (lua_State *L) {
   luaL_checkplayer(L, 1)->FlashlightTurnOff();
+  return 0;
+}
+
+static int CBasePlayer_Flashlight (lua_State *L) {
+  // HL2SB: GMod's Player:Flashlight( bOn ) -- the named switch over the
+  // engine's FlashlightTurnOn/TurnOff pair (both carry the
+  // GM:PlayerSwitchFlashlight gate).  The argument decides on/off; a missing
+  // argument reads false, the same branch the raw argument takes.
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  if (lua_toboolean(L, 2))
+    pPlayer->FlashlightTurnOn();
+  else
+    pPlayer->FlashlightTurnOff();
   return 0;
 }
 
@@ -604,6 +620,15 @@ static int CBasePlayer_Give (lua_State *L) {
   return 1;
 }
 
+// HL2SB GMod compat: Player:SetSuppressPickupNotices( bool bSuppress ) --
+// mutes/unmutes this player's pickup HUD toasts (the NVG addon wraps its
+// weapon give/strip in it so equipping the goggles doesn't spam the HUD).
+// Gate lives on the item_pickup emitters, see hl2sb_pickupnotice.h.
+static int CBasePlayer_SetSuppressPickupNotices (lua_State *L) {
+  HL2SB_SetPickupNoticeSuppressed( luaL_checkplayer(L, 1), lua_toboolean(L, 2) != 0 );
+  return 0;
+}
+
 static int CBasePlayer_EnableControl (lua_State *L) {
   luaL_checkplayer(L, 1)->EnableControl(luaL_checkboolean(L, 2));
   return 0;
@@ -733,6 +758,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"FlashlightIsOn", CBasePlayer_FlashlightIsOn},
   {"FlashlightTurnOn", CBasePlayer_FlashlightTurnOn},
   {"FlashlightTurnOff", CBasePlayer_FlashlightTurnOff},
+  {"Flashlight", CBasePlayer_Flashlight},
   {"IsIlluminatedByFlashlight", CBasePlayer_IsIlluminatedByFlashlight},
   {"UpdatePlayerSound", CBasePlayer_UpdatePlayerSound},
   {"DeathSound", CBasePlayer_DeathSound},
@@ -768,6 +794,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"HasWeapons", CBasePlayer_HasWeapons},
   {"GiveNamedItem", CBasePlayer_GiveNamedItem},
   {"Give", CBasePlayer_Give},
+  {"SetSuppressPickupNotices", CBasePlayer_SetSuppressPickupNotices},
   {"EnableControl", CBasePlayer_EnableControl},
   {"CheckTrainUpdate", CBasePlayer_CheckTrainUpdate},
   {"EquipSuit", CBasePlayer_EquipSuit},

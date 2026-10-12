@@ -65,6 +65,7 @@
 #include "luamanager.h"
 #include "lbaseentity_shared.h"			// lua_pushentity
 #include "lbasecombatweapon_shared.h"	// lua_pushweapon
+#include "hl2sb_pickupnotice.h"	// SetSuppressPickupNotices gate below
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -2240,13 +2241,18 @@ bool CBaseCombatCharacter::Weapon_EquipAmmoOnly( CBaseCombatWeapon *pWeapon )
 			if ( this && this->IsPlayer() && ( takenPrimary > 0 || takenSecondary > 0 ) )
 			{
 				CBasePlayer *pPlayer = (CBasePlayer *)this;
-				IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
-				if ( event )
+				// HL2SB: Player:SetSuppressPickupNotices mutes this touch's
+				// ammo-strip toast too - same event, same HUD line.
+				if ( !HL2SB_IsPickupNoticeSuppressed( pPlayer ) )
 				{
-					event->SetInt( "userid", pPlayer->GetUserID() );
-					event->SetString( "item", UTIL_VarArgs( "%s_ammo", pWeapon->GetClassname() ) );
-					event->SetInt( "amount", takenPrimary > 0 ? takenPrimary : takenSecondary );
-					gameeventmanager->FireEvent( event );
+					IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
+					if ( event )
+					{
+						event->SetInt( "userid", pPlayer->GetUserID() );
+						event->SetString( "item", UTIL_VarArgs( "%s_ammo", pWeapon->GetClassname() ) );
+						event->SetInt( "amount", takenPrimary > 0 ? takenPrimary : takenSecondary );
+						gameeventmanager->FireEvent( event );
+					}
 				}
 			}
 #endif

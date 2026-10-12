@@ -528,6 +528,11 @@ static int CHL2MP_Player___index (lua_State *L) {
 static int CHL2MP_Player___newindex (lua_State *L) {
   CHL2MP_Player *pPlayer = lua_tohl2mpplayer(L, 1);
   if (pPlayer == NULL) {  /* avoid extra test when d is not 0 */
+    /* HL2SB (2026-10-12): keep raising -- this one matches the reference.
+    ** The reference gives the PLAYER class its own __newindex whose NULL
+    ** path errors ("Player entity is NULL or not a player"), unlike the
+    ** entity/weapon classes whose NULL write is silently discarded (see
+    ** CBaseEntity___newindex / CBaseCombatWeapon___newindex). */
     lua_Debug ar1;
     lua_getstack(L, 1, &ar1);
     lua_getinfo(L, "fl", &ar1);

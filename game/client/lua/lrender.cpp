@@ -642,7 +642,69 @@ LUA_BINDING_BEGIN( Renders, DrawScreenQuad, "library", "Draws a fullscreen quad 
     if ( pMaterial == NULL || pMaterial->IsErrorMaterial() )
         return luaL_error( L, "render.DrawScreenQuad: no material bound (call render.SetMaterial first)" );
 
+    // HL2SB GMod compat (2026-10-13): the reference engine's quad core brackets
+    // every quad with identity MODEL/VIEW/PROJECTION matrices, so a leftover
+    // model matrix (an unbalanced cam.Start3D2D or PushModelMatrix) cannot drag
+    // the quad off-screen.  The DrawScreenSpaceQuad helper below already pushes
+    // and pops the VIEW and PROJECTION legs internally, so only the MODEL leg
+    // is missing on this side.
+    pRenderContext->MatrixMode( MATERIAL_MODEL );
+    pRenderContext->PushMatrix();
+    pRenderContext->LoadIdentity();
+
     pRenderContext->DrawScreenSpaceQuad( pMaterial );
+
+    pRenderContext->MatrixMode( MATERIAL_MODEL );
+    pRenderContext->PopMatrix();
+    return 0;
+}
+LUA_BINDING_END()
+
+// render.DrawScreenQuadEx( x, y, w, h ) -- GMod's bounded sibling of
+// DrawScreenQuad: the material set by render.SetMaterial is drawn over an
+// arbitrary screen rectangle instead of the whole viewport.  The NVG addon's
+// chromatic-aberration pass feeds each color channel a slightly different
+// rectangle (fractional offsets), hence the texcoords below.
+LUA_BINDING_BEGIN( Renders, DrawScreenQuadEx, "library", "Draws a textured screen rectangle with the currently bound material.", "client" )
+{
+    int nX = LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "x" );
+    int nY = LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "y" );
+    int nWide = LUA_BINDING_ARGUMENT( luaL_checknumber, 3, "wide" );
+    int nTall = LUA_BINDING_ARGUMENT( luaL_checknumber, 4, "tall" );
+
+    CMatRenderContextPtr pRenderContext( materials );
+    IMaterial *pMaterial = s_pRendersLastSetMaterial;
+    if ( pMaterial == NULL || pMaterial->IsErrorMaterial() )
+        return luaL_error( L, "render.DrawScreenQuadEx: no material bound (call render.SetMaterial first)" );
+
+    // HL2SB (2026-10-12): DrawScreenSpaceRectangle's s0/t0..s1/t1 arguments
+    // are SOURCE-TEXTURE TEXEL coordinates, not normalized UVs -- see
+    // tier2/renderutils.cpp: the endpoints get shifted half a texel towards
+    // texel centres and are then divided by the texture size.  The reference
+    // engine's DrawScreenQuadEx puts normalized 0..1 texcoords on its quad
+    // directly; passing 0,0,1,1 here instead parked the whole quad on a
+    // one-texel-wide sliver out of the top-left corner of the bound texture
+    // and smeared it across the rectangle, so the NVG addon's chromatic
+    // aberration pass warped the picture instead of fringeing it.  The range
+    // 0..(nWide-1) makes the texel-per-pixel factor exactly 1, so the
+    // endpoints land on UV 0 and 1 whatever the real texture size is --
+    // same convention as the engine's own callers (morph.cpp,
+    // sys_getmodes.cpp), and equivalent to the reference quad's texcoords.
+    // HL2SB GMod compat (2026-10-13): same MODEL-leg bracket as
+    // render.DrawScreenQuad above -- DrawScreenSpaceRectangle covers VIEW and
+    // PROJECTION internally, the reference engine's quad core also resets the
+    // model matrix around every quad.
+    pRenderContext->MatrixMode( MATERIAL_MODEL );
+    pRenderContext->PushMatrix();
+    pRenderContext->LoadIdentity();
+
+    pRenderContext->DrawScreenSpaceRectangle( pMaterial, nX, nY, nWide, nTall,
+                                              0.0f, 0.0f,
+                                              (float)( nWide - 1 ), (float)( nTall - 1 ),
+                                              nWide, nTall );
+
+    pRenderContext->MatrixMode( MATERIAL_MODEL );
+    pRenderContext->PopMatrix();
     return 0;
 }
 LUA_BINDING_END()
@@ -784,7 +846,17 @@ LUA_BINDING_BEGIN( Renders, DrawScreenQuadWithTexture, "library", "Draws a fulls
 
     CMatRenderContextPtr pRenderContext( materials );
     pRenderContext->Bind( pMaterial );
+
+    // HL2SB GMod compat (2026-10-13): MODEL-leg bracket, same as
+    // render.DrawScreenQuad above.
+    pRenderContext->MatrixMode( MATERIAL_MODEL );
+    pRenderContext->PushMatrix();
+    pRenderContext->LoadIdentity();
+
     pRenderContext->DrawScreenSpaceQuad( pMaterial );
+
+    pRenderContext->MatrixMode( MATERIAL_MODEL );
+    pRenderContext->PopMatrix();
     return 0;
 }
 LUA_BINDING_END()
@@ -812,7 +884,14 @@ LUA_BINDING_BEGIN( Renders, CopyFrameToTexture, "library", "Copies the current f
 }
 LUA_BINDING_END()
 
-// render.GetBloomTex1() -> Texture
+// render.GetBloomTex0() / GetBloomTex1() -> Texture
+LUA_BINDING_BEGIN( Renders, GetBloomTex0, "library", "Returns the bloom render target texture.", "client" )
+{
+    lua_pushitexture( L, materials->FindTexture( "_rt_Bloom0", TEXTURE_GROUP_RENDER_TARGET ) );
+    return 1;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, GetBloomTex1, "library", "Returns the bloom render target texture.", "client" )
 {
     lua_pushitexture( L, materials->FindTexture( "_rt_Bloom1", TEXTURE_GROUP_RENDER_TARGET ) );
@@ -1551,6 +1630,23 @@ LUA_BINDING_BEGIN( Renders, SetScissorRectangle, "library", "Set the scissor rec
 }
 LUA_BINDING_END()
 
+// GMod's name for the same call; addons (the NVG addon's battery bar) use
+// render.SetScissorRect, fork content used the long spelling.
+LUA_BINDING_BEGIN( Renders, SetScissorRect, "library", "Set the scissor rectangle.", "client" )
+{
+    int nLeft = LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "left" );
+    int nTop = LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "top" );
+    int nRight = LUA_BINDING_ARGUMENT( luaL_checknumber, 3, "right" );
+    int nBottom = LUA_BINDING_ARGUMENT( luaL_checknumber, 4, "bottom" );
+    bool bEnableScissor = LUA_BINDING_ARGUMENT( lua_toboolean, 5, "enableScissor" );
+
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->SetScissorRect( nLeft, nTop, nRight, nBottom, bEnableScissor );
+
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, SetWriteDepthToDestinationAlpha, "library", "Set the write depth to destination alpha.", "client" )
 {
     bool bEnable = LUA_BINDING_ARGUMENT( lua_toboolean, 1, "enable" );
@@ -1608,6 +1704,38 @@ static ShaderTexFilterMode_t FilterModeFromEnumeration( int enumeration )
 ** outside the materialsystem DLL.  The filter stacks they maintained had no other
 ** user, so the whole group is left out rather than shipped broken.
 */
+// GMod spelling of the filter pair (addons call Push/PopFilterMag|Min - the
+// NVG addon wraps its HUD draws in PushFilterMag(TEXFILTER.ANISOTROPIC)).
+// The per-draw sampler override below is still the disabled experiment, so
+// these register as argument-checked no-ops: the call chain keeps running
+// and draws fall back to the default filtering instead of raising
+// "attempt to call a nil value (method 'PushFilterMag')".
+LUA_BINDING_BEGIN( Renders, PushFilterMag, "library", "Push a magnification filter (no-op in this fork).", "client" )
+{
+    LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "filter" );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, PushFilterMin, "library", "Push a minification filter (no-op in this fork).", "client" )
+{
+    LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "filter" );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, PopFilterMag, "library", "Pop a magnification filter (no-op in this fork).", "client" )
+{
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, PopFilterMin, "library", "Pop a minification filter (no-op in this fork).", "client" )
+{
+    return 0;
+}
+LUA_BINDING_END()
+
 #if 0
 
 LUA_BINDING_BEGIN( Renders, PushFilterMinification, "library", "Push a minification filter. (Non-functional; help wanted)", "client" )
@@ -2192,6 +2320,18 @@ LUA_BINDING_BEGIN( Renders, SetStencilZFailOperation, "library", "Set the stenci
 }
 LUA_BINDING_END()
 
+// render.ClearStencil() -- GMod contract: clear ONLY the stencil buffer
+// (color and depth untouched).  The nvg addon wipes the template before it
+// rewrites it every frame; without this binding the hook died at the call.
+LUA_BINDING_BEGIN( Renders, ClearStencil, "library", "Clear the stencil buffer.", "client" )
+{
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->ClearBuffers( false, false, true );
+
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, ClearStencilBufferRectangle, "library", "Clear the stencil buffer rectangle.", "client" )
 {
     int startX = LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "startX" );
@@ -2332,20 +2472,24 @@ LUA_BINDING_BEGIN( Renders, EndBeam, "library", "Draws the beam accumulated sinc
 }
 LUA_BINDING_END()
 
-// HL2SB GMod compat (2026-10-07): render.GetLightColor( position ) -- the
-// reference shape is a VECTOR of 0..1 light values (not a 0..255 Color),
-// which is what engine->ComputeLighting produces before any scaling.  The
-// hl1sweps weapon-glow matproxies feed the result straight into arithmetic
+// HL2SB GMod compat (2026-10-07, revised 2026-10-13): render.GetLightColor(
+// position ) -- the reference shape is a VECTOR of light values (not a 0..255
+// Color), which is what engine->ComputeLighting produces before any scaling.
+// The hl1sweps weapon-glow matproxies feed the result straight into arithmetic
 // and IMaterial:SetVector, so the old 0..255 Color answer was wrong on both
-// the type and the range.
-LUA_BINDING_BEGIN( Renders, GetLightColor, "library", "Returns the world lighting at the position as a normalized color vector.", "client" )
+// the type and the range.  The reference binding passes bClamp=false: the
+// value is what the lightcache computes and is usually 0..1, but a fully lit
+// spot is allowed to exceed 1 instead of being capped.  Consumers that need a
+// bounded value clamp themselves (the NVG addon clamps its bloom input to
+// 0.45).
+LUA_BINDING_BEGIN( Renders, GetLightColor, "library", "Returns the world lighting at the position as a color vector.", "client" )
 {
     Vector position = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "position" );
     Vector defaultNormal = vec3_origin;
     Vector normal = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optvector, 2, &defaultNormal, "normal" );
 
     Vector color( 1, 1, 1 );
-    engine->ComputeLighting( position, ( normal == vec3_origin ) ? NULL : &normal, true, color, NULL );
+    engine->ComputeLighting( position, ( normal == vec3_origin ) ? NULL : &normal, false, color, NULL );
 
     lua_pushvector( L, color );
     return 1;

@@ -96,6 +96,13 @@ static CTextureReference g_FullFrameFBTexture1;
 static CTextureReference g_FullFrameFBTexture2;
 static CTextureReference g_FullFrameDepth;
 static CTextureReference g_ResolvedFullFrameDepth;
+// HL2SB: the GMod postprocess family (pp/bloom + pp/downsample, driven by the
+// ported lua/postprocess/bloom.lua via DrawBloom) blurs through the
+// _rt_Bloom0/1 names.  Without allocation, FindTexture answered an
+// uninitialized placeholder texture and the first IMaterial:SetTexture on it
+// ran the texture manager into freed memory (crash on the first NVG flip).
+static CTextureReference g_BloomFBTexture0;
+static CTextureReference g_BloomFBTexture1;
 
 void WorldStaticMeshCreate( void );
 void WorldStaticMeshDestroy( void );
@@ -1079,9 +1086,28 @@ static ITexture *CreateQuarterSizedFBTexture( int n, unsigned int iRenderTargetF
 
 	return materials->CreateNamedRenderTargetTextureEx2(
 		nbuf, 0, 0, RT_SIZE_HDR,
-		fmt, MATERIAL_RT_DEPTH_SHARED, 
-		TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 
+		fmt, MATERIAL_RT_DEPTH_SHARED,
+		TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT,
 		iRenderTargetFlags );
+}
+
+// HL2SB: same shape as the quarter-sized frame buffers; the bloom postprocess
+// only ever draws fullscreen quads into these and blurs them, so the
+// framebuffer-size rule is what the content expects.
+static ITexture *CreateBloomFBTexture( int n )
+{
+	char nbuf[20];
+	sprintf( nbuf, "_rt_Bloom%d", n );
+
+	ImageFormat fmt = materials->GetBackBufferFormat();
+	if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT )
+		fmt = IMAGE_FORMAT_RGBA16161616F;
+
+	return materials->CreateNamedRenderTargetTextureEx2(
+		nbuf, 0, 0, RT_SIZE_HDR,
+		fmt, MATERIAL_RT_DEPTH_SHARED,
+		TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT,
+		0 );
 }
 
 static ITexture *CreateTeenyFBTexture( int n )
@@ -1209,7 +1235,12 @@ void InitWellKnownRenderTargets( void )
 		if( IsX360() )
 			materials->AddTextureAlias( "_rt_SmallFB1", "_rt_SmallFB0" ); //an alias is good enough on the 360 since we don't have a texture lock problem during post processing
 		else
-			g_QuarterSizedFBTexture1.Init( CreateQuarterSizedFBTexture( 1, 0 ) );			
+			g_QuarterSizedFBTexture1.Init( CreateQuarterSizedFBTexture( 1, 0 ) );
+
+		// HL2SB: bloom postprocess render targets (see the note at the
+		// g_BloomFBTexture0 declaration).
+		g_BloomFBTexture0.Init( CreateBloomFBTexture( 0 ) );
+		g_BloomFBTexture1.Init( CreateBloomFBTexture( 1 ) );
 	}
 
 	if ( IsPC() )

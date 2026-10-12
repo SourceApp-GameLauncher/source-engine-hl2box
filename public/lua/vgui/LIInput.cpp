@@ -121,7 +121,14 @@ static int input_GetShouldInvertCompositionString (lua_State *L) {
 }
 
 static int input_IsKeyDown (lua_State *L) {
-  lua_pushboolean(L, input()->IsKeyDown((KeyCode)luaL_checkint(L, 1)));
+  // HL2SB: GMod only accepts keyboard codes here (an out-of-range code pushes
+  // false) -- the vgui key state array must not be indexed with garbage.
+  int iCode = (int)luaL_checkint(L, 1);
+  if ( iCode < 0 || iCode >= KEY_COUNT ) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  lua_pushboolean(L, input()->IsKeyDown((KeyCode)iCode));
   return 1;
 }
 

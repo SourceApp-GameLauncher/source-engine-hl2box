@@ -28,6 +28,7 @@
 #include "luamanager.h"
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
+#include "hl2sb_pickupnotice.h"	// SetSuppressPickupNotices gate below
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -481,7 +482,8 @@ void CItem::ItemTouch( CBaseEntity *pOther )
 		// (item_ammo_* / item_box_*) are skipped here - they're reported by
 		// ITEM_GiveAmmo with the real amount, so we don't emit a duplicate.
 		if ( Q_strnicmp( GetClassname(), "item_ammo_", 10 ) != 0 &&
-		     Q_strnicmp( GetClassname(), "item_box_", 9 ) != 0 )
+		     Q_strnicmp( GetClassname(), "item_box_", 9 ) != 0 &&
+		     !HL2SB_IsPickupNoticeSuppressed( pPlayer ) )
 		{
 			IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
 			if ( event )

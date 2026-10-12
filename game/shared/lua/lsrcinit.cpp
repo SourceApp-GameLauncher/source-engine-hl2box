@@ -56,6 +56,7 @@ static ConVar cl_drawownshadow("cl_drawownshadow", "0", FCVAR_ARCHIVE, "Render t
 // (HULL_* / SCHED_*) that GMod publishes and scripted SNPCs (npc_scp173) use.
 #include "ai_default.h"			// SCHED_* enum
 #include "ai_hull.h"			// Hull_t (HULL_*)
+#include "util.h"				// HL2SB_NWResyncClient: UTIL_EntityByIndex
 #endif
 // HL2SB (2026-09-21): Lua NetworkVar replication -- the shim's storage below
 // is per-realm and local-only, so a server-side NetworkVar write (the Nuke
@@ -1528,17 +1529,8 @@ static void HL2SB_NWStoreValue (lua_State *L, int iSelf, int iTable, const char 
 // s_NWReplicated and the getter falls back to it whenever the local storage
 // has no value.  Pure user message, no engine table changes.
 
-// Type tags for the wire format (also the first byte of the stored payload).
-enum HL2SB_NWTag_t
-{
-	HL2SB_NWTAG_FLOAT = 'F',
-	HL2SB_NWTAG_VECTOR = 'V',
-	HL2SB_NWTAG_ANGLE = 'A',
-	HL2SB_NWTAG_BOOL = 'B',
-	HL2SB_NWTAG_INT = 'I',
-	HL2SB_NWTAG_STRING = 'S',
-	HL2SB_NWTAG_ENTITY = 'E',
-};
+// Wire tags (HL2SB_NWTag_t) and the family enumeration (HL2SB_NWFamily_t)
+// live in lbaseentity_shared.h -- the SetNW*/SetNW2* setters share them.
 
 static char HL2SB_NWTagForType( const char *pszType )
 {
@@ -1615,6 +1607,41 @@ static int HL2SB_NWSerialize( lua_State *L, int iValue, char tag, unsigned char 
 	return w.GetNumBytesWritten();
 }
 
+#ifndef CLIENT_DLL
+// HL2SB (2026-10-11, issue #47): broadcast one SetNW*/SetNW2* value.  The
+// wire adds the family byte ahead of the name; the client receiver stores it
+// into the family-namespaced replicated copy and drops the realm-local entry.
+// GMod's own transports differ (NW2 rides the entity snapshot delta, NW1 a
+// periodically re-sent user message); a reliable broadcast on change plus the
+// sign-on resync below is this fork's equivalent contract -- not PVS gated,
+// which makes a value strictly more available than GMod's, at the cost of
+// sending to clients that cannot currently see the entity.
+void HL2SB_NWReplicateValue( int iFamily, CBaseEntity *pEntity, const char *pszName,
+                             char tag, lua_State *L, int iValue )
+{
+	if ( pEntity == NULL || pEntity->entindex() <= 0 || pszName == NULL || pszName[0] == '\0' )
+		return;
+
+	unsigned char payload[ 512 ];
+	int len = HL2SB_NWSerialize( L, iValue, tag, payload, sizeof( payload ) );
+	if ( len < 0 )
+		return;
+
+	// (Registered at openlibs on both realms -- see the client tail of
+	// luasrc_openlibs.)
+	CReliableBroadcastRecipientFilter filter;
+	UserMessageBegin( filter, "HL2SB_NW" );
+		WRITE_SHORT( pEntity->entindex() );
+		WRITE_BYTE( ( unsigned char )iFamily );
+		WRITE_STRING( pszName );
+		WRITE_BYTE( ( unsigned char )tag );
+		WRITE_BYTE( ( unsigned char )len );
+		for ( int i = 0; i < len; ++i )
+			WRITE_BYTE( payload[ i ] );
+	MessageEnd();
+}
+#endif
+
 #ifdef CLIENT_DLL
 // The client-side replicated store: key "entindex_name" -> tag byte + payload.
 // Entries accumulate for the life of the process; each is 300 bytes at most
@@ -1632,11 +1659,14 @@ struct HL2SB_NWBlob_t
 };
 static CUtlDict<HL2SB_NWBlob_t, unsigned short> s_NWReplicated;
 
-static void HL2SB_NWReplicatedStore( int entindex, const char *pszName, char tag,
+static void HL2SB_NWReplicatedStore( int iFamily, int entindex, const char *pszName, char tag,
 									const unsigned char *pPayload, int nPayload )
 {
-	char key[ 160 ];
-	Q_snprintf( key, sizeof( key ), "%d_%s", entindex, pszName );
+	// Family is part of the key: the legacy Lua-NetworkVar channel (0) and the
+	// SetNW*/SetNW2* families (1/2) are independent namespaces, exactly like
+	// GMod's three tables.  '|' cannot appear in an entindex/name pair.
+	char key[ 192 ];
+	Q_snprintf( key, sizeof( key ), "%d|%d|%s", iFamily, entindex, pszName );
 
 	// Readers treat byte 0 as the tag and the rest as the payload, but the
 	// hook hands those over as two separate arguments -- rejoin them.  (The
@@ -1672,8 +1702,8 @@ static void HL2SB_NWReplicatedStore( int entindex, const char *pszName, char tag
 // a replicated value existed.
 static bool HL2SB_NWReplicatedPush( lua_State *L, int entindex, const char *pszKey, const char *pszType )
 {
-	char key[ 160 ];
-	Q_snprintf( key, sizeof( key ), "%d_%s", entindex, pszKey );
+	char key[ 192 ];
+	Q_snprintf( key, sizeof( key ), "%d|%d|%s", HL2SB_NWFAMILY_NETWORKVAR, entindex, pszKey );
 
 	unsigned short idx = s_NWReplicated.Find( key );
 	if ( !s_NWReplicated.IsValidIndex( idx ) )
@@ -1730,11 +1760,90 @@ static bool HL2SB_NWReplicatedPush( lua_State *L, int entindex, const char *pszK
 	}
 }
 
-// The "HL2SB_NW" user message: SHORT entindex, STRING name, BYTE tag,
-// BYTE len, BYTE[len] payload.
+// Family-aware reader for the SetNW*/SetNW2* getters (lbaseentity_shared.cpp):
+// same blob store, family-namespaced key -- and unlike the legacy reader it
+// answers ENTITY tags by resolving the entindex back to a client entity (the
+// NULL sentinel when the handle does not resolve, GMod's answer too).
+bool HL2SB_NWReplicatedPushFamily( lua_State *L, int iFamily, int entindex,
+								   const char *pszName )
+{
+	char key[ 192 ];
+	Q_snprintf( key, sizeof( key ), "%d|%d|%s", iFamily, entindex, pszName );
+
+	unsigned short idx = s_NWReplicated.Find( key );
+	if ( !s_NWReplicated.IsValidIndex( idx ) )
+		return false;
+
+	HL2SB_NWBlob_t &val = s_NWReplicated[ idx ];
+	if ( val.nBytes < 1 )
+		return false;
+
+	char tag = ( char )val.buf[ 0 ];
+	bf_read r( "HL2SB_NW", val.buf + 1, val.nBytes - 1 );
+
+	switch ( tag )
+	{
+		case HL2SB_NWTAG_FLOAT:
+			lua_pushnumber( L, ( lua_Number )r.ReadFloat() );
+			return true;
+		case HL2SB_NWTAG_VECTOR:
+		{
+			Vector v;
+			v.x = r.ReadFloat();
+			v.y = r.ReadFloat();
+			v.z = r.ReadFloat();
+			lua_pushvector( L, v );
+			return true;
+		}
+		case HL2SB_NWTAG_ANGLE:
+		{
+			QAngle a;
+			a.x = r.ReadFloat();
+			a.y = r.ReadFloat();
+			a.z = r.ReadFloat();
+			lua_pushangle( L, a );
+			return true;
+		}
+		case HL2SB_NWTAG_BOOL:
+			lua_pushboolean( L, r.ReadByte() != 0 );
+			return true;
+		case HL2SB_NWTAG_INT:
+			lua_pushinteger( L, ( lua_Integer )r.ReadLong() );
+			return true;
+		case HL2SB_NWTAG_STRING:
+		{
+			int n = r.ReadByte();
+			char sz[ 256 ];
+			if ( n > 0 )
+				r.ReadBytes( sz, n );
+			sz[ n ] = 0;
+			lua_pushstring( L, sz );
+			return true;
+		}
+		case HL2SB_NWTAG_ENTITY:
+		{
+			int iTarget = r.ReadShort();
+			C_BaseEntity *pTarget = NULL;
+			if ( iTarget > 0 ) {
+				IClientEntity *pIClient = cl_entitylist->GetClientEntity( iTarget );
+				pTarget = pIClient ? pIClient->GetBaseEntity() : NULL;
+			}
+			// lua_pushentity( NULL ) pushes the NULL sentinel.
+			lua_pushentity( L, pTarget );
+			return true;
+		}
+		default:
+			return false;
+	}
+}
+
+// The "HL2SB_NW" user message: SHORT entindex, BYTE family, STRING name,
+// BYTE tag, BYTE len, BYTE[len] payload.  Family 0 is the legacy Lua
+// NetworkVar channel, 1/2 are the SetNW*/SetNW2* families (issue #47).
 static void __MsgFunc_HL2SB_NW( bf_read &read )
 {
 	int entindex = read.ReadShort();
+	int iFamily = read.ReadByte();
 	char szName[ 128 ];
 	read.ReadString( szName, sizeof( szName ) );
 	char tag = ( char )read.ReadByte();
@@ -1749,7 +1858,7 @@ static void __MsgFunc_HL2SB_NW( bf_read &read )
 	if ( read.IsOverflowed() )
 		return;
 
-	HL2SB_NWReplicatedStore( entindex, szName, tag, payload, len );
+	HL2SB_NWReplicatedStore( iFamily, entindex, szName, tag, payload, len );
 
 	// HL2SB (2026-09-25): the server update OVERWRITES the realm-local value.
 	// A scripted entity's client-side ENT:Initialize writes its defaults into
@@ -1777,6 +1886,14 @@ static void __MsgFunc_HL2SB_NW( bf_read &read )
 		}
 		lua_settop( L, iBase );		// unconditional restore
 	}
+
+	// SetNW*/SetNW2*: same overwrite contract -- the server update wins, so
+	// drop the realm-local copy the same way the legacy path above does.  This
+	// runs unconditionally (not only when L is NULL): an else-if here made the
+	// drop dead code on every normal client, where L is always live, so a
+	// locally written SetNW* default kept shadowing the server value.
+	if ( iFamily == HL2SB_NWFAMILY_NW || iFamily == HL2SB_NWFAMILY_NW2 )
+		HL2SB_NWDropLocalVar( iFamily, entindex, szName );
 }
 
 // HL2SB (2026-09-25): "HL2SB_AMMO" user message -- STRING ammoName,
@@ -1998,6 +2115,7 @@ void HL2SB_NWResyncClient (CBasePlayer *pPlayer)
             filter.MakeReliable();
             UserMessageBegin( filter, "HL2SB_NW" );
               WRITE_SHORT( pEnt->entindex() );
+              WRITE_BYTE( ( unsigned char )HL2SB_NWFAMILY_NETWORKVAR );
               WRITE_STRING( pszName );
               WRITE_BYTE( ( unsigned char )tag );
               WRITE_BYTE( ( unsigned char )len );
@@ -2018,6 +2136,99 @@ void HL2SB_NWResyncClient (CBasePlayer *pPlayer)
 
     Msg( "[HL2SB] NW resync %s (ent %d): %d variable(s) %s\n",
          pEnt->GetClassname(), pEnt->entindex(), nSent, szDetail );
+  }
+
+  // HL2SB (2026-10-11, issue #47): the SetNW*/SetNW2* families live in the two
+  // C++ dicts, not in entity Lua tables, so they need their own walk.  Only
+  // entries whose tag was ever Set go out (tag 0 = never written).
+  for ( int iFamily = HL2SB_NWFAMILY_NW; iFamily <= HL2SB_NWFAMILY_NW2; ++iFamily ) {
+    CUtlDict<HL2SB_NWValue, unsigned short> &dict =
+        ( iFamily == HL2SB_NWFAMILY_NW2 ) ? g_HL2SB_NW2Vars : g_HL2SB_NWVars;
+
+    int nSent = 0;
+    for ( unsigned short idx = dict.First(); dict.IsValidIndex( idx ); idx = dict.Next( idx ) ) {
+      const HL2SB_NWValue &v = dict[ idx ];
+      if ( v.tag == 0 )
+        continue;
+
+      // Key is "<entindex>_<name>" -- the name is everything after the FIRST
+      // underscore (names may contain underscores themselves).
+      char szScratch[ 256 ];
+      Q_strncpy( szScratch, dict.GetElementName( idx ), sizeof( szScratch ) );
+      char *pszUnderscore = strchr( szScratch, '_' );
+      if ( pszUnderscore == NULL )
+        continue;
+      *pszUnderscore = '\0';
+      const int entindex = atoi( szScratch );
+      const char *pszName = pszUnderscore + 1;
+      if ( entindex <= 0 || pszName[ 0 ] == '\0' )
+        continue;
+
+      CBaseEntity *pEnt = UTIL_EntityByIndex( entindex );
+      if ( pEnt == NULL )
+        continue;
+
+      // Same payload layout HL2SB_NWSerialize puts on the wire.
+      unsigned char payload[ 512 ];
+      int len = -1;
+      bf_write w( "HL2SB_NW", payload, sizeof( payload ) );
+      switch ( v.tag ) {
+        case HL2SB_NWTAG_FLOAT:
+          w.WriteFloat( v.f );
+          len = w.GetNumBytesWritten();
+          break;
+        case HL2SB_NWTAG_VECTOR:
+          w.WriteFloat( v.v.x ); w.WriteFloat( v.v.y ); w.WriteFloat( v.v.z );
+          len = w.GetNumBytesWritten();
+          break;
+        case HL2SB_NWTAG_ANGLE:
+          w.WriteFloat( v.a.x ); w.WriteFloat( v.a.y ); w.WriteFloat( v.a.z );
+          len = w.GetNumBytesWritten();
+          break;
+        case HL2SB_NWTAG_BOOL:
+          w.WriteByte( v.b ? 1 : 0 );
+          len = w.GetNumBytesWritten();
+          break;
+        case HL2SB_NWTAG_INT:
+          w.WriteLong( v.i );
+          len = w.GetNumBytesWritten();
+          break;
+        case HL2SB_NWTAG_STRING:
+        {
+          int n = v.s.Length();
+          if ( n > 255 )
+            n = 255;
+          w.WriteByte( n );
+          if ( n > 0 )
+            w.WriteBytes( v.s.Get(), n );
+          len = w.GetNumBytesWritten();
+          break;
+        }
+        case HL2SB_NWTAG_ENTITY:
+          w.WriteShort( v.hEnt.Get() ? v.hEnt.Get()->entindex() : 0 );
+          len = w.GetNumBytesWritten();
+          break;
+        default:
+          continue;
+      }
+      if ( len < 0 || len > 255 )
+        continue;
+
+      CSingleUserRecipientFilter filter( pPlayer );
+      filter.MakeReliable();
+      UserMessageBegin( filter, "HL2SB_NW" );
+        WRITE_SHORT( entindex );
+        WRITE_BYTE( ( unsigned char )iFamily );
+        WRITE_STRING( pszName );
+        WRITE_BYTE( ( unsigned char )v.tag );
+        WRITE_BYTE( ( unsigned char )len );
+        for ( int b = 0; b < len; ++b )
+          WRITE_BYTE( payload[ b ] );
+      MessageEnd();
+      ++nSent;
+    }
+
+    Msg( "[HL2SB] NW resync family %d: %d variable(s)\n", iFamily, nSent );
   }
 
   lua_settop( L, iBase );		// unconditional restore
@@ -2096,6 +2307,7 @@ static int HL2SB_Lua_EntityNetworkVarSet (lua_State *L) {
         CReliableBroadcastRecipientFilter filter;
         UserMessageBegin( filter, "HL2SB_NW" );
           WRITE_SHORT( pSelf->entindex() );
+          WRITE_BYTE( ( unsigned char )HL2SB_NWFAMILY_NETWORKVAR );
           WRITE_STRING( pszName );
           WRITE_BYTE( ( unsigned char )tag );
           WRITE_BYTE( ( unsigned char )len );
@@ -2142,8 +2354,15 @@ static int HL2SB_Lua_EntityNetworkVarGet (lua_State *L) {
     CBaseEntity *pSelf = lua_toentity( L, 1 );
     if ( pSelf != NULL && pSelf->entindex() > 0 ) {
       const char *pszName = ( pszKey != NULL ) ? ( pszKey + strlen( "__hl2sb_nw_" ) ) : "";
-      char key[ 160 ];
-      Q_snprintf( key, sizeof( key ), "%d_%s", pSelf->entindex(), pszName );
+      // Key format must match HL2SB_NWReplicatedStore exactly: the family byte
+      // namespaced the store ("family|entindex|name"), the legacy channel is
+      // family 0.  A stale "entindex_name" lookup here always missed after the
+      // namespace change, so every replicated NetworkVar (env_skypaint's whole
+      // palette included) fell back to the type default and the sky rendered
+      // black while the world drew normally.
+      char key[ 192 ];
+      Q_snprintf( key, sizeof( key ), "%d|%d|%s", HL2SB_NWFAMILY_NETWORKVAR,
+                  pSelf->entindex(), pszName );
 
       unsigned short idx = s_NWReplicated.Find( key );
       if ( s_NWReplicated.IsValidIndex( idx ) && s_NWReplicated[ idx ].nBytes >= 1 ) {
