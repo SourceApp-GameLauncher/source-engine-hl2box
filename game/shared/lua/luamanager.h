@@ -876,6 +876,14 @@ bool       HL2SB_PrecacheOnce (const char *pszName);
 // whole process and the sound stayed unregistered every later map load.
 void       HL2SB_PrecacheForget (const char *pszName);
 
+// HL2SB (2026-10-13): purge the whole HL2SB_PrecacheOnce() cache on a map
+// change.  The cache is process-scoped but the engine precaches it gates
+// (SV sound/model registration) are rebuilt every level, so a resource asked
+// for on one map stayed "done" while every later level refused it with
+// "SV_StartSound: <wave> not precached" -- the nyan gun went silent after
+// the first map change.  Called from luasrc_shutdown().
+void       HL2SB_PrecacheOnceFlushForNewLevel (void);
+
 // HL2SB: one Warning() line per distinct key, capped at 32 keys per DLL load.
 // For branches that leave an engine object in a state Lua cannot see, so that
 // the next crash log names the live path instead of a bare access violation.

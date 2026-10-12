@@ -1322,6 +1322,13 @@ void luasrc_shutdown (void) {
   // dying state.
   HL2SB_TimerShutdown();
 
+  // HL2SB (2026-10-13): the resource once-cache is process-scoped but the
+  // engine precaches it gates are rebuilt every level -- without this the
+  // first map that asked for a sound/trail was the only one that ever got it
+  // ("SV_StartSound: weapons/nyan/nyan_loop.wav not precached" on every later
+  // map, the nyan gun silent for the rest of the process).
+  HL2SB_PrecacheOnceFlushForNewLevel();
+
 //  lcf_close(L);
   // HL2SB (sbrust): GMod 的 gmod13_close 生命周期 -- 同菜单态。
   HL2SB_RunBinaryModuleCloses( L );

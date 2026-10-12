@@ -150,6 +150,23 @@ void HL2SB_PrecacheForget (const char *pszName) {
     s_pHL2SBPrecached->RemoveAt( i );
 }
 
+/*
+** HL2SB (2026-10-13): drop the WHOLE HL2SB_PrecacheOnce() cache, on every map
+** change.  The once-cache is process-scoped, but every registry it gates is
+** LEVEL-scoped: the server rebuilds its sound/model precaches on every map
+** load, and SV_StartSound then refuses anything the new level never
+** registered ("SV_StartSound: weapons/nyan/nyan_loop.wav not precached").
+** With the cache surviving the map change, the first level that ever asked
+** for a resource was the only one that ever got it -- the nyan gun was
+** silent and its trail missing on every map after the first, for the rest
+** of the process.  The Lua state is torn down per level anyway
+** (luasrc_shutdown), so the cache dies with it.
+*/
+void HL2SB_PrecacheOnceFlushForNewLevel (void) {
+  if ( s_pHL2SBPrecached != NULL )
+    s_pHL2SBPrecached->Purge();
+}
+
 
 static int luasrc_UTIL_VecToYaw (lua_State *L) {
   lua_pushnumber(L, UTIL_VecToYaw(luaL_checkvector(L, 1)));
