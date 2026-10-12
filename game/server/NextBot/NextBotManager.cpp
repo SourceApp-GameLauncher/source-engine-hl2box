@@ -21,7 +21,16 @@
 
 extern ConVar ZombieMobMaxSize;
 
-ConVar nb_update_frequency( "nb_update_frequency", ".1", FCVAR_CHEAT );
+// The reference ships this cvar with a default of 30 and its semantics are
+// updates per SECOND; the formula below converts to a tick interval.  (The old
+// port read the value as seconds between updates with a ".1" default -- the
+// same 10 Hz outcome, but a cvar set to the reference's 30 then meant one
+// update per 30 seconds.)  At ~10 Hz every Lua nextbot advances in ~60-unit
+// server-side chunks; single-player has no interpolation window to smooth that
+// (the client renders the server state synchronously) and the bot visibly
+// stuttered.  Multiplayer hid it through origin interpolation; the reference
+// stays smooth in both because it ticks three times as often.
+ConVar nb_update_frequency( "nb_update_frequency", "30", FCVAR_CHEAT );
 ConVar nb_update_framelimit( "nb_update_framelimit", ( IsDebug() ) ? "30" : "15", FCVAR_CHEAT );
 ConVar nb_update_maxslide( "nb_update_maxslide", "2", FCVAR_CHEAT );
 ConVar nb_update_debug( "nb_update_debug", "0", FCVAR_CHEAT );
@@ -328,7 +337,9 @@ void NextBotManager::Update( void )
 			return;
 		}
 
-		int tickRate = TIME_TO_TICKS( nb_update_frequency.GetFloat() );
+		// The cvar counts full updates per second (reference semantics).
+		float flFrequency = nb_update_frequency.GetFloat();
+		int tickRate = ( flFrequency > 0.0f ) ? TIME_TO_TICKS( 1.0f / flFrequency ) : 0;
 		if ( tickRate < 0 )
 		{
 			tickRate = 0;

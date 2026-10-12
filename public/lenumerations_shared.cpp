@@ -163,7 +163,20 @@ LUALIB_API int luaopen_SharedEnumerations( lua_State *L )
     lua_pushenum( L, COLLISION_GROUP_PUSHAWAY, "PUSHAWAY" );
     lua_pushenum( L, COLLISION_GROUP_NPC_ACTOR, "NPC_ACTOR" );
     lua_pushenum( L, COLLISION_GROUP_NPC_SCRIPTED, "NPC_SCRIPTED" );
-    lua_pushenum( L, COLLISION_GROUP_DEBRIS, "WORLD" );  // TODO: How different of debris is this really?
+    // HL2SB: GMod publishes COLLISION_GROUP_WORLD as 20, a group BEYOND
+    // LAST_SHARED_COLLISION_GROUP (== 20 here, so 20 is the first slot past the
+    // shared range).  It used to be pushed as COLLISION_GROUP_DEBRIS (1), and
+    // that made every entity a script put in this group -- SCP-096 does
+    // self:SetCollisionGroup(COLLISION_GROUP_WORLD) -- behave like DEBRIS:
+    // CBaseEntity::ShouldCollide() rejects anything whose collision group is
+    // DEBRIS unless the caller's mask carries CONTENTS_DEBRIS, so a box-swept
+    // crossbow bolt (MASK_SOLID | CONTENTS_HITBOX, no CONTENTS_DEBRIS) passed
+    // straight THROUGH the nextbot instead of touching it.  Group 20 collides
+    // with everything, which is what GMod's WORLD means.  The Lua shim in the
+    // content repo (gmod_compat.lua) can no longer paper over this: its
+    // "COLLISION_GROUP_WORLD or 20" never fires because the engine already set
+    // the global to 1.
+    lua_pushenum( L, 20 /* GMod COLLISION_GROUP_WORLD */, "WORLD" );
     lua_pushenum( L, LAST_SHARED_COLLISION_GROUP, "LAST" );
     LUA_SET_ENUM_LIB_END( L );
 

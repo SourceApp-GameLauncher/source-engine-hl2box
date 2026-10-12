@@ -861,6 +861,27 @@ static int IPhysicsObject_GetMaterialIndex (lua_State *L) {
   return 1;
 }
 
+// HL2SB GMod compat: IPhysicsObject:GetMaterial() -> the surface property name
+// ("Metal", "Wood", "Default", ...).  GMod's physics objects answer this and
+// addons build sound names from it --
+//
+//     material = phys:GetMaterial()
+//     ent:EmitSound( material .. ".ImpactHard", ... )
+//
+// (npc_verity's AttackNearbyTargets does exactly that).  Without it the call
+// raised "attempt to call a nil value (method 'GetMaterial')" and abandoned the
+// rest of the attack.  Same database Entity:GetMaterialType() reads, one level
+// up (the surface PROP name rather than the gamematerial byte).
+static int IPhysicsObject_GetMaterial (lua_State *L) {
+  IPhysicsObject *pPhysics = luaL_checkphysicsobject(L, 1);
+  const char *pszName = NULL;
+  if ( pPhysics != NULL && physprops != NULL ) {
+    pszName = physprops->GetPropName( pPhysics->GetMaterialIndex() );
+  }
+  lua_pushstring(L, pszName ? pszName : "");
+  return 1;
+}
+
 static int IPhysicsObject_GetName (lua_State *L) {
   lua_pushstring(L, luaL_checkphysicsobject(L, 1)->GetName());
   return 1;
@@ -1295,6 +1316,7 @@ static const luaL_Reg IPhysicsObjectmeta[] = {
   {"GetMassCenterLocalSpace", IPhysicsObject_GetMassCenterLocalSpace},
   {"GetMassCenter", IPhysicsObject_GetMassCenterLocalSpace},  /* HL2SB: GMod's name (local-space center of mass) */
   {"GetMaterialIndex", IPhysicsObject_GetMaterialIndex},
+  {"GetMaterial", IPhysicsObject_GetMaterial},
   {"GetName", IPhysicsObject_GetName},
   {"GetPosition", IPhysicsObject_GetPosition},
   {"SetAngles", IPhysicsObject_SetAngles},

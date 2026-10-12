@@ -45,6 +45,7 @@ C_NextBotCombatCharacter::C_NextBotCombatCharacter()
 	m_bInLuaDraw = false;
 	m_bLuaRenderGroupRead = false;
 	m_nLuaRenderGroup = -1;
+	m_bLuaDrawsItself = false;
 
 	// HL2SB: probe.  If this never prints while a Lua nextbot is alive on the
 	// server, the client never built this class for it at all -- and then
@@ -420,6 +421,38 @@ bool C_NextBotCombatCharacter::ShouldInterpolate( void )
 }
 
 
+//--------------------------------------------------------------------------------------------------------
+// HL2SB GMod compat: a model-less Lua nextbot that draws itself from a script
+// hook must survive C_BaseEntity::ShouldDraw().
+//
+// C_BaseEntity::ShouldDraw() is `( model != 0 ) && !EF_NODRAW && index != 0`, so a
+// sprite nextbot -- npc_verity has no ENT.Model at all, its whole appearance is
+// render.SetMaterial + render.DrawQuadEasy inside ENT:DrawTranslucent -- fails it.
+// UpdateVisibility() then calls RemoveFromLeafSystem(), and the bot is dropped
+// from the render list on the first dormancy/PVS/parent change and never drawn
+// again ("the bot runs perfectly but no paper model shows").
+//
+// The reference draws such entities (its scripted-entity base answers ShouldDraw
+// through the script's draw surface), so once the script has been bound and it
+// does provide a draw hook, the script is the authority.  Before the bind, and for
+// a nextbot that DOES carry a model, the inherited answer still applies.
+//--------------------------------------------------------------------------------------------------------
+bool C_NextBotCombatCharacter::ShouldDraw( void )
+{
+	if ( BaseClass::ShouldDraw() )
+		return true;
+
+	// The base refused.  The ONE case this override exists for is the missing
+	// model; everything else it tests (a render mode that forbids drawing,
+	// EF_NODRAW, the world) must still be honoured here, so repeat those tests
+	// and bypass only the model requirement.
+	if ( !m_bLuaDrawsItself || GetModel() != NULL )
+		return false;
+
+	return ( GetRenderMode() != kRenderNone ) && !IsEffectActive( EF_NODRAW ) && index != 0;
+}
+
+
 void C_NextBotCombatCharacter::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged( updateType );
@@ -443,8 +476,18 @@ void C_NextBotCombatCharacter::OnDataChanged( DataUpdateType_t updateType )
 #endif
 
 #ifdef LUA_SDK
-	if ( updateType == DATA_UPDATE_CREATED && !m_bLuaInitialized )
+	if ( !m_bLuaInitialized )
 	{
+		// HL2SB GMod compat: run the script binding on CREATED *or* on any later
+		// data update that finally carries the networked class name.  GMod loads a
+		// nextbot's client half once its classname is on the wire; here the
+		// classname can arrive in a datatable update AFTER the create packet (the
+		// server sets it in CLuaNextBot::Spawn(), which for a gm_spawn can land a
+		// tick later), and acting only on CREATED left such a bot with no
+		// ENT:Initialize(), no render bounds and no leaf-system handle -- a bot
+		// that walks around perfectly while being permanently invisible.  CBaseScripted
+		// retries its bind on every update for exactly this reason; the same retry
+		// is required here.
 		const char *pszName = m_iScriptedClassname.Get();
 
 		if ( pszName != NULL && pszName[0] != '\0' )
@@ -460,6 +503,24 @@ void C_NextBotCombatCharacter::OnDataChanged( DataUpdateType_t updateType )
 				// LuaNextBot_EnsureClientLocomotion().
 				LuaNextBot_EnsureClientLocomotion( L, nTable );
 				LuaNextBot_EnsureClientPathGlobal( L );
+
+				// HL2SB GMod compat: does the script draw this entity itself?  A
+				// model-less sprite nextbot (npc_verity: render.DrawQuadEasy in
+				// ENT:DrawTranslucent) only ever appears through a draw hook, so
+				// ShouldDraw() must not let the inherited "model != 0" test veto it.
+				// The presence of ANY draw hook is the truthful signal.
+				m_bLuaDrawsItself = LuaNextBot_GetField( L, nTable, "RenderOverride" );
+				lua_pop( L, 1 );
+				if ( !m_bLuaDrawsItself )
+				{
+					m_bLuaDrawsItself = LuaNextBot_GetField( L, nTable, "DrawTranslucent" );
+					lua_pop( L, 1 );
+				}
+				if ( !m_bLuaDrawsItself )
+				{
+					m_bLuaDrawsItself = LuaNextBot_GetField( L, nTable, "Draw" );
+					lua_pop( L, 1 );
+				}
 
 				const bool bHasInit = LuaNextBot_GetField( L, nTable, "Initialize" );
 
@@ -495,8 +556,8 @@ void C_NextBotCombatCharacter::OnDataChanged( DataUpdateType_t updateType )
 					Vector vecMins, vecMaxs;
 					GetRenderBounds( vecMins, vecMaxs );
 
-					luasrc_LuaWarnMsgF( "[HL2SB] CLIENT nextbot '%s' initialised: Initialize=%d bounds=(%.0f %.0f %.0f)-(%.0f %.0f %.0f) scriptedBounds=%d group=%d renderable=%s",
-						GetClassname(), (int)bHasInit,
+					luasrc_LuaWarnMsgF( "[HL2SB] CLIENT nextbot '%s' initialised: Initialize=%d drawsItself=%d bounds=(%.0f %.0f %.0f)-(%.0f %.0f %.0f) scriptedBounds=%d group=%d renderable=%s",
+						GetClassname(), (int)bHasInit, (int)m_bLuaDrawsItself,
 						vecMins.x, vecMins.y, vecMins.z, vecMaxs.x, vecMaxs.y, vecMaxs.z,
 						(int)HasScriptedRenderBounds(), (int)GetRenderGroup(),
 						( GetRenderHandle() == INVALID_CLIENT_RENDER_HANDLE ) ? "INVALID" : "ok" );
@@ -671,6 +732,21 @@ int C_NextBotCombatCharacter::DrawModel( int flags )
 
 		if ( pszFunc != NULL )
 		{
+			// HL2SB GMod compat (2026-10-13): a sprite nextbot draws its own
+			// geometry from the script, and the engine has already set the render
+			// blend to THIS ENTITY's GetFxBlend() before calling us (the
+			// translucent renderable path does render->SetBlend( GetFxBlend()/255 )).
+			// npc_verity runs SetRenderMode(RENDERMODE_TRANSALPHA) + SetColor( 255,
+			// 255, 255, 1 ) purely to suppress its engine shadow, so that blend is
+			// 1/255 -- and the script's render.DrawQuadEasy mesh inherits it, drawing
+			// the sprite at ~0.4% opacity (invisible).  GMod dispatches the draw hook
+			// with the blend left at full; the script's own colours are per-vertex.
+			// Reset both state legs so the engine's per-entity fade cannot leak into
+			// the script draw (the engine restores its own blend after the pass).
+			render->SetBlend( 1.0f );
+			float flWhite[ 3 ] = { 1.0f, 1.0f, 1.0f };
+			render->SetColorModulation( flWhite );
+
 			lua_pushanimating( L, this );	// self
 			lua_pushinteger( L, flags );	// STUDIO_* flags, per the wiki
 			nCallError = luasrc_pcall( L, 2, 0, 0 );

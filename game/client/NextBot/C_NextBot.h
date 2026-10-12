@@ -62,6 +62,15 @@ public:
 	// speed that is a ~65 unit jump per step, i.e. visibly stuttering movement.
 	virtual bool ShouldInterpolate( void );
 
+	// HL2SB GMod compat: a model-less Lua nextbot that draws itself from a script
+	// hook (npc_verity has no ENT.Model at all -- ENT:DrawTranslucent draws the
+	// quad with render.DrawQuadEasy) has to pass C_BaseEntity::ShouldDraw()'s
+	// "model != 0" test, or UpdateVisibility() drops it from the leaf system on
+	// the first PVS/dormancy change and it never comes back.  The reference draws
+	// these entities, so the script's own draw hooks are the authority here.
+	// Appended last in the virtual group so no existing vtable slot shifts.
+	virtual bool ShouldDraw( void );
+
 	// HL2SB: the Lua classname, networked from NextBotCombatCharacter (see the note
 	// in game/server/NextBot/NextBot.h).  Mirrored by RecvPropString in the .cpp.
 	CNetworkString( m_iScriptedClassname, 255 );
@@ -94,6 +103,7 @@ private:
 	bool m_bInLuaDraw;			// inside a Lua draw hook (self:DrawModel() re-entry guard)
 	bool m_bLuaRenderGroupRead;	// ENT.RenderGroup has been read (it is a constant)
 	int  m_nLuaRenderGroup;		// ... and its value, -1 when the script has none
+	bool m_bLuaDrawsItself;		// script provides RenderOverride/Draw/DrawTranslucent
 	bool PushLuaScriptTable( void );	// leaves the script's ENT table on the stack
 
 	// Local In View Data.

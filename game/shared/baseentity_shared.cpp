@@ -630,6 +630,21 @@ bool CBaseEntity::ShouldCollide( int collisionGroup, int contentsMask ) const
 		if ( ! (contentsMask & CONTENTS_DEBRIS) )
 			return false;
 	}
+
+	// HL2SB GMod compat: COLLISION_GROUP_WORLD (20) means "doesn't collide with
+	// players/props" (reference enum description).  Entities a script puts in
+	// this group -- SCP-096 does SetCollisionGroup(COLLISION_GROUP_WORLD) --
+	// must be skipped by player-movement traces (the caller's group here is the
+	// MOVING entity's), while everything else (the crossbow-bolt sweep runs its
+	// filter with group NONE, NPC traces, damage traces) still hits them.  Props
+	// don't need a case: they are vphysics bodies and this entity has no
+	// vphysics object, so a pair never forms in the first place.
+	if ( m_CollisionGroup == 20 /* COLLISION_GROUP_WORLD */ )
+	{
+		if ( collisionGroup == COLLISION_GROUP_PLAYER || collisionGroup == COLLISION_GROUP_PLAYER_MOVEMENT )
+			return false;
+	}
+
 	return true;
 }
 

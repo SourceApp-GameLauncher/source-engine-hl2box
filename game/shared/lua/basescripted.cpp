@@ -720,6 +720,18 @@ int CBaseScripted::DrawModel( int flags )
 
 	if ( pszFunc != NULL )
 	{
+		// HL2SB GMod compat (2026-10-13): the engine set the render blend to THIS
+		// entity's GetFxBlend() before calling DrawModel (translucent renderables
+		// do render->SetBlend( GetFxBlend()/255 )), and a script that draws its own
+		// geometry (a sprite quad, a beam) inherits it -- scripts that suppress
+		// their engine shadow with a tiny entity alpha then draw their own sprite
+		// at that same tiny opacity.  The script's colours are per-vertex, so hand
+		// it full blend/colour state like the reference does.
+		extern IVRenderView *render;
+		render->SetBlend( 1.0f );
+		float flWhite[ 3 ] = { 1.0f, 1.0f, 1.0f };
+		render->SetColorModulation( flWhite );
+
 		BEGIN_LUA_CALL_ENTITY_METHOD( pszFunc );
 		END_LUA_CALL_ENTITY_METHOD( 0, 1 );
 

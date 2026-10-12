@@ -2049,10 +2049,15 @@ LUA_BINDING_BEGIN( Renders, DrawQuadEasy, "library", "Draws a quad with the curr
     CMeshBuilder meshBuilder;
     meshBuilder.Begin( pMesh, MATERIAL_QUADS, 1 );
 
-    // ( 0, 0 ) .. ( 1, 1 ) in texture space, counter-clockwise.
-    const float flU[ 4 ] = { 0.0f, 1.0f, 1.0f, 0.0f };
-    const float flV[ 4 ] = { 0.0f, 0.0f, 1.0f, 1.0f };
-    const float flSign[ 4 ][ 2 ] = { { -1.0f, -1.0f }, { 1.0f, -1.0f }, { 1.0f, 1.0f }, { -1.0f, 1.0f } };
+    // Reference corner order and uv pairing (from the reference implementation):
+    // the front face points along +normal and v grows along -up, i.e.
+    //   (+right,-up) uv(1,1), (-right,-up) uv(0,1), (-right,+up) uv(0,0), (+right,+up) uv(1,0)
+    // The old pairing put v along +up and wound the quad the other way, which
+    // made one-sided materials show the texture upside-down (or disappear
+    // entirely through back-face culling, since the front faced -normal).
+    const float flU[ 4 ] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    const float flV[ 4 ] = { 1.0f, 1.0f, 0.0f, 0.0f };
+    const float flSign[ 4 ][ 2 ] = { { 1.0f, -1.0f }, { -1.0f, -1.0f }, { -1.0f, 1.0f }, { 1.0f, 1.0f } };
 
     for ( int i = 0; i < 4; ++i )
     {

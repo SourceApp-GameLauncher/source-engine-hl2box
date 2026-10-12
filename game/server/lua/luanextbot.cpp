@@ -477,13 +477,40 @@ void CLuaNextBot::Think( void )
 	//-----------------------------------------------------------------------------
 	if ( m_locomotor != NULL && ( m_nMoveCheckTicks % 64 ) == 0 )
 	{
-		const float flDesired = m_locomotor->GetDesiredSpeed();
-		const float flActual = m_locomotor->GetVelocity().Length2D();
+		// HL2SB (2026-10-13): measure REAL displacement across the report window.
+		//
+		// The locomotion's own GetVelocity() is computed inside
+		// NextBotGroundLocomotion::Update() as (feet_after - feet_before)/dt where
+		// feet_before is captured AFTER ApplyAccumulatedApproach() has already
+		// performed this tick's positional move -- and ground NextBot movement IS
+		// positional (the approach step), not velocity integration.  The value is
+		// therefore ~0 for a perfectly walking bot and the old "actualSpeed=0"
+		// report fired forever on healthy chasers.
+		static CUtlVector< Vector > s_LastPos;
+		static CUtlVector< int > s_LastTick;
 
-		if ( flDesired > 0.0f && flActual < 5.0f )
+		const int nIndex = entindex();
+		s_LastPos.EnsureCount( nIndex + 1 );
+		s_LastTick.EnsureCount( nIndex + 1 );
+
+		const Vector &vecNow = GetAbsOrigin();
+		float flRealSpeed = 0.0f;
+		if ( s_LastTick[nIndex] != 0 && m_nMoveCheckTicks > s_LastTick[nIndex] )
 		{
-			Msg( "[HL2SB] nextbot '%s' is NOT moving: desiredSpeed=%.0f actualSpeed=%.0f locoUpdates=%d approaches=%d stuck=%d navLoaded=%d navAreas=%d\n",
-				GetClassname(), flDesired, flActual, m_nLocoUpdateCalls, m_nApproachCalls,
+			const float flDt = ( m_nMoveCheckTicks - s_LastTick[nIndex] ) * TICK_INTERVAL;
+			if ( flDt > 0.0f )
+				flRealSpeed = ( vecNow - s_LastPos[nIndex] ).Length2D() / flDt;
+		}
+		s_LastPos[nIndex] = vecNow;
+		s_LastTick[nIndex] = m_nMoveCheckTicks;
+
+		const float flDesired = m_locomotor->GetDesiredSpeed();
+
+		if ( flDesired > 0.0f && flRealSpeed < 5.0f )
+		{
+			Msg( "[HL2SB] nextbot '%s' is NOT moving: desiredSpeed=%.0f realSpeed=%.0f locoSpeed=%.0f locoUpdates=%d approaches=%d stuck=%d navLoaded=%d navAreas=%d\n",
+				GetClassname(), flDesired, flRealSpeed, m_locomotor->GetVelocity().Length2D(),
+				m_nLocoUpdateCalls, m_nApproachCalls,
 				(int)m_locomotor->IsStuck(),
 				( TheNavMesh != NULL && TheNavMesh->IsLoaded() ) ? 1 : 0,
 				( TheNavMesh != NULL ) ? (int)TheNavMesh->GetNavAreaCount() : 0 );
