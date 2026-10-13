@@ -85,6 +85,9 @@ LUA_API void HL2SB_TimerShutdown( void );
 // same rule as above, no header churn.
 void HL2SB_CollectLuaError( const char *pszError, const char *pszTraceback );
 void HL2SB_LuaRegisterErrorCollector( lua_State *L );
+// Defined further down; declared here because HL2SB_LuaReportError (the Lua-side
+// report path) dispatches through it before its definition.
+static void HL2SB_DispatchLuaErrorHooks( lua_State *L, const char *pszError, const char *pszTraceback );
 
 // HL2SB: the collector's copy-to-clipboard binding uses the same vgui ISystem
 // accessors as lsystem.cpp's system.SetClipboardText (which links in BOTH dlls,
@@ -1565,9 +1568,97 @@ static int HL2SB_LuaReportError( lua_State *L )
 	size_t lenMsg = 0, lenTrace = 0;
 	const char *pszMsg = luaL_checklstring( L, 1, &lenMsg );
 	const char *pszTrace = ( lua_isstring( L, 2 ) ) ? lua_tolstring( L, 2, &lenTrace ) : NULL;
-	HL2SB_CollectLuaError( pszMsg, pszTrace );
+
+	// HL2SB: this is the Lua-side report path -- hook.lua calls it with the
+	// message and traceback after a hook callback or gamemode method threw
+	// inside xpcall.  Route it through the same dispatcher the C path uses so
+	// those errors also fire the LuaError / OnLuaError hooks (and so the
+	// in-game notification shows hook crashes too, as GMod does).  The console
+	// text was already printed by hook.lua's Warning, so no print here.
+	HL2SB_DispatchLuaErrorHooks( L, pszMsg, pszTrace );
 	return 0;
 }
+
+// GMod's OnLuaError passes a `stack` argument: an array of call-stack frames,
+// each a table { File = <chunk>, Line = <number>, Function = <name> } (the
+// field names are the ones the reference dispatcher writes).  We already build
+// a traceback string for the LuaError hook, so this re-parses that string into
+// the table shape scripts expect.  Frames are the tab-indented lines; the two
+// non-indented leading lines (the message and "stack traceback:") are not
+// frames.
+static void HL2SB_PushErrorStackLua( lua_State *L, const char *pszTraceback )
+{
+	lua_newtable( L );
+	if ( !pszTraceback )
+		return;
+
+	int iFrame = 0;
+	const char *p = pszTraceback;
+	while ( p && *p && iFrame < 32 )
+	{
+		const char *pEol = strchr( p, '\n' );
+		size_t nLen = pEol ? (size_t)( pEol - p ) : strlen( p );
+
+		// Only tab-indented lines are frames (reference behavior of the
+		// standard traceback formatter).
+		if ( *p != '\t' )
+		{
+			p = pEol ? pEol + 1 : NULL;
+			continue;
+		}
+
+		const char *pLine = p;
+		const char *pEnd = p + nLen;
+		while ( pLine < pEnd && ( *pLine == ' ' || *pLine == '\t' ) )
+			++pLine;
+
+		char szFile[256] = { 0 };
+		char szFunc[256] = { 0 };
+		int  iLineNo = 0;
+
+		// "location: in function 'name'" -- the tail after ": in " is the
+		// function label; the part before it is "<chunk>:<line>".
+		const char *pIn = Q_stristr( pLine, ": in " );
+		const char *pLocEnd = pIn ? pIn : pEnd;
+
+		char szLoc[300];
+		size_t nLoc = (size_t)( pLocEnd - pLine );
+		if ( nLoc >= sizeof( szLoc ) )
+			nLoc = sizeof( szLoc ) - 1;
+		memcpy( szLoc, pLine, nLoc );
+		szLoc[ nLoc ] = '\0';
+
+		char *pColon = strrchr( szLoc, ':' );
+		if ( pColon )
+		{
+			iLineNo = atoi( pColon + 1 );
+			*pColon = '\0';
+		}
+		Q_strncpy( szFile, szLoc, sizeof( szFile ) );
+
+		if ( pIn )
+		{
+			const char *pFunc = pIn + 5;
+			size_t nFunc = (size_t)( pEnd - pFunc );
+			if ( nFunc >= sizeof( szFunc ) )
+				nFunc = sizeof( szFunc ) - 1;
+			memcpy( szFunc, pFunc, nFunc );
+			szFunc[ nFunc ] = '\0';
+		}
+
+		lua_newtable( L );
+		lua_pushstring( L, szFile );      lua_setfield( L, -2, "File" );
+		lua_pushinteger( L, iLineNo );    lua_setfield( L, -2, "Line" );
+		lua_pushstring( L, szFunc );      lua_setfield( L, -2, "Function" );
+		lua_rawseti( L, -2, ++iFrame );
+
+		p = pEol ? pEol + 1 : NULL;
+	}
+}
+
+// Declared here so the registrar below can publish it; defined next to the
+// other Lua entry points further down.
+static int HL2SB_LuaRunString( lua_State *L );
 
 void HL2SB_LuaRegisterErrorCollector( lua_State *L )
 {
@@ -1588,6 +1679,96 @@ void HL2SB_LuaRegisterErrorCollector( lua_State *L )
 
 	lua_pushcfunction( L, HL2SB_LuaReportError );
 	lua_setglobal( L, "hl2sb_reportluaerror" );
+
+	// HL2SB: GMod's RunString / RunStringEx globals.  GMod registers the same C
+	// function for both names (see the reference binding); addons and the
+	// shipped gamemode use them to run a snippet with an explicit chunk name
+	// ("lua_run#<entindex>" style), which is what makes their tracebacks read
+	// back sensibly.  Registered for every realm (game client, game server and
+	// the menu state), because each of them calls this registrar.
+	lua_pushcfunction( L, HL2SB_LuaRunString );
+	lua_setglobal( L, "RunString" );
+	lua_pushcfunction( L, HL2SB_LuaRunString );
+	lua_setglobal( L, "RunStringEx" );
+}
+
+// HL2SB: fire the two error hooks + feed the collector.  Shared by the C error
+// path (luasrc_report_error: loaders, RunString, lua_pcall failures) and the
+// Lua-side report path (hl2sb_reportluaerror, which hook.lua calls when a hook
+// callback or gamemode method throws inside xpcall).  In the reference both of
+// those reach hook.Run("OnLuaError"), so a hook-callback crash produces the
+// same in-game notification a top-level script error does.
+//
+// g_bReportingLuaError makes this non-reentrant: a consumer of OnLuaError that
+// itself errors would otherwise recurse forever.
+static void HL2SB_DispatchLuaErrorHooks( lua_State *L, const char *pszError, const char *pszTraceback )
+{
+	if ( g_bReportingLuaError )
+		return;
+	g_bReportingLuaError = true;
+
+	// We need a traceback for the stack table.  The caller may have one (the
+	// Lua-side path passes what it captured); if not, build it here -- level 0,
+	// because this runs from C, which is not a CallInfo frame, so level 1 would
+	// drop the very frame that raised the error.
+	char szTraceback[2048];
+	szTraceback[0] = '\0';
+	if ( pszTraceback != NULL )
+	{
+		Q_strncpy( szTraceback, pszTraceback, sizeof( szTraceback ) );
+	}
+	else
+	{
+		luaL_traceback(L, L, pszError, 0);
+		if (lua_isstring(L, -1))
+			Q_strncpy(szTraceback, lua_tostring(L, -1), sizeof(szTraceback));
+		lua_pop(L, 1);
+	}
+
+	// Feed the process-wide collector BEFORE the hooks -- a hook may error
+	// itself (the guard above only stops recursion of THIS function).
+	HL2SB_CollectLuaError( pszError, szTraceback );
+
+	char szErrAddon[128];
+	HL2SB_ErrorAddonFromTraceback(szTraceback, szErrAddon, sizeof(szErrAddon));
+
+	const char *pszRealm =
+#ifdef CLIENT_DLL
+		"client";
+#else
+		"server";
+#endif
+
+	// The fork's own hook.  Historical (message, traceback); realm and addon
+	// are appended so collectors can label an error the way GMod's list does
+	// ("<addon> (client)").  Existing 2-argument consumers are unaffected.
+	LUA_CALL_HOOK_FOR_STATE_BEGIN(L, "LuaError");
+		lua_pushstring(L, pszError);
+		lua_pushstring(L, szTraceback);
+		lua_pushstring(L, pszRealm);
+		if (Q_stricmp(szErrAddon, "Other") == 0)
+			lua_pushnil(L);
+		else
+			lua_pushstring(L, szErrAddon);
+	LUA_CALL_HOOK_FOR_STATE_END(L, 4, 0);
+
+	// GMod's error hook:
+	//     hook.Run( "OnLuaError", error, realm, stack, name, id )
+	// `stack` is an array of { File, Line, Function } frames; `name` is the
+	// addon folder when the traceback names one (this fork has no workshop
+	// metadata, so `id` is always nil).
+	LUA_CALL_HOOK_FOR_STATE_BEGIN(L, "OnLuaError");
+		lua_pushstring(L, pszError);
+		lua_pushstring(L, pszRealm);
+		HL2SB_PushErrorStackLua(L, szTraceback);
+		if (Q_stricmp(szErrAddon, "Other") == 0)
+			lua_pushnil(L);
+		else
+			lua_pushstring(L, szErrAddon);
+		lua_pushnil(L);   // id: no workshop id available in this fork
+	LUA_CALL_HOOK_FOR_STATE_END(L, 5, 0);
+
+	g_bReportingLuaError = false;
 }
 
 LUA_API void luasrc_report_error (lua_State *L, const char *pszError) {
@@ -1600,43 +1781,196 @@ LUA_API void luasrc_report_error (lua_State *L, const char *pszError) {
   // so the text keeps landing in engine.log.
   luasrc_LuaErrorMsg(pszError);
 
-  if (g_bReportingLuaError)
-    return;
+  // HL2SB: the hook firing + collection is shared with the Lua-side report
+  // path (see HL2SB_DispatchLuaErrorHooks).
+  HL2SB_DispatchLuaErrorHooks( L, pszError, NULL );
+}
 
-  g_bReportingLuaError = true;
+// HL2SB: the GLua source rewrite, factored out of luasrc_dofile so RunString /
+// RunStringEx (GMod's string runners) get exactly the same dialect handling:
+// C-style `//` comments become `--`, `!=` becomes `~=`, and the GMod preprocessor
+// keyword DEFINE_BASECLASS expands to its documented `local BaseClass =
+// baseclass.Get`.  String literals and comments are tracked so their contents
+// are left untouched.
+//
+// pIn must already be CRLF-normalised.  On success *ppOut is a malloc'd buffer
+// (caller frees) and *pnOut its length; on OOM it returns false with *ppOut NULL.
+static bool HL2SB_RewriteGLuaSource( const char *pIn, int nLen, char **ppOut, size_t *pnOut )
+{
+	// 2x, not 1x: every rewrite below is length-preserving except
+	// DEFINE_BASECLASS, whose replacement (30 bytes) is nearly twice the token
+	// (16), so a 1x buffer would overflow on a file that uses it.
+	char *pOut = (char *)malloc( (size_t)nLen * 2 + 1 );
+	if ( !pOut )
+	{
+		*ppOut = NULL;
+		*pnOut = 0;
+		return false;
+	}
 
-  // Build the traceback first and copy it into a C buffer.  Doing it inline in the
-  // hook call would mean addressing it by stack offset while the hook macros are
-  // pushing hook/call/name/_GAMEMODE underneath it.
-  char szTraceback[2048];
-  szTraceback[0] = '\0';
-  // HL2SB: level 0, not 1 -- this runs from C, which is not a CallInfo frame, so
-  // level 1 dropped the topmost frame: the very one that raised the error.
-  luaL_traceback(L, L, pszError, 0);
-  if (lua_isstring(L, -1))
-    Q_strncpy(szTraceback, lua_tostring(L, -1), sizeof(szTraceback));
-  lua_pop(L, 1);
+	size_t o = 0;
+	enum EState { CODE, SQ_STR, DQ_STR, LONG_STR, LINE_COMMENT, LONG_COMMENT } state = CODE;
+	int i2 = 0;
+	while ( i2 < nLen )
+	{
+		char c = pIn[i2];
+		switch ( state )
+		{
+		case SQ_STR:
+			pOut[o++] = c;
+			if ( c == '\\' && i2 + 1 < nLen ) { pOut[o++] = pIn[++i2]; }
+			else if ( c == '\'' ) state = CODE;
+			i2++;
+			break;
+		case DQ_STR:
+			pOut[o++] = c;
+			if ( c == '\\' && i2 + 1 < nLen ) { pOut[o++] = pIn[++i2]; }
+			else if ( c == '"' ) state = CODE;
+			i2++;
+			break;
+		case LONG_STR:
+			pOut[o++] = c;
+			if ( c == ']' && i2 + 1 < nLen && pIn[i2+1] == ']' ) { pOut[o++] = pIn[++i2]; state = CODE; }
+			i2++;
+			break;
+		case LINE_COMMENT:
+			pOut[o++] = c;
+			if ( c == '\n' ) state = CODE;
+			i2++;
+			break;
+		case LONG_COMMENT:
+			pOut[o++] = c;
+			if ( c == ']' && i2 + 1 < nLen && pIn[i2+1] == ']' ) { pOut[o++] = pIn[++i2]; state = CODE; }
+			i2++;
+			break;
+		default: // CODE
+			if ( c == '\'' ) { pOut[o++] = c; state = SQ_STR; i2++; }
+			else if ( c == '"' ) { pOut[o++] = c; state = DQ_STR; i2++; }
+			else if ( c == '[' && i2 + 1 < nLen && pIn[i2+1] == '[' ) { pOut[o++] = c; pOut[o++] = pIn[++i2]; state = LONG_STR; i2++; }
+			else if ( c == '-' && i2 + 1 < nLen && pIn[i2+1] == '-' )
+			{
+				pOut[o++] = c; pOut[o++] = pIn[++i2]; i2++;
+				if ( i2 < nLen && pIn[i2] == '[' && i2 + 1 < nLen && pIn[i2+1] == '[' )
+				{ pOut[o++] = pIn[i2++]; pOut[o++] = pIn[i2++]; state = LONG_COMMENT; }
+				else state = LINE_COMMENT;
+			}
+			else if ( c == '/' && i2 + 1 < nLen && pIn[i2+1] == '/' ) { pOut[o++] = '-'; pOut[o++] = '-'; i2 += 2; state = LINE_COMMENT; }
+			else if ( c == '!' && i2 + 1 < nLen && pIn[i2+1] == '=' ) { pOut[o++] = '~'; pOut[o++] = '='; i2 += 2; }
+			else if ( ( ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) || c == '_' ) &&
+			          ( i2 == 0 || !( ( pIn[i2-1] >= 'a' && pIn[i2-1] <= 'z' ) ||
+			                          ( pIn[i2-1] >= 'A' && pIn[i2-1] <= 'Z' ) ||
+			                          ( pIn[i2-1] >= '0' && pIn[i2-1] <= '9' ) ||
+			                          pIn[i2-1] == '_' ) ) &&
+			          i2 + 16 <= nLen &&
+			          !Q_strnicmp( pIn + i2, "DEFINE_BASECLASS", 16 ) &&
+			          ( i2 + 16 >= nLen || !( ( pIn[i2+16] >= 'a' && pIn[i2+16] <= 'z' ) ||
+			                                  ( pIn[i2+16] >= 'A' && pIn[i2+16] <= 'Z' ) ||
+			                                  ( pIn[i2+16] >= '0' && pIn[i2+16] <= '9' ) ||
+			                                  pIn[i2+16] == '_' ) ) )
+			{
+				static const char szDefineBaseClass[] = "local BaseClass = baseclass.Get";
+				for ( const char *p = szDefineBaseClass; *p; ++p )
+					pOut[o++] = *p;
+				i2 += 16;
+			}
+			else { pOut[o++] = c; i2++; }
+			break;
+		}
+	}
 
-  // HL2SB: feed the process-wide collector BEFORE the hook call -- the hook may
-  // error itself (the re-entrancy guard only stops recursion of this function).
-  HL2SB_CollectLuaError( pszError, szTraceback );
+	*ppOut = pOut;
+	*pnOut = o;
+	return true;
+}
 
-  LUA_CALL_HOOK_FOR_STATE_BEGIN(L, "LuaError");
-    lua_pushstring(L, pszError);
-    lua_pushstring(L, szTraceback);
-  LUA_CALL_HOOK_FOR_STATE_END(L, 2, 0);
+// HL2SB: the shared core behind GMod's RunString / RunStringEx globals AND the
+// lua_run / lua_run_cl console commands -- in the reference both go through the
+// one CLuaInterface::RunStringEx (with the same DEFINE_BASECLASS rewrite and
+// lexer-level // / != compat, so the GLua dialect works identically in a file
+// and in a console one-liner).
+//
+// bReportError true  = report through luasrc_report_error and return non-zero.
+// bReportError false = leave the error object on the stack and lua_error() it,
+//                      so it propagates as a normal Lua error.
+static int HL2SB_RunStringCore( lua_State *L, const char *pszCode, const char *pszIdentifier, bool bReportError )
+{
+	if ( !pszCode || pszCode[0] == '\0' )
+	{
+		Msg( "Not running script %s - it's too short.\n", pszIdentifier );
+		if ( !bReportError )
+		{
+			lua_pushstring( L, "Invalid script - or too short." );
+			return lua_error( L );
+		}
+		return 1;
+	}
 
-#ifdef CLIENT_DLL
-  // HL2SB (sbrust): GMod additionally dispatches OnClientLuaError from C++
-  // (slot 0x0b7 of lua_shared's hook-name table -- the only LuaError-family
-  // name in it; GMod has no server twin).  One string argument, same
-  // re-entrancy guard as the LuaError hook above.
-  LUA_CALL_HOOK_FOR_STATE_BEGIN(L, "OnClientLuaError");
-    lua_pushstring(L, pszError);
-  LUA_CALL_HOOK_FOR_STATE_END(L, 1, 0);
-#endif
+	if ( pszCode[0] == '\x1b' )
+	{
+		// Bytecode is not accepted (the reference core prints this and bails).
+		Msg( "RunString: Cannot run byte code!\n" );
+		if ( !bReportError )
+		{
+			lua_pushstring( L, "Cannot run byte code!" );
+			return lua_error( L );
+		}
+		return 1;
+	}
 
-  g_bReportingLuaError = false;
+	// Normalise CRLF, then run the same GLua rewrite the file loader uses.
+	int nLen = (int)strlen( pszCode );
+	char *pClean = (char *)malloc( nLen + 1 );
+	if ( !pClean )
+		return 0;
+	int nClean = 0;
+	for ( int i = 0; i < nLen; i++ )
+	{
+		if ( pszCode[i] != '\r' )
+			pClean[nClean++] = pszCode[i];
+	}
+	pClean[nClean] = '\0';
+
+	char *pOut = NULL;
+	size_t nOut = 0;
+	if ( !HL2SB_RewriteGLuaSource( pClean, nClean, &pOut, &nOut ) )
+	{
+		free( pClean );
+		return 0;
+	}
+	free( pClean );
+
+	char chunkname[ 256 ];
+	Q_snprintf( chunkname, sizeof( chunkname ), "@%s", pszIdentifier );
+
+	int iError = luaL_loadbuffer( L, pOut, nOut, chunkname );
+	free( pOut );
+
+	if ( iError == 0 )
+		iError = lua_pcall( L, 0, 0, 0 );
+
+	if ( iError != 0 )
+	{
+		if ( !bReportError )
+			return lua_error( L );   // error object is on top
+		luasrc_report_error( L, lua_tostring( L, -1 ) );
+		lua_pop( L, 1 );
+		return 1;
+	}
+	return 0;
+}
+
+// HL2SB: GMod's RunString / RunStringEx Lua globals.  Reference signature:
+//     RunString( code, identifier = "RunString(Ex)", handleError = true )
+// It runs a source string as a chunk named "@<identifier>" and returns nothing.
+// handleError=false re-raises the failure as a normal Lua error.
+static int HL2SB_LuaRunString( lua_State *L )
+{
+	const char *pszCode = luaL_checkstring( L, 1 );
+	const char *pszIdentifier = luaL_optstring( L, 2, "RunString(Ex)" );
+	bool bHandleError = lua_isnoneornil( L, 3 ) ? true : ( lua_toboolean( L, 3 ) != 0 );
+
+	HL2SB_RunStringCore( L, pszCode, pszIdentifier, bHandleError );
+	return 0;
 }
 
 LUA_API int luasrc_dostring (lua_State *L, const char *string) {
@@ -1711,101 +2045,16 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 			pBuf[nClean++] = pBuf[i];
 	}
 
-	// HL2SB: 2x, not 1x.  Every rewrite below is length-preserving except
-	// DEFINE_BASECLASS, whose replacement (30 bytes) is nearly twice the token
-	// (16), so the old nClean+1 buffer would overflow on a file that uses it.
-	char *pOut = (char *)malloc( nClean * 2 + 1 );
-	if ( !pOut )
+	// HL2SB: 2x buffer, GLua dialect rewrite (see HL2SB_RewriteGLuaSource).
+	char *pOut = NULL;
+	size_t o = 0;
+	if ( !HL2SB_RewriteGLuaSource( pBuf, nClean, &pOut, &o ) )
 	{
 		free( pBuf );
 		Warning( "luasrc_dofile: out of memory translating %s\n", filename );
 		lua_pushnil( L );
 		lua_pushfstring( L, "out of memory translating %s", filename );
 		return 2;
-	}
-
-	size_t o = 0;
-	enum EState { CODE, SQ_STR, DQ_STR, LONG_STR, LINE_COMMENT, LONG_COMMENT } state = CODE;
-	int i2 = 0;
-	while ( i2 < nClean )
-	{
-		char c = pBuf[i2];
-		switch ( state )
-		{
-		case SQ_STR:
-			pOut[o++] = c;
-			if ( c == '\\' && i2 + 1 < nClean ) { pOut[o++] = pBuf[++i2]; }
-			else if ( c == '\'' ) state = CODE;
-			i2++;
-			break;
-		case DQ_STR:
-			pOut[o++] = c;
-			if ( c == '\\' && i2 + 1 < nClean ) { pOut[o++] = pBuf[++i2]; }
-			else if ( c == '"' ) state = CODE;
-			i2++;
-			break;
-		case LONG_STR:
-			pOut[o++] = c;
-			if ( c == ']' && i2 + 1 < nClean && pBuf[i2+1] == ']' ) { pOut[o++] = pBuf[++i2]; state = CODE; }
-			i2++;
-			break;
-		case LINE_COMMENT:
-			pOut[o++] = c;
-			if ( c == '\n' ) state = CODE;
-			i2++;
-			break;
-		case LONG_COMMENT:
-			pOut[o++] = c;
-			if ( c == ']' && i2 + 1 < nClean && pBuf[i2+1] == ']' ) { pOut[o++] = pBuf[++i2]; state = CODE; }
-			i2++;
-			break;
-		default: // CODE
-			if ( c == '\'' ) { pOut[o++] = c; state = SQ_STR; i2++; }
-			else if ( c == '"' ) { pOut[o++] = c; state = DQ_STR; i2++; }
-			else if ( c == '[' && i2 + 1 < nClean && pBuf[i2+1] == '[' ) { pOut[o++] = c; pOut[o++] = pBuf[++i2]; state = LONG_STR; i2++; }
-			else if ( c == '-' && i2 + 1 < nClean && pBuf[i2+1] == '-' )
-			{
-				pOut[o++] = c; pOut[o++] = pBuf[++i2]; i2++;
-				if ( i2 < nClean && pBuf[i2] == '[' && i2 + 1 < nClean && pBuf[i2+1] == '[' )
-				{ pOut[o++] = pBuf[i2++]; pOut[o++] = pBuf[i2++]; state = LONG_COMMENT; }
-				else state = LINE_COMMENT;
-			}
-			else if ( c == '/' && i2 + 1 < nClean && pBuf[i2+1] == '/' ) { pOut[o++] = '-'; pOut[o++] = '-'; i2 += 2; state = LINE_COMMENT; }
-			else if ( c == '!' && i2 + 1 < nClean && pBuf[i2+1] == '=' ) { pOut[o++] = '~'; pOut[o++] = '='; i2 += 2; }
-			// HL2SB: DEFINE_BASECLASS( "X" ) -- a Garry's Mod PREPROCESSOR keyword,
-			// not a function.  Its own wiki: "directly replaced with local
-			// BaseClass = baseclass.Get", and lua/includes/modules/baseclass.lua
-			// documents the same expansion.  Only the identifier is replaced, so
-			// the trailing ( "X" ) stays and the result is
-			// local BaseClass = baseclass.Get( "X" ).
-			//
-			// Done here rather than as a global function because GMod does it at
-			// the lexer level: the argument is part of the replacement, and a
-			// function could not introduce a `local`.
-			//
-			// Identifier-boundary checked, so DEFINE_BASECLASS_X or a longer name
-			// is untouched -- and, unlike GMod's own pass, strings and comments are
-			// left alone (the state machine above already guarantees that).
-			else if ( ( ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) || c == '_' ) &&
-			          ( i2 == 0 || !( ( pBuf[i2-1] >= 'a' && pBuf[i2-1] <= 'z' ) ||
-			                          ( pBuf[i2-1] >= 'A' && pBuf[i2-1] <= 'Z' ) ||
-			                          ( pBuf[i2-1] >= '0' && pBuf[i2-1] <= '9' ) ||
-			                          pBuf[i2-1] == '_' ) ) &&
-			          i2 + 16 <= nClean &&
-			          !Q_strnicmp( pBuf + i2, "DEFINE_BASECLASS", 16 ) &&
-			          ( i2 + 16 >= nClean || !( ( pBuf[i2+16] >= 'a' && pBuf[i2+16] <= 'z' ) ||
-			                                    ( pBuf[i2+16] >= 'A' && pBuf[i2+16] <= 'Z' ) ||
-			                                    ( pBuf[i2+16] >= '0' && pBuf[i2+16] <= '9' ) ||
-			                                    pBuf[i2+16] == '_' ) ) )
-			{
-				static const char szDefineBaseClass[] = "local BaseClass = baseclass.Get";
-				for ( const char *p = szDefineBaseClass; *p; ++p )
-					pOut[o++] = *p;
-				i2 += 16;
-			}
-			else { pOut[o++] = c; i2++; }
-			break;
-		}
 	}
 	free( pBuf );
 
@@ -3663,7 +3912,10 @@ static void HL2SB_LuaDoFile_Impl( const CCommand &args, bool bClient, const char
 			return;
 		}
 
-		luasrc_dostring( L, args.ArgS() );
+		// HL2SB: run through the shared GMod core (chunk named "@lua_run_cl"),
+		// so the GLua dialect (// comments, !=, DEFINE_BASECLASS) works in a
+		// console one-liner exactly as it does in a file.
+		HL2SB_RunStringCore( L, args.ArgS(), "lua_run_cl", true );
 	}
 #else
 	CON_COMMAND_F_COMPLETION( lua_dofile, "Load and run a Lua file", 0, DoFileCompletion )
@@ -3717,7 +3969,8 @@ static void HL2SB_LuaDoFile_Impl( const CCommand &args, bool bClient, const char
 			return;
 		}
 
-		luasrc_dostring( L, args.ArgS() );
+		// HL2SB: same shared GMod core as lua_run_cl (chunk named "@lua_run").
+		HL2SB_RunStringCore( L, args.ArgS(), "lua_run", true );
 	}
 #endif
 
