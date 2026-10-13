@@ -1332,6 +1332,18 @@ void luasrc_shutdown (void) {
 //  lcf_close(L);
   // HL2SB (sbrust): GMod 的 gmod13_close 生命周期 -- 同菜单态。
   HL2SB_RunBinaryModuleCloses( L );
+#ifdef CLIENT_DLL
+  // HL2SB (2026-10-13): GMod deletes a state's panels together with the state
+  // (panel userdata is a GC subject -- __gc on the Lua class metatable).  The
+  // client state closes on every level load, so mark every panel this state
+  // created for vgui deletion BEFORE lua_close(): panels parented to surviving
+  // vgui subtrees (the HUD viewport -- the voice indicator list is the live
+  // case) would otherwise outlive the map holding a freed lua_State and crash
+  // the loading screen's Think traverse.  MarkForDeletion is deferred; the
+  // actual teardown runs on the next vgui frame, by which time the destructor
+  // unref is live-state gated and skips.  Must stay above lua_close(L).
+  HL2SB_LuaPanelsDeleteForState( L );
+#endif
   lua_close(L);
 
   // HL2SB: ported from Experiment: Source.  luaopen_ACTIVITY owns the activity

@@ -38,6 +38,12 @@ LPanel::LPanel(Panel *parent, const char *panelName, lua_State *L) : Panel(paren
 	m_lua_State = L;
 	m_nTableReference = LUA_NOREF;
 	m_nRefCount = 0;
+
+	// HL2SB (2026-10-13): GMod finalizes a state's panels through the panel
+	// metatable's __gc when the state is collected; this fork rebuilds the
+	// state per level, so the lifecycle is an explicit registry that
+	// luasrc_shutdown() sweeps (HL2SB_LuaPanelsDeleteForState below).
+	HL2SB_LuaPanelTrack( this, L );
 #endif // LUA_SDK
 
 	// HL2SB: GMod calls the Lua field PaintOver after a panel and all of its
@@ -69,6 +75,7 @@ LPanel::LPanel(Panel *parent, const char *panelName, lua_State *L) : Panel(paren
 LPanel::~LPanel()
 {
 #if defined( LUA_SDK )
+	HL2SB_LuaPanelUntrack( this );
 	HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
 	/* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
 	** registry slot; reset the field so no later reader can hand that number
@@ -76,6 +83,98 @@ LPanel::~LPanel()
 	m_nTableReference = LUA_NOREF;
 #endif // LUA_SDK
 }
+
+#if defined( LUA_SDK )
+//-----------------------------------------------------------------------------
+// HL2SB (2026-10-13): the scripted-panel registry backing
+// HL2SB_LuaPanelsDeleteForState().  GMod deletes a state's panels with the
+// state (panel userdata __gc); this fork closes the client state on every
+// level load while panels parented to surviving vgui subtrees (HUD viewport
+// children, popups) would otherwise keep living with a cached, freed
+// lua_State.  luasrc_shutdown() sweeps the dying state's records through
+// Panel::MarkForDeletion() BEFORE lua_close(): the actual C++ teardown is
+// deferred to the next vgui frame (the loading screen keeps pumping), by
+// which time the destructor's unref is live-state gated and no-ops.
+//-----------------------------------------------------------------------------
+struct HL2SB_LuaPanelRecord_t
+{
+	vgui::Panel	*pPanel;
+	lua_State	*pState;
+};
+
+static CUtlVector<HL2SB_LuaPanelRecord_t> s_LuaPanels;
+
+void HL2SB_LuaPanelTrack( vgui::Panel *pPanel, lua_State *pState )
+{
+	if ( pPanel == NULL || pState == NULL )
+		return;
+
+#ifdef DBGFLAG_ASSERT
+	for ( int i = 0; i < s_LuaPanels.Count(); ++i )
+	{
+		AssertMsg( s_LuaPanels[i].pPanel != pPanel,
+			"scripted panel tracked twice (%s)", pPanel->GetName() ? pPanel->GetName() : "?" );
+	}
+#endif
+
+	int iRecord = s_LuaPanels.AddToTail();
+	s_LuaPanels[iRecord].pPanel = pPanel;
+	s_LuaPanels[iRecord].pState = pState;
+}
+
+void HL2SB_LuaPanelUntrack( vgui::Panel *pPanel )
+{
+	if ( pPanel == NULL )
+		return;
+
+	for ( int i = 0; i < s_LuaPanels.Count(); ++i )
+	{
+		if ( s_LuaPanels[i].pPanel == pPanel )
+		{
+			s_LuaPanels.FastRemove( i );
+			return;
+		}
+	}
+}
+
+void HL2SB_LuaPanelsDeleteForState( lua_State *pState )
+{
+	if ( pState == NULL )
+		return;
+
+	// Only the topmost panel of each scripted subtree is marked: vgui
+	// deletion cascades through children, and a child whose deferred Delete
+	// message lands after its parent already destroyed it would otherwise be
+	// double-queued.  Descendants are removed by that same cascade.
+	CUtlVector<vgui::Panel *> dying;
+	for ( int i = 0; i < s_LuaPanels.Count(); ++i )
+	{
+		if ( s_LuaPanels[i].pState == pState )
+			dying.AddToTail( s_LuaPanels[i].pPanel );
+	}
+
+	for ( int i = 0; i < dying.Count(); ++i )
+	{
+		vgui::Panel *pPanel = dying[i];
+
+		bool bParentAlsoDying = false;
+		for ( int j = 0; j < dying.Count(); ++j )
+		{
+			if ( dying[j] == pPanel->GetParent() )
+			{
+				bParentAlsoDying = true;
+				break;
+			}
+		}
+
+		if ( !bParentAlsoDying )
+			pPanel->MarkForDeletion();
+	}
+
+	// Records of the dying state stay listed until each destructor untracks
+	// itself, which happens when the deferred deletion lands.
+}
+#endif // LUA_SDK
 
 //-----------------------------------------------------------------------------
 // Purpose: Screen size change notification handler

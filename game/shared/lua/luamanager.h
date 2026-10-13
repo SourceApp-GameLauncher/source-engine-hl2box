@@ -431,7 +431,17 @@ inline bool HL2SB_LuaPanelHasMethod( lua_State *pState, int iTableReference, con
 	// includes this header dies at parse ("undeclared identifier" in this
 	// very inline).  Semantics are unchanged: client panels may be backed by
 	// either live global, server-side there is only L.
-	if ( pState == NULL || !lua_isrefvalid( pState, iTableReference ) )
+	//
+	// HL2SB (2026-10-13): the second pass wrote the comment above but ordered
+	// the body backwards -- lua_isrefvalid() ran on the panel's CACHED state
+	// pointer BEFORE the live-global comparison, so a stale panel dereferenced
+	// its freed state inside lua_rawgeti before the liveness answer could
+	// reject it.  The surviving-subtree case is real: a scripted panel
+	// parented to the HUD viewport (the voice indicator list) outlives the
+	// per-level client state, and its OnThink probe ran during the loading
+	// screen's vgui Think traverse.  Liveness FIRST, reference probe after --
+	// the same ordering BEGIN_LUA_CALL_PANEL_METHOD above already uses.
+	if ( pState == NULL )
 		return false;
 #ifdef CLIENT_DLL
 	if ( pState != L && pState != LGameUI )
@@ -440,6 +450,8 @@ inline bool HL2SB_LuaPanelHasMethod( lua_State *pState, int iTableReference, con
 	if ( pState != L )
 		return false;
 #endif
+	if ( !lua_isrefvalid( pState, iTableReference ) )
+		return false;
 
 	lua_getref( pState, iTableReference );
 	lua_getfield( pState, -1, pszName );
@@ -758,6 +770,25 @@ inline void HL2SB_LuaPanelUnref( lua_State *pState, int nTableReference )
 		lua_unref( pState, nTableReference );
 	}
 }
+
+/*
+** HL2SB (2026-10-13): GMod's panel userdata is a garbage-collectable subject
+** (the Lua class metatables carry __gc -- CLuaClass metatable init copies the
+** field down the MetaBaseClass chain), so when a realm's Lua state is
+** collected, every panel that state created is finalized with it.  This fork
+** rebuilds the client state once per level instead, so the equivalent
+** lifecycle has to be explicit: every scripted control registers itself at
+** construction, and luasrc_shutdown() marks all of the dying state's panels
+** for vgui deletion before lua_close().  Without the sweep, panels parented
+** to vgui subtrees that survive the map change (the HUD viewport and its
+** children -- the voice indicator list is the live case) keep their C++ side
+** alive holding a freed lua_State.
+*/
+namespace vgui { class Panel; }
+
+void HL2SB_LuaPanelTrack( vgui::Panel *pPanel, lua_State *pState );
+void HL2SB_LuaPanelUntrack( vgui::Panel *pPanel );
+void HL2SB_LuaPanelsDeleteForState( lua_State *pState );
 #endif
 
 

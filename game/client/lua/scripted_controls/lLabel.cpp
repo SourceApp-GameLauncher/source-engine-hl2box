@@ -42,6 +42,9 @@ LLabel::LLabel( Panel *parent, const char *panelName, const char *text, lua_Stat
     m_lua_State = L;
     m_nTableReference = LUA_NOREF;
 
+    // HL2SB (2026-10-13): per-state panel registry -- see LPanel's constructor.
+    HL2SB_LuaPanelTrack( this, L );
+
     HL2SB_ApplyTextDefaults( this );
 #endif
 }
@@ -76,6 +79,7 @@ void HL2SB_ApplyTextDefaults( Label *pLabel )
 LLabel::~LLabel()
 {
 #if defined( LUA_SDK )
+    HL2SB_LuaPanelUntrack( this );
     HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
     /* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
     ** registry slot; reset the field so no later reader can hand that number

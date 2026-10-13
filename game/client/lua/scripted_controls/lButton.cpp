@@ -30,6 +30,9 @@ LButton::LButton(Panel *parent, const char *panelName, const char *text, Panel *
 	m_nTableReference = LUA_NOREF;
 	m_nRefCount = 0;
 
+	// HL2SB (2026-10-13): per-state panel registry -- see LPanel's constructor.
+	HL2SB_LuaPanelTrack( this, L );
+
 	// HL2SB: same standard text defaults as LLabel -- Button derives from
 	// Label, so without this its caption still rode the top edge in the tiny
 	// scheme font (see HL2SB_ApplyTextDefaults in lLabel.cpp).
@@ -43,6 +46,7 @@ LButton::LButton(Panel *parent, const char *panelName, const char *text, Panel *
 LButton::~LButton()
 {
 #if defined( LUA_SDK )
+	HL2SB_LuaPanelUntrack( this );
 	HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
 	/* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
 	** registry slot; reset the field so no later reader can hand that number

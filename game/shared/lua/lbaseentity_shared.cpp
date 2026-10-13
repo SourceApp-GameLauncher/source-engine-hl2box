@@ -6090,7 +6090,17 @@ static int luasrc_ents_Create (lua_State *L) {
 }
 
 static int luasrc_ents_GetByIndex (lua_State *L) {
-  CBaseEntity *pEnt = CBaseEntity::Instance(luaL_checkint(L, 1));
+  // HL2SB (2026-10-14): bounds-gate the index.  The reference answers an
+  // invalid or out-of-range index with NULL, never a wild read -- addons
+  // feed this from network data where a desynced stream must degrade to
+  // nil, not crash the client.
+  int iIndex = luaL_checkint( L, 1 );
+  if ( iIndex <= 0 || iIndex >= NUM_ENT_ENTRIES )
+  {
+    lua_pushnil( L );
+    return 1;
+  }
+  CBaseEntity *pEnt = CBaseEntity::Instance(iIndex);
   // HL2SB (2026-09-22 physgun audit): push with the DYNAMIC metatable.  The
   // plain lua_pushentity stamps "CBaseEntity" on everything, so Entity(1) on
   // the server answered to zero Player methods (GetEyeTrace/GetActiveWeapon/

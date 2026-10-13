@@ -254,6 +254,15 @@ class LTextEntry : public TextEntry
     void HL2SB_CallLuaTextEntryMethod( const char *pszName, int nArgs = 0, int nArg1 = 0, int nArg2 = 0 )
     {
 #if defined( LUA_SDK )
+        /* HL2SB (2026-10-13): m_lua_State is the panel's CACHED state pointer,
+        ** which outlives lua_close() when the client state is rebuilt on every
+        ** level load.  Touch it only while it is still one of the live global
+        ** states -- same gate as BEGIN_LUA_CALL_PANEL_METHOD; probing the
+        ** reference first dereferenced freed heap from surviving-panel
+        ** dispatches (loading-screen Think traverse crash). */
+        if ( m_lua_State == NULL || ( m_lua_State != L && m_lua_State != LGameUI ) )
+            return;
+
         if ( !lua_isrefvalid( m_lua_State, m_nTableReference ) )
             return;
 
@@ -283,6 +292,10 @@ class LTextEntry : public TextEntry
     void HL2SB_CallLuaTextEntryMethodText( const char *pszName )
     {
 #if defined( LUA_SDK )
+        /* HL2SB (2026-10-13): cached-state liveness gate, see above. */
+        if ( m_lua_State == NULL || ( m_lua_State != L && m_lua_State != LGameUI ) )
+            return;
+
         if ( !lua_isrefvalid( m_lua_State, m_nTableReference ) )
             return;
 

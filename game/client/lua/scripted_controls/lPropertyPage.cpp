@@ -27,6 +27,9 @@ LPropertyPage::LPropertyPage(Panel *parent, const char *panelName, lua_State *L)
 	m_lua_State = L;
 	m_nTableReference = LUA_NOREF;
 	m_nRefCount = 0;
+
+	// HL2SB (2026-10-13): per-state panel registry -- see LPanel's constructor.
+	HL2SB_LuaPanelTrack( this, L );
 #endif // LUA_SDK
 }
 
@@ -36,6 +39,7 @@ LPropertyPage::LPropertyPage(Panel *parent, const char *panelName, lua_State *L)
 LPropertyPage::~LPropertyPage()
 {
 #if defined( LUA_SDK )
+	HL2SB_LuaPanelUntrack( this );
 	HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
 	/* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
 	** registry slot; reset the field so no later reader can hand that number

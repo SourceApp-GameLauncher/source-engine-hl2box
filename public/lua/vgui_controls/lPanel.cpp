@@ -1754,6 +1754,51 @@ static int Panel_SetDrawOnTop (lua_State *L) {
   return 0;
 }
 
+// HL2SB (2026-10-13): GMod Panel:ParentToHUD() -- parents the panel to the
+// game HUD viewport (reference behavior: the panel follows the HUD and is
+// hidden on the escape menu).  g_pClientMode->GetViewport() is the same HUD
+// container the engine HUD elements parent to.
+static int Panel_ParentToHUD (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  if ( g_pClientMode == NULL )
+    return 0;
+  vgui::Panel *pViewport = g_pClientMode->GetViewport();
+  if ( pViewport == NULL )
+    return 0;
+  pPanel->SetParent( pViewport );
+  return 0;
+}
+
+// HL2SB (2026-10-13): GMod Panel:Add( class [, name ] ) -- creates a panel of
+// the named class parented to this one and returns it (reference behavior:
+// the vgui factory create with self as parent).  Routed through the Lua
+// vgui.Create so this fork's scripted-class merge chain still runs; answers
+// nil in states that have no vgui module.
+static int Panel_Add (lua_State *L) {
+  luaL_checkpanel(L, 1);
+  lua_getglobal(L, "vgui");
+  if ( !lua_istable(L, -1) ) { lua_pop(L, 1); lua_pushnil(L); return 1; }
+  lua_getfield(L, -1, "Create");
+  lua_remove(L, -2);
+  if ( !lua_isfunction(L, -1) ) { lua_pop(L, 1); lua_pushnil(L); return 1; }
+  lua_pushvalue(L, 2);                          // class name (or table)
+  lua_pushvalue(L, 1);                          // self as the parent
+  if ( lua_isnoneornil(L, 3) )
+    lua_pushnil(L);
+  else
+    lua_pushvalue(L, 3);                        // optional panel name
+  lua_call(L, 3, 1);
+  return 1;
+}
+
+// HL2SB (2026-10-13): GMod scripts call SetPaintBackground; the C face under
+// it is SetPaintBackgroundEnabled (GMod's binary registers that name too --
+// its Lua-side alias is what panel code calls).  Same receiver, same shape.
+static int Panel_SetPaintBackground (lua_State *L) {
+  luaL_checkpanel(L, 1)->SetPaintBackgroundEnabled( luaL_checkboolean(L, 2) != 0 );
+  return 0;
+}
+
 // GMod Panel:HasChildren()
 static int Panel_HasChildren (lua_State *L) {
   bool bHas = luaL_checkpanel(L, 1)->GetChildCount() > 0;
@@ -1804,6 +1849,9 @@ static const luaL_Reg Panelmeta[] = {
   {"HasChildren", Panel_HasChildren},
   {"IsKeyboardInputEnabled", Panel_IsKeyBoardInputEnabled},
   {"IsModal", Panel_IsModal},
+  {"Add", Panel_Add},
+  {"ParentToHUD", Panel_ParentToHUD},
+  {"SetPaintBackground", Panel_SetPaintBackground},
   {"SetBGColor", Panel_SetBGColor},
   {"SetDrawOnTop", Panel_SetDrawOnTop},
   {"SetFGColor", Panel_SetFGColor},

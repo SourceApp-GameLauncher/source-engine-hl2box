@@ -368,8 +368,25 @@ int luaH_next (lua_State *L, Table *t, StkId key) {
 }
 
 
+/*
+** A table whose bookkeeping was overwritten after its storage blocks were
+** recycled would hand stale pointers to the allocator's free path; the
+** release then corrupts neighboring blocks and the process dies on the
+** next heap validation.  Every block luaM handed out is max-aligned and
+** every node vector it sized fits within MAXHBITS, so a pointer or size
+** that fails either check proves the owning structure no longer matches
+** its storage.  Leak the stale storage instead of corrupting the heap.
+*/
+static int storageowned ( const void *block, unsigned int lsize ) {
+  if ( lsize > MAXHBITS )
+    return 0;
+  if ( ( ( (size_t)block ) & ( sizeof ( Table * ) - 1 ) ) != 0 )
+    return 0;
+  return 1;
+}
+
 static void freehash (lua_State *L, Table *t) {
-  if (!isdummy(t))
+  if ( !isdummy(t) && storageowned( t->node, t->lsizenode ) )
     luaM_freearray(L, t->node, cast_sizet(sizenode(t)));
 }
 
@@ -570,7 +587,23 @@ void luaH_resize (lua_State *L, Table *t, unsigned int newasize,
     exchangehashpart(t, &newt);  /* and hash (in case of errors) */
   }
   /* allocate new array */
-  newarray = luaM_reallocvector(L, t->array, oldasize, newasize, TValue);
+  if ( t->array != NULL && !storageowned( t->array, 0 ) ) {
+    /*
+    ** The array pointer no longer looks like a block luaM handed out (see
+    ** storageowned): the table's bookkeeping was clobbered since the block
+    ** was allocated.  Handing that pointer back to the allocator makes the
+    ** heap validate a bogus header and abort; take a fresh block, copy the
+    ** entries it still holds, and let the suspect one leak instead.
+    */
+    unsigned int keep = oldasize < newasize ? oldasize : newasize;
+    newarray = luaM_newvector(L, newasize, TValue);
+    if ( newarray != NULL ) {
+      for ( i = 0; i < keep; i++ )
+        newarray[i] = t->array[i];
+    }
+  }
+  else
+    newarray = luaM_reallocvector(L, t->array, oldasize, newasize, TValue);
   if (l_unlikely(newarray == NULL && newasize > 0)) {  /* allocation failed? */
     freehash(L, &newt);  /* release new hash part */
     luaM_error(L);  /* raise error (with array unchanged) */
@@ -637,7 +670,8 @@ Table *luaH_new (lua_State *L) {
 
 void luaH_free (lua_State *L, Table *t) {
   freehash(L, t);
-  luaM_freearray(L, t->array, luaH_realasize(t));
+  if ( luaH_realasize(t) == 0 || storageowned( t->array, 0 ) )
+    luaM_freearray(L, t->array, luaH_realasize(t));
   luaM_free(L, t);
 }
 
