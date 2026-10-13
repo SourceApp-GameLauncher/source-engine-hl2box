@@ -71,7 +71,11 @@ ConVar	npc_citizen_auto_player_squad( "npc_citizen_auto_player_squad", "1" );
 ConVar	npc_citizen_auto_player_squad_allow_use( "npc_citizen_auto_player_squad_allow_use", "0" );
 
 
-ConVar	npc_citizen_dont_precache_all( "npc_citizen_dont_precache_all", "0" );
+// GMod ships this at 1: a freshly spawned citizen precaches only its OWN head
+// model (PrecacheModel( GetModelName() )), not the whole per-type roster.  The
+// SDK default of 0 made the FIRST citizen spawn of a session precache every
+// male/female head of the type -- the "spawning any citizen stutters" report.
+ConVar	npc_citizen_dont_precache_all( "npc_citizen_dont_precache_all", "1" );
 
 
 ConVar  npc_citizen_medic_emit_sound("npc_citizen_medic_emit_sound", "1" );
@@ -1004,8 +1008,10 @@ void CNPC_Citizen::GatherConditions()
 //-----------------------------------------------------------------------------
 void CNPC_Citizen::PredictPlayerPush()
 {
+#ifndef HL2SB
 	if ( !AI_IsSinglePlayer() )
 		return;
+#endif
 
 	if ( HasCondition( COND_CIT_PLAYERHEALREQUEST ) )
 		return;
@@ -2355,8 +2361,10 @@ bool CNPC_Citizen::IsPlayerAlly( CBasePlayer *pPlayer )
 //-----------------------------------------------------------------------------
 bool CNPC_Citizen::CanJoinPlayerSquad()
 {
+#ifndef HL2SB
 	if ( !AI_IsSinglePlayer() )
 		return false;
+#endif
 
 	if ( m_NPCState == NPC_STATE_SCRIPT || m_NPCState == NPC_STATE_PRONE )
 		return false;
@@ -2372,7 +2380,8 @@ bool CNPC_Citizen::CanJoinPlayerSquad()
 		return false;
 
 #ifdef HL2SB
-	if ( IRelationType( UTIL_GetNearestPlayer( GetAbsOrigin() ) ) != D_LI )
+	CBasePlayer *pPlayer = UTIL_GetNearestPlayer( GetAbsOrigin() );
+	if ( pPlayer == NULL || IRelationType( pPlayer ) != D_LI )
 #else
 	if ( IRelationType( UTIL_GetLocalPlayer() ) != D_LI )
 #endif
@@ -2402,7 +2411,11 @@ bool CNPC_Citizen::HaveCommandGoal() const
 //-----------------------------------------------------------------------------
 bool CNPC_Citizen::IsCommandMoving()
 {
+#ifdef HL2SB
+	if ( IsInPlayerSquad() )
+#else
 	if ( AI_IsSinglePlayer() && IsInPlayerSquad() )
+#endif
 	{
 #ifdef HL2SB
 		if ( m_FollowBehavior.GetFollowTarget() == UTIL_GetNearestPlayer( GetAbsOrigin() ) ||
@@ -2426,6 +2439,8 @@ bool CNPC_Citizen::ShouldAutoSummon()
 		return false;
 
 	CHL2MP_Player *pPlayer = (CHL2MP_Player *)UTIL_GetNearestPlayer( GetAbsOrigin() );
+	if ( pPlayer == NULL )
+		return false;
 #else
 	if ( !AI_IsSinglePlayer() || !IsFollowingCommandPoint() || !IsInPlayerSquad() )
 		return false;
@@ -2705,14 +2720,19 @@ void CNPC_Citizen::CommanderUse( CBaseEntity *pActivator, CBaseEntity *pCaller, 
 
 	// Under these conditions, citizens will refuse to go with the player.
 	// Robin: NPCs should always respond to +USE even if someone else has the semaphore.
+#ifdef HL2SB
+	if ( !CanJoinPlayerSquad() )
+#else
 	if ( !AI_IsSinglePlayer() || !CanJoinPlayerSquad() )
+#endif
 	{
 		SimpleUse( pActivator, pCaller, useType, value );
 		return;
 	}
 	
 #ifdef HL2SB
-	if ( pActivator == UTIL_GetNearestPlayer( GetAbsOrigin() ) )
+	// the player who actually pressed +USE, not merely the nearest one
+	if ( pActivator != NULL && pActivator->IsPlayer() )
 #else
 	if ( pActivator == UTIL_GetLocalPlayer() )
 #endif
@@ -3149,8 +3169,10 @@ int CNPC_Citizen::PlayerSquadCandidateSortFunc( const SquadCandidate_t *pLeft, c
 //-----------------------------------------------------------------------------
 void CNPC_Citizen::FixupPlayerSquad()
 {
+#ifndef HL2SB
 	if ( !AI_IsSinglePlayer() )
 		return;
+#endif
 
 	m_flTimeJoinedPlayerSquad = gpGlobals->curtime;
 	m_bWasInPlayerSquad = true;
@@ -3231,8 +3253,10 @@ void CNPC_Citizen::ClearFollowTarget()
 //-----------------------------------------------------------------------------
 void CNPC_Citizen::UpdateFollowCommandPoint()
 {
+#ifndef HL2SB
 	if ( !AI_IsSinglePlayer() )
 		return;
+#endif
 
 	if ( IsInPlayerSquad() )
 	{
@@ -3852,7 +3876,8 @@ bool CNPC_Citizen::ShouldLookForHealthItem()
 
 	// Player is hurt, don't steal his health.
 #ifdef HL2SB
-	if( AI_IsSinglePlayer() && UTIL_GetNearestPlayer( GetAbsOrigin() )->GetHealth() <= UTIL_GetNearestPlayer( GetAbsOrigin() )->GetHealth() * 0.75f )
+	CBasePlayer *pPlayer = UTIL_GetNearestPlayer( GetAbsOrigin() );
+	if( pPlayer && pPlayer->GetHealth() <= pPlayer->GetHealth() * 0.75f )
 #else
 	if( AI_IsSinglePlayer() && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.75f )
 #endif

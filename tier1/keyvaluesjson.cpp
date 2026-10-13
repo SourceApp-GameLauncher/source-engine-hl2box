@@ -56,6 +56,24 @@ KeyValues *KeyValuesJSONParser::ParseFile()
 			return pResult;
 		pResult->deleteThis();
 	}
+	// HL2SB: accept a top-level array as well.  GMod's util.JSONToTable parses
+	// any JSON document, and our own TableToJSON writes sequential tables as
+	// top-level arrays - rejecting '[' here breaks that round-trip (the array
+	// comes back through the same "0","1",... child naming ParseArray uses).
+	if ( m_eToken == '[' )
+	{
+		KeyValues *pResult = new KeyValues("");
+		if ( !ParseArray( pResult ) )
+		{
+			pResult->deleteThis();
+			return NULL;
+		}
+		if ( m_eToken == kToken_EOF )
+			return pResult;
+		pResult->deleteThis();
+		V_sprintf_safe( m_szErrMsg, "%s not expected here.  Trailing data after the top-level array", GetTokenDebugText() );
+		return NULL;
+	}
 	V_sprintf_safe( m_szErrMsg, "%s not expected here.  A valid JSON document should be a single object, which begins with '{' and ends with '}'", GetTokenDebugText() );
 	return NULL;
 }
