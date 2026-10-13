@@ -2234,6 +2234,15 @@ void CBaseEntity::FireBullets( const FireBulletsInfo_t &info )
 		CTakeDamageInfo dmgInfo( this, pAttacker, flCumulativeDamage, nDamageType );
 		gamestats->Event_WeaponHit( pPlayer, info.m_bPrimaryAttack, pPlayer->GetActiveWeapon()->GetClassname(), dmgInfo );
 	}
+
+#if defined( LUA_SDK ) && !defined( CLIENT_DLL )
+	// HL2SB GMod compat (2026-10-13): hook.Run( "PostEntityFireBullets", ent,
+	// bullet ) - the "after" half, fired once the shot has been processed.
+	{
+		extern void HL2SB_LuaPostEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInfo_t &info );
+		HL2SB_LuaPostEntityFireBullets( this, info );
+	}
+#endif
 #endif
 }
 

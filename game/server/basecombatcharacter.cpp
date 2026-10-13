@@ -3058,7 +3058,18 @@ int CBaseCombatCharacter::GiveAmmo( int iCount, int iAmmoIndex, bool bSuppressSo
 		EmitSound( "BaseCombatCharacter.AmmoPickup" );
 	}
 
-	m_iAmmo.Set( iAmmoIndex, m_iAmmo[iAmmoIndex] + iAdd );
+	int iOld = m_iAmmo[iAmmoIndex];
+	m_iAmmo.Set( iAmmoIndex, iOld + iAdd );
+
+#if defined( LUA_SDK )
+	// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerAmmoChanged", ply, type,
+	// old, new ).  Only for players (the Lua consumer is a player hook).
+	if ( IsPlayer() )
+	{
+		extern void HL2SB_LuaPlayerAmmoChanged( CBasePlayer *pPlayer, int iAmmoType, int iOld, int iNew );
+		HL2SB_LuaPlayerAmmoChanged( ToBasePlayer( this ), iAmmoIndex, iOld, iOld + iAdd );
+	}
+#endif
 
 	return iAdd;
 }

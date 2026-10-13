@@ -1254,6 +1254,16 @@ void CBaseEntity::EmitSound( IRecipientFilter& filter, int iEntIndex, const Emit
 		pEntity->ModifyEmitSoundParams( const_cast< EmitSound_t& >( params ) );
 	}
 
+#if defined( GAME_DLL ) && defined( LUA_SDK ) && !defined( CLIENT_DLL )
+	// HL2SB GMod compat (2026-10-13): hook.Run( "EntityEmitSound", ent, name ) -
+	// GMod fires this from the sound emit path.  Minimal form (no table
+	// mutation): fired once per emitted entity sound.
+	{
+		extern void HL2SB_LuaEntityEmitSound( CBaseEntity *pEnt, const char *pszSoundName );
+		HL2SB_LuaEntityEmitSound( pEntity, params.m_pSoundName );
+	}
+#endif
+
 	// VPROF( "CBaseEntity::EmitSound" );
 	// Call into the sound emitter system...
 	g_SoundEmitterSystem.EmitSound( filter, iEntIndex, params );

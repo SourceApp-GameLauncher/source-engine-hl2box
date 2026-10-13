@@ -1881,19 +1881,10 @@ void CHL2MPScriptedWeapon::Equip( CBaseCombatCharacter *pOwner )
 			lua_pushentity( L, pOwner );
 	END_LUA_CALL_WEAPON_METHOD( pOwner != NULL ? 1 : 0, 0 );
 
-	// HL2SB GMod compat (2026-09-23): GM:WeaponEquip( weapon, owner ) -- a
-	// SERVER-side gamemode hook in GMod (wiki lists it under server hooks);
-	// fired after the weapon's own Equip so the state addons read is final.
-#ifndef CLIENT_DLL
-	if ( L != NULL )
-	{
-		BEGIN_LUA_CALL_HOOK( "WeaponEquip" );
-			lua_pushweapon( L, this );
-			if ( pOwner != NULL )
-				lua_pushentity( L, pOwner );
-		END_LUA_CALL_HOOK( pOwner != NULL ? 2 : 1, 0 );
-	}
-#endif
+	// HL2SB (2026-10-13): GM:WeaponEquip( weapon, owner ) is fired ONCE from the
+	// player side now (CBasePlayer::Weapon_Equip), where GMod fires it and where
+	// every weapon - scripted or not - passes exactly once.  Firing it here too
+	// would double it for SWEPs, so this site was removed.
 #endif
 }
 

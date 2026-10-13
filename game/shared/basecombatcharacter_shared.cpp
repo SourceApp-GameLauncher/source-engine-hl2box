@@ -53,6 +53,17 @@ bool CBaseCombatCharacter::Weapon_Switch( CBaseCombatWeapon *pWeapon, int viewmo
 		return false;
 	}
 
+#if defined( LUA_SDK ) && !defined( CLIENT_DLL )
+	// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerSwitchWeapon", ply, old,
+	// new ) - a truthy answer vetoes the switch (GMod).  Only for players.
+	if ( IsPlayer() )
+	{
+		extern bool HL2SB_LuaPlayerSwitchWeapon( CBasePlayer *pPlayer, CBaseCombatWeapon *pOld, CBaseCombatWeapon *pNew );
+		if ( HL2SB_LuaPlayerSwitchWeapon( ToBasePlayer( this ), m_hActiveWeapon, pWeapon ) )
+			return false;
+	}
+#endif
+
 	if ( m_hActiveWeapon )
 	{
 		if ( !m_hActiveWeapon->Holster( pWeapon ) )
@@ -121,7 +132,18 @@ void CBaseCombatCharacter::RemoveAmmo( int iCount, int iAmmoIndex )
 		return;
 
 	// Ammo pickup sound
-	m_iAmmo.Set( iAmmoIndex, MAX( m_iAmmo[iAmmoIndex] - iCount, 0 ) );
+	int iOld = m_iAmmo[iAmmoIndex];
+	m_iAmmo.Set( iAmmoIndex, MAX( iOld - iCount, 0 ) );
+
+#if defined( LUA_SDK ) && !defined( CLIENT_DLL )
+	// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerAmmoChanged", ply, type,
+	// old, new ).  Only for players.
+	if ( IsPlayer() )
+	{
+		extern void HL2SB_LuaPlayerAmmoChanged( CBasePlayer *pPlayer, int iAmmoType, int iOld, int iNew );
+		HL2SB_LuaPlayerAmmoChanged( ToBasePlayer( this ), iAmmoIndex, iOld, MAX( iOld - iCount, 0 ) );
+	}
+#endif
 }
 
 void CBaseCombatCharacter::RemoveAmmo( int iCount, const char *szName )

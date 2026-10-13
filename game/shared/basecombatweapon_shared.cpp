@@ -727,6 +727,16 @@ void CBaseCombatWeapon::Drop( const Vector &vecVelocity )
 	SetOwnerEntity( NULL );
 	SetOwner( NULL );
 
+#if defined( LUA_SDK )
+	// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerDroppedWeapon", ply,
+	// weapon ) - fired with the previous owner, right before ownership clears.
+	if ( pOwner != NULL && pOwner->IsPlayer() )
+	{
+		extern void HL2SB_LuaPlayerDroppedWeapon( CBasePlayer *pPlayer, CBaseCombatWeapon *pWeapon );
+		HL2SB_LuaPlayerDroppedWeapon( ToBasePlayer( pOwner ), this );
+	}
+#endif
+
 	// If we're not allowing to spawn due to the gamerules,
 	// remove myself when I'm dropped by an NPC.
 	if ( pOwner && pOwner->IsNPC() )

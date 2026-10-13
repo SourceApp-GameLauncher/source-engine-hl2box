@@ -11,6 +11,8 @@
 #include "lbaseentity_shared.h"
 // HL2SB: luaL_checkplayer, for Entity/Player:PrintMessage().
 #include "lbaseplayer_shared.h"
+// HL2SB: lua_pushweapon, for the PlayerSwitchWeapon / PlayerDroppedWeapon hooks.
+#include "lbasecombatweapon_shared.h"
 #include "ltakedamageinfo.h"
 #include "mathlib/lvector.h"
 #include "items.h"
@@ -758,6 +760,171 @@ bool HL2SB_LuaEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInfo_t 
   END_LUA_CALL_HOOK( 2, 1 );
   lua_pop( L, 1 );
   return true;
+}
+
+
+// HL2SB GMod compat (2026-10-13): hook.Run( "PostEntityFireBullets", ent, bullet )
+// - the "after" half of GMod's bullet-hook pair (EntityFireBullets is the
+// "before").  Fired from the tail of CBaseEntity::FireBullets.  Same bullet
+// table as EntityFireBullets.
+void HL2SB_LuaPostEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInfo_t &info )
+{
+  if ( L == NULL )
+    return;
+
+  BEGIN_LUA_CALL_HOOK( "PostEntityFireBullets" );
+    lua_pushentity( L, pShooter );
+    lua_newtable( L );
+    lua_pushinteger( L, info.m_iShots );            lua_setfield( L, -2, "Num" );
+    lua_pushvector( L, info.m_vecSrc );             lua_setfield( L, -2, "Src" );
+    lua_pushvector( L, info.m_vecDirShooting );     lua_setfield( L, -2, "Dir" );
+    lua_pushnumber( L, info.m_flDistance );         lua_setfield( L, -2, "Distance" );
+    lua_pushnumber( L, info.m_flDamage );           lua_setfield( L, -2, "Damage" );
+    lua_pushnumber( L, info.m_flDamageForceScale ); lua_setfield( L, -2, "Force" );
+    lua_pushentity( L, info.m_pAttacker );          lua_setfield( L, -2, "Attacker" );
+    lua_pushentity( L, info.m_pAdditionalIgnoreEnt ); lua_setfield( L, -2, "IgnoreEntity" );
+    lua_pushinteger( L, info.m_iAmmoType );         lua_setfield( L, -2, "AmmoType" );
+  END_LUA_CALL_HOOK( 2, 0 );
+}
+
+
+// HL2SB GMod compat (2026-10-13): hook.Run( "EntityEmitSound", ent, name ).
+// GMod fires this from the sound emit path with a full sound table and accepts
+// a replacement table; nothing in this fork's addon set uses the mutation half,
+// so this minimal form fires the two values consumers read.
+void HL2SB_LuaEntityEmitSound( CBaseEntity *pEnt, const char *pszSoundName )
+{
+  if ( L == NULL )
+    return;
+
+  BEGIN_LUA_CALL_HOOK( "EntityEmitSound" );
+    lua_pushentity( L, pEnt );
+    if ( pszSoundName != NULL )
+      lua_pushstring( L, pszSoundName );
+    else
+      lua_pushnil( L );
+  END_LUA_CALL_HOOK( 2, 0 );
+}
+
+
+// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerDroppedWeapon", ply, weapon )
+// - fired from CBaseCombatWeapon::Drop with the previous owner.
+void HL2SB_LuaPlayerDroppedWeapon( CBasePlayer *pPlayer, CBaseCombatWeapon *pWeapon )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return;
+
+  BEGIN_LUA_CALL_HOOK( "PlayerDroppedWeapon" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushweapon( L, pWeapon );
+  END_LUA_CALL_HOOK( 2, 0 );
+}
+
+
+// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerAmmoChanged", ply, type, old,
+// new ) - fired when the count actually changed (the old != new gate is GMod's).
+void HL2SB_LuaPlayerAmmoChanged( CBasePlayer *pPlayer, int iAmmoType, int iOld, int iNew )
+{
+  if ( L == NULL || pPlayer == NULL || iOld == iNew )
+    return;
+
+  BEGIN_LUA_CALL_HOOK( "PlayerAmmoChanged" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushinteger( L, iAmmoType );
+    lua_pushinteger( L, iOld );
+    lua_pushinteger( L, iNew );
+  END_LUA_CALL_HOOK( 4, 0 );
+}
+
+
+// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerSwitchWeapon", ply, old, new )
+// - a truthy answer vetoes the switch (GMod).  Fired from Weapon_Switch.
+bool HL2SB_LuaPlayerSwitchWeapon( CBasePlayer *pPlayer, CBaseCombatWeapon *pOld, CBaseCombatWeapon *pNew )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return false;
+
+  bool bVeto = false;
+
+  BEGIN_LUA_CALL_HOOK( "PlayerSwitchWeapon" );
+    lua_pushplayer( L, pPlayer );
+    if ( pOld != NULL ) lua_pushweapon( L, pOld ); else lua_pushnil( L );
+    if ( pNew != NULL ) lua_pushweapon( L, pNew ); else lua_pushnil( L );
+  END_LUA_CALL_HOOK( 3, 1 );
+
+  if ( lua_isboolean( L, -1 ) )
+    bVeto = ( lua_toboolean( L, -1 ) != 0 );
+  lua_pop( L, 1 );
+
+  return bVeto;
+}
+
+
+// HL2SB GMod compat (2026-10-13): the gravity-gun hook family.  GMod fires
+// these from the physcannon pickup / punt / release paths; a truthy return from
+// PickupAllowed / Punt vetoes the action (GMod).
+bool HL2SB_LuaGravGunPickupAllowed( CBasePlayer *pPlayer, CBaseEntity *pEnt )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return false;
+
+  bool bVeto = false;
+
+  BEGIN_LUA_CALL_HOOK( "GravGunPickupAllowed" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushentity( L, pEnt );
+  END_LUA_CALL_HOOK( 2, 1 );
+
+  if ( lua_isboolean( L, -1 ) )
+    bVeto = ( lua_toboolean( L, -1 ) == 0 );	// GMod: return false to refuse
+  lua_pop( L, 1 );
+
+  return bVeto;
+}
+
+
+// HL2SB GMod compat (2026-10-13): a truthy answer vetoes the punt (GMod).
+bool HL2SB_LuaGravGunPunt( CBasePlayer *pPlayer, CBaseEntity *pEnt )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return false;
+
+  bool bVeto = false;
+
+  BEGIN_LUA_CALL_HOOK( "GravGunPunt" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushentity( L, pEnt );
+  END_LUA_CALL_HOOK( 2, 1 );
+
+  if ( lua_isboolean( L, -1 ) )
+    bVeto = ( lua_toboolean( L, -1 ) == 0 );	// GMod: return false to refuse the punt
+  lua_pop( L, 1 );
+
+  return bVeto;
+}
+
+
+void HL2SB_LuaGravGunOnPickedUp( CBasePlayer *pPlayer, CBaseEntity *pEnt )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return;
+
+  BEGIN_LUA_CALL_HOOK( "GravGunOnPickedUp" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushentity( L, pEnt );
+  END_LUA_CALL_HOOK( 2, 0 );
+}
+
+
+void HL2SB_LuaGravGunOnDropped( CBasePlayer *pPlayer, CBaseEntity *pEnt )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return;
+
+  BEGIN_LUA_CALL_HOOK( "GravGunOnDropped" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushentity( L, pEnt );
+  END_LUA_CALL_HOOK( 2, 0 );
 }
 
 

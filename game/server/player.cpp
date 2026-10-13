@@ -86,6 +86,7 @@
 #include "luamanager.h"
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
+#include "lbasecombatweapon_shared.h"
 #include "lgametrace.h"
 #include "ltakedamageinfo.h"
 #include "mathlib/lvector.h"
@@ -7811,6 +7812,21 @@ void CBasePlayer::Weapon_DropSlot( int weaponSlot )
 void CBasePlayer::Weapon_Equip( CBaseCombatWeapon *pWeapon )
 {
 	BaseClass::Weapon_Equip( pWeapon );
+
+#if defined( LUA_SDK )
+	// HL2SB GMod compat (2026-10-13): GM:WeaponEquip( weapon, owner ) -- GMod
+	// fires this from the PLAYER-side Weapon_Equip (one call per player weapon),
+	// with the weapon first.  It used to live on the scripted-weapon side only,
+	// so plain HL2 weapons never fired it; moved here to cover every weapon and
+	// to fire exactly once (the scripted side no longer fires it).
+	if ( L != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "WeaponEquip" );
+			lua_pushweapon( L, pWeapon );
+			lua_pushplayer( L, this );
+		END_LUA_CALL_HOOK( 2, 0 );
+	}
+#endif
 
 	bool bShouldSwitch = g_pGameRules->FShouldSwitchWeapon( this, pWeapon );
 
