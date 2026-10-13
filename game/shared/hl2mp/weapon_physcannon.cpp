@@ -1724,6 +1724,15 @@ void CWeaponPhysCannon::PuntVPhysics( CBaseEntity *pEntity, const Vector &vecFor
 
 	Vector forward = vecForward;
 
+	// HL2SB GMod compat (2026-10-13): GM:GravGunPunt( ply, ent ) - a truthy
+	// answer vetoes the punt (GMod).  Fired before the object is launched.
+	if ( pOwner != NULL )
+	{
+		extern bool HL2SB_LuaGravGunPunt( CBasePlayer *pPlayer, CBaseEntity *pEnt );
+		if ( HL2SB_LuaGravGunPunt( pOwner, pEntity ) )
+			return;
+	}
+
 	info.SetAttacker( GetOwner() );
 	info.SetInflictor( this );
 	info.SetDamage( 0.0f );
@@ -1810,8 +1819,9 @@ void CWeaponPhysCannon::PuntVPhysics( CBaseEntity *pEntity, const Vector &vecFor
 	}
 
 #endif
-	// Add recoil
-	QAngle	recoil = QAngle( random->RandomFloat( 1.0f, 2.0f ), random->RandomFloat( -1.0f, 1.0f ), 0 );
+	// Add recoil - shared RNG keeps the predicted client punch and the
+	// server punch identical (two independent streams gave an echoed recoil).
+	QAngle	recoil = QAngle( SharedRandomFloat( "CWeaponPhysCannon::ViewPunchPitch", 1.0f, 2.0f ), SharedRandomFloat( "CWeaponPhysCannon::ViewPunchYaw", -1.0f, 1.0f ), 0 );
 	pOwner->ViewPunch( recoil );
 
 	//Explosion effect
@@ -2157,6 +2167,14 @@ bool CWeaponPhysCannon::AttachObject( CBaseEntity *pObject, const Vector &vPosit
 	{
 		// NOTE: This can change the mass; so it must be done before max speed setting
 		Physgun_OnPhysGunPickup( pObject, pOwner, PICKED_UP_BY_CANNON );
+
+#ifndef CLIENT_DLL
+		// HL2SB GMod compat (2026-10-13): GM:GravGunOnPickedUp( ply, ent ).
+		{
+			extern void HL2SB_LuaGravGunOnPickedUp( CBasePlayer *pPlayer, CBaseEntity *pEnt );
+			HL2SB_LuaGravGunOnPickedUp( pOwner, pObject );
+		}
+#endif
 	}
 
 	// NOTE :This must happen after OnPhysGunPickup because that can change the mass
@@ -2540,6 +2558,16 @@ void CWeaponPhysCannon::DetachObject( bool playSound, bool wasLaunched )
 
 	m_bActive = false;
 	m_hAttachedObject = NULL;
+
+#if defined( LUA_SDK )
+	// HL2SB GMod compat (2026-10-13): GM:GravGunOnDropped( ply, ent ) - fired
+	// once the held object is released.
+	if ( pObject != NULL && pOwner != NULL )
+	{
+		extern void HL2SB_LuaGravGunOnDropped( CBasePlayer *pPlayer, CBaseEntity *pEnt );
+		HL2SB_LuaGravGunOnDropped( pOwner, pObject );
+	}
+#endif
 
 	
 	if ( playSound )
@@ -2980,6 +3008,14 @@ bool CWeaponPhysCannon::CanPickupObject( CBaseEntity *pTarget )
 		lua_pop( L, 1 );
 
 		if ( bBlocked )
+			return false;
+	}
+
+	// HL2SB GMod compat (2026-10-13): GMod's gravity-gun pick gate.  The
+	// gamemode answers "allowed?" (default true); false refuses the pickup.
+	{
+		extern bool HL2SB_LuaGravGunPickupAllowed( CBasePlayer *pPlayer, CBaseEntity *pEnt );
+		if ( HL2SB_LuaGravGunPickupAllowed( pOwner, pTarget ) )
 			return false;
 	}
 #endif

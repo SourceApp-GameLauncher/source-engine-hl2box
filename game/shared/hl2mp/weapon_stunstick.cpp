@@ -498,12 +498,25 @@ void CWeaponStunStick::SetStunState( bool state )
 		g_pEffects->Sparks( vecAttachment );
 
 		//FIXME: END - Move to client-side
-
-		EmitSound( "Weapon_StunStick.Activate" );
 	}
-	else
+
+	// Route the activate/deactivate sting through an attenuation filter like
+	// the other weapon sounds: a bare EmitSound kept playing on other players'
+	// weapons as they left the PVS, and was never prediction-filtered.
+#ifdef CLIENT_DLL
+	// Workaround to prevent sounds from playing on other players when they leave PVS.
+	if ( GetPredictable() )
+#endif
 	{
-		EmitSound( "Weapon_StunStick.Deactivate" );
+		CBaseEntity *pEntity = GetOwner() != NULL ? GetOwnerEntity() : this;
+		const char *sound = m_bActive ? "Weapon_StunStick.Activate" : "Weapon_StunStick.Deactivate";
+
+		CPASAttenuationFilter filter( pEntity, sound );
+
+		if ( IsPredicted() && CBaseEntity::GetPredictionPlayer() )
+			filter.UsePredictionRules();
+
+		EmitSound( filter, pEntity->entindex(), sound );
 	}
 }
 

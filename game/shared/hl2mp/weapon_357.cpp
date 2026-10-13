@@ -148,7 +148,7 @@ void CWeapon357::PrimaryAttack( void )
 		else
 		{
 			WeaponSound( EMPTY );
-			m_flNextPrimaryAttack = 0.15;
+			m_flNextPrimaryAttack = gpGlobals->curtime + 0.15f;
 		}
 
 		return;
@@ -207,7 +207,10 @@ void CWeapon357::PrimaryAttack( void )
 	}
 #endif
 
-	pPlayer->ViewPunch( QAngle( -8, random->RandomFloat( -2, 2 ), 0 ) );
+	// Shared RNG so the predicted client punch and the server punch match
+	// (using the global random stream here desynced the two, which showed up
+	// as a repeated/echoed recoil while holding fire in multiplayer).
+	pPlayer->ViewPunch( QAngle( -8, SharedRandomFloat( "CWeapon357::ViewPunchYaw", -2, 2 ), 0 ) );
 
 	if ( !m_iClip1 && pPlayer->GetAmmoCount( m_iPrimaryAmmoType ) <= 0 )
 	{

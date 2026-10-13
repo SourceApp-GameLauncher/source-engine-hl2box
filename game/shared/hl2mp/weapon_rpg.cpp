@@ -365,8 +365,11 @@ void CMissile::ShotDown(void)
 //-----------------------------------------------------------------------------
 void CMissile::DoExplosion(void)
 {
-	// Explode
-	ExplosionCreate(GetAbsOrigin(), GetAbsAngles(), GetOwnerEntity(), GetDamage(), CMissile::EXPLOSION_RADIUS,
+	// Explode from the missile's world center: using the origin let the blast
+	// radius reach players above a ceiling or through a wall.
+	Vector explosionOrigin = WorldSpaceCenter();
+
+	ExplosionCreate(explosionOrigin, GetAbsAngles(), GetOwnerEntity(), GetDamage(), CMissile::EXPLOSION_RADIUS,
 		SF_ENVEXPLOSION_NOSPARKS | SF_ENVEXPLOSION_NODLIGHTS | SF_ENVEXPLOSION_NOSMOKE, 0.0f, this);
 }
 
@@ -462,7 +465,8 @@ void CMissile::IgniteThink(void)
 {
 	SetMoveType(MOVETYPE_FLY);
 	SetModel("models/weapons/w_missile.mdl");
-	UTIL_SetSize(this, vec3_origin, vec3_origin);
+	// Collision box is left as the launch model's; shrinking it here made the
+	// in-flight rocket untouchable.
 	RemoveSolidFlags(FSOLID_NOT_SOLID);
 	AddEFlags(EFL_NO_WATER_VELOCITY_CHANGE); // Ignore velocity change by in or out water transition
 
@@ -1367,6 +1371,15 @@ void RecvProxy_MissileDied(const CRecvProxyData *pData, void *pStruct, void *pOu
 	{
 		if (pRPG->GetOwner() && pRPG->GetOwner()->GetActiveWeapon() == pRPG)
 		{
+			// HL2MP reference fix: if we predicted our own missile, ignore the
+			// first "missile died" the server sends and let the reload wait for
+			// the real rocket - otherwise the reload animation ran early.
+			if (pRPG->IsPredictingMissile())
+			{
+				pRPG->SetPredictingMissile(false);
+				return; // Ignore this frame's `NotifyRocketDied()`
+			}
+
 			pRPG->NotifyRocketDied();
 		}
 	}
@@ -1474,6 +1487,10 @@ CWeaponRPG::CWeaponRPG()
 	m_bHideGuiding = false;
 	m_bGuiding = false;
 	m_hMissile = NULL;
+
+#ifdef CLIENT_DLL
+	m_bClientPredictingMissile = false;
+#endif
 
 	m_fMinRange1 = m_fMinRange2 = 40 * 12;
 	m_fMaxRange1 = m_fMaxRange2 = 500 * 12;
@@ -1720,6 +1737,10 @@ void CWeaponRPG::PrimaryAttack(void)
 			ppAIs[i]->DispatchInteraction(g_interactionPlayerLaunchedRPG, NULL, pMissile);
 		}
 	}
+#else
+	// HL2MP reference fix: the client predicts its own shot, so mark a missile
+	// as airborne until the server confirms the real rocket's death.
+	SetPredictingMissile(true);
 #endif
 
 	DecrementAmmo(GetOwner());
@@ -1727,7 +1748,7 @@ void CWeaponRPG::PrimaryAttack(void)
 	WeaponSound(SINGLE);
 
 	// player "shoot" animation
-	pPlayer->SetAnimation(PLAYER_ATTACK1);
+	pPlayer->SetAnimation( PLAYER_ATTACK1 );
 }
 
 //-----------------------------------------------------------------------------
@@ -2063,7 +2084,12 @@ void CWeaponRPG::CreateLaserPointer(void)
 	if (pOwner == NULL)
 		return;
 
-	if (pOwner->GetAmmoCount(m_iPrimaryAmmoType) <= 0)
+	// Third rocket guidance fix: keep the point alive while a rocket of ours is
+	// still in the air, even though our own clip has run dry - otherwise the
+	// last rocket loses guidance the instant it leaves the tube.
+	CMissile *pMissile = dynamic_cast<CMissile *>(m_hMissile.Get());
+
+	if (!pMissile && pOwner->GetAmmoCount(m_iPrimaryAmmoType) <= 0)
 		return;
 
 	m_hLaserDot = CLaserDot::Create(GetAbsOrigin(), GetOwner());

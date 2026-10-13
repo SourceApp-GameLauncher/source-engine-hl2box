@@ -602,6 +602,9 @@ void CWeaponFrag::RollGrenade( CBasePlayer *pPlayer )
 
 #endif
 
+	// Don't let prediction filter this out - the roll sound was missing
+	// because it was being swallowed by the prediction system.
+	CDisablePredictionFiltering disablePred;
 	WeaponSound( SPECIAL1 );
 
 	// player "shoot" animation

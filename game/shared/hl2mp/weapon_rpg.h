@@ -281,6 +281,15 @@ public:
 
 	CBaseEntity *GetMissile(void) { return m_hMissile; }
 
+#ifdef CLIENT_DLL
+	// HL2MP reference fix: the client must keep believing a rocket is in the
+	// air after it fires, otherwise the predicted weapon reloads a fresh round
+	// while the rocket is still flying (reload animation plays prematurely,
+	// then snaps back when the server's missile handle finally clears).
+	bool	IsPredictingMissile() const { return m_bClientPredictingMissile; }
+	void	SetPredictingMissile(bool enabled) { m_bClientPredictingMissile = enabled; }
+#endif
+
 #ifndef CLIENT_DLL
 	DECLARE_ACTTABLE();
 #endif
@@ -301,6 +310,10 @@ protected:
 private:
 
 	CWeaponRPG(const CWeaponRPG &);
+
+#ifdef CLIENT_DLL
+	bool	m_bClientPredictingMissile;	// Treats a locally-fired missile as active
+#endif
 };
 
 #endif // WEAPON_RPG_H
