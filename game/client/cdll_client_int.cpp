@@ -808,6 +808,9 @@ public:
 
 	virtual void					VoiceStatus( int entindex, qboolean bTalking );
 
+	// HL2SB: engine push of one per-speaker loudness sample (0..1).
+	virtual void					VoiceLoudness( int entindex, float flLoudness );
+
 	virtual void					InstallStringTableCallback( const char *tableName );
 
 	virtual void					FrameStageNotify( ClientFrameStage_t curStage );
@@ -1999,6 +2002,13 @@ void CHLClient::LevelInitPostEntity( )
 #if defined ( LUA_SDK )
 	BEGIN_LUA_CALL_HOOK( "LevelInitPostEntity" );
 	END_LUA_CALL_HOOK( 0, 0 );
+	// HL2SB (2026-10-13): reference behavior -- GMod's client fires the
+	// InitPostEntity hook at the same post-entity point (its hook-name table
+	// carries both names; the base gamemode hangs work like the voice HUD's
+	// CreateVoiceVGUI on InitPostEntity).  The fork only carried
+	// LevelInitPostEntity, so those consumers never ran.
+	BEGIN_LUA_CALL_HOOK( "InitPostEntity" );
+	END_LUA_CALL_HOOK( 0, 0 );
 #endif
 	IGameSystem::LevelInitPostEntityAllSystems();
 	C_PhysPropClientside::RecreateAll();
@@ -2166,6 +2176,25 @@ int CHLClient::GetSpriteSize( void ) const
 void CHLClient::VoiceStatus( int entindex, qboolean bTalking )
 {
 	GetClientVoiceMgr()->UpdateSpeakerStatus( entindex, !!bTalking );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: HL2SB - one loudness sample (0..1) from the engine voice path.
+// The engine sends -1 for the local microphone leg; resolve it here so the
+// client's loudness table is keyed by real player entity indices (the
+// reference's client does the same resolution on its side of the channel).
+//-----------------------------------------------------------------------------
+void CHLClient::VoiceLoudness( int entindex, float flLoudness )
+{
+	if ( entindex == -1 )
+	{
+		C_BasePlayer *pLocal = C_BasePlayer::GetLocalPlayer();
+		if ( !pLocal )
+			return;
+		entindex = pLocal->entindex();
+	}
+
+	GetClientVoiceMgr()->SetPlayerLoudness( entindex, flLoudness );
 }
 
 

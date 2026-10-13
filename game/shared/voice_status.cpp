@@ -29,6 +29,9 @@
 #include "tier0/dbg.h"
 #include "cdll_int.h"
 #include <vgui/IPanel.h>
+// HL2SB: PlayerStartVoice / PlayerEndVoice gamemode hooks (client only file).
+#include "luamanager.h"
+#include "lbaseentity_shared.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -114,6 +117,14 @@ CVoiceStatus::CVoiceStatus()
 	m_pHeadLabelMaterial = NULL;
 
 	m_bHeadLabelsDisabled = false;
+
+	// HL2SB: loudness table starts empty (invalid) so voice HUD readers fall
+	// back to the speaking endpoints until the engine delivers samples.
+	for ( int i = 0; i < VOICE_MAX_PLAYERS; ++i )
+	{
+		m_flVoiceLoudness[i] = 0.0f;
+		m_bVoiceLoudnessValid[i] = false;
+	}
 }
 
 
@@ -281,6 +292,22 @@ void CVoiceStatus::DrawHeadLabels()
 }
 
 
+// HL2SB: fires the GMod voice hooks ( PlayerStartVoice / PlayerEndVoice )
+// with ( player, playerIndex ), the reference's argument order.  A NULL
+// player pushes the NULL sentinel so a disconnected / not-yet-known speaker
+// reaches Lua as an invalid entity with a valid index -- the shape the base
+// voice HUD's "Unknown Player" path reads.
+static void HL2SB_FireVoiceHook( bool bStarted, C_BasePlayer *pPlayer, int entindex )
+{
+	if ( L == NULL )
+		return;
+
+	BEGIN_LUA_CALL_HOOK( bStarted ? "PlayerStartVoice" : "PlayerEndVoice" );
+	lua_pushentity( L, pPlayer );
+	lua_pushinteger( L, entindex );
+	END_LUA_CALL_HOOK( 2, 0 );
+}
+
 void CVoiceStatus::UpdateSpeakerStatus(int entindex, bool bTalking)
 {
 	if(!m_pParentPanel)
@@ -294,11 +321,29 @@ void CVoiceStatus::UpdateSpeakerStatus(int entindex, bool bTalking)
 	// Is it the local player talking?
 	if( entindex == -1 )
 	{
+		bool bWasTalking = m_bTalking;
 		m_bTalking = !!bTalking;
 		if( bTalking )
 		{
 			// Enable voice for them automatically if they try to talk.
 			engine->ClientCmd( "voice_modenable 1" );
+		}
+
+		// HL2SB: reference behavior: the client voice status update fires the
+		// PlayerStartVoice / PlayerEndVoice gamemode hooks exactly once on
+		// every speaking-state flip, local player included, with
+		// ( player, playerIndex ).  The engine's voice code only calls this
+		// function when the local recorder starts or stops, so pairing the
+		// hook with the state compare keeps that once-per-flip contract.
+		if( bWasTalking != m_bTalking )
+		{
+			C_BasePlayer *pLocal = C_BasePlayer::GetLocalPlayer();
+			if( pLocal )
+			{
+				if ( m_bTalking )
+					ClearLoudnessValid( pLocal->entindex() );
+				HL2SB_FireVoiceHook( m_bTalking, pLocal, pLocal->entindex() );
+			}
 		}
 	}
 	else if( entindex == -2 )
@@ -321,6 +366,7 @@ void CVoiceStatus::UpdateSpeakerStatus(int entindex, bool bTalking)
 		if(iClient < 0)
 			return;
 
+		bool bWasTalking = m_VoicePlayers[iClient] != 0;
 		if(bTalking)
 		{
 			m_VoicePlayers[iClient] = true;
@@ -329,6 +375,19 @@ void CVoiceStatus::UpdateSpeakerStatus(int entindex, bool bTalking)
 		else
 		{
 			m_VoicePlayers[iClient] = false;
+		}
+
+		// HL2SB: same once-per-flip hook for remote speakers; the state bit
+		// is updated first so the hook body reads the new answer, matching
+		// the reference (its manager bit is already current when the hook
+		// fires).  A speaker the client entity list does not know pushes the
+		// NULL sentinel, which the base voice HUD handles as "unknown player".
+		if( bWasTalking != ( bTalking != 0 ) )
+		{
+			if ( bTalking )
+				ClearLoudnessValid( entindex );
+			C_BasePlayer *pPlayer = dynamic_cast<C_BasePlayer*>( cl_entitylist->GetClientEntity( entindex ) );
+			HL2SB_FireVoiceHook( bTalking != 0, pPlayer, entindex );
 		}
 	}
 }
@@ -543,6 +602,46 @@ bool CVoiceStatus::IsLocalPlayerSpeaking( void )
 	return m_bTalking;
 }
 
+//-----------------------------------------------------------------------------
+// HL2SB: per-player loudness storage for the voice HUD.  See the header for
+// the threading contract (aligned float stores, no lock).
+//-----------------------------------------------------------------------------
+void CVoiceStatus::SetPlayerLoudness(int entindex, float flLoudness)
+{
+	if ( entindex < 1 || entindex > VOICE_MAX_PLAYERS )
+		return;
+
+	if ( flLoudness < 0.0f )
+		flLoudness = 0.0f;
+	else if ( flLoudness > 1.0f )
+		flLoudness = 1.0f;
+
+	m_flVoiceLoudness[entindex - 1] = flLoudness;
+	m_bVoiceLoudnessValid[entindex - 1] = true;
+}
+
+float CVoiceStatus::GetPlayerLoudness(int iPlayerIndex, bool *pValid) const
+{
+	if ( pValid )
+		*pValid = false;
+
+	if ( iPlayerIndex < 1 || iPlayerIndex > VOICE_MAX_PLAYERS )
+		return 0.0f;
+
+	if ( pValid )
+		*pValid = m_bVoiceLoudnessValid[iPlayerIndex - 1];
+
+	return m_flVoiceLoudness[iPlayerIndex - 1];
+}
+
+void CVoiceStatus::ClearLoudnessValid(int iPlayerIndex)
+{
+	if ( iPlayerIndex < 1 || iPlayerIndex > VOICE_MAX_PLAYERS )
+		return;
+
+	m_bVoiceLoudnessValid[iPlayerIndex - 1] = false;
+}
+
 
 //-----------------------------------------------------------------------------
 // Purpose: blocks/unblocks the target client from being heard
@@ -566,13 +665,32 @@ void CVoiceStatus::SetPlayerBlockedState(int iPlayer, bool blocked)
 	}
 
 	// Squelch or (try to) unsquelch this player.
-	if (voice_clientdebug.GetInt())
+	if(voice_clientdebug.GetInt())
 	{
 		Msg("CVoiceStatus::SetPlayerBlockedState: setting player %d ban to %d\n", iPlayer, !m_BanMgr.GetPlayerBan(pi.guid));
 	}
 
 	m_BanMgr.SetPlayerBan(pi.guid, !m_BanMgr.GetPlayerBan(pi.guid));
 	UpdateServerState(false);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: HL2SB - set-not-toggle mute (Lua Player:SetMuted).  Stores the
+// requested state for the player's identity and resyncs the vban mask; the
+// server update pass diffs the mask first, so redundant writes stay silent -
+// the same shape as the reference's mute store + mask resync.
+//-----------------------------------------------------------------------------
+void CVoiceStatus::SetPlayerBlocked(int iPlayer, bool bBlocked)
+{
+	if ( iPlayer < 1 || iPlayer > VOICE_MAX_PLAYERS )
+		return;
+
+	player_info_t pi;
+	if ( !engine->GetPlayerInfo( iPlayer, &pi ) )
+		return;
+
+	m_BanMgr.SetPlayerBan( pi.guid, bBlocked );
+	UpdateServerState( false );
 }
 
 //-----------------------------------------------------------------------------

@@ -397,24 +397,100 @@ static int CHL2MP_Player_GetAllowWeaponsInVehicle (lua_State *L) {
 // ---------------------------------------------------------------------------
 // Chat / voice state.  v1: IsTyping has no engine plumbing in this fork's chat
 // yet (GMod keeps it in its C++ chat panel), so it answers false.  The voice
-// side reuses the CVoiceStatus state util.IsPlayerSpeaking reads, which is
-// what animations.lua MouthMoveAnimation needs.
+// side reads the CVoiceStatus state -- speaking bits plus the loudness
+// samples the engine voice path pushes -- which is what animations.lua's
+// MouthMoveAnimation and the base voice HUD consume.
 // ---------------------------------------------------------------------------
 static int CHL2MP_Player_IsTyping (lua_State *L) {
   lua_pushboolean(L, false);
   return 1;
 }
 #ifdef CLIENT_DLL
-static bool HL2SB_LocalPlayerSpeaking( CHL2MP_Player *pPlayer )
+// Reference behavior: Player:IsSpeaking answers the local recorder state for
+// the local player and the voice-manager per-index speaking bit for everyone
+// else, so remote speakers report too (the base animation file's mouth
+// movement reads it on other players).
+static bool HL2SB_PlayerSpeaking( CHL2MP_Player *pPlayer )
 {
   CVoiceStatus *pVoiceMgr = GetClientVoiceMgr();
-  return pVoiceMgr != NULL && pPlayer->IsLocalPlayer() &&
-         pVoiceMgr->IsPlayerSpeaking( pPlayer->entindex() );
+  if ( pVoiceMgr == NULL )
+    return false;
+  if ( pPlayer->IsLocalPlayer() )
+    return pVoiceMgr->IsLocalPlayerSpeaking();
+  int entindex = pPlayer->entindex();
+  if ( entindex < 1 || entindex > VOICE_MAX_PLAYERS )
+    return false;
+  return pVoiceMgr->IsPlayerSpeaking( entindex );
+}
+
+// Reference behavior: Player:VoiceVolume reads the per-player loudness table
+// fed by the engine voice path.  While no engine sample has arrived yet for
+// a speaking player (no mixer, Steam voice path, before the first pull) the
+// answer keeps the documented while-speaking / silent endpoints (1 / 0).
+static float HL2SB_PlayerVoiceVolume( CHL2MP_Player *pPlayer )
+{
+  if ( !HL2SB_PlayerSpeaking( pPlayer ) )
+    return 0.0f;
+
+  bool bValid = false;
+  float flLoudness = GetClientVoiceMgr()->GetPlayerLoudness( pPlayer->entindex(), &bValid );
+  return bValid ? flLoudness : 1.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Per-steamid voice volume scale (GMod Player:Get/SetVoiceVolumeScale --
+// client-realm Player methods; the reference stores the scale per steam id,
+// answers 1.0 for unknown players and clamps Set to 0..1).  The fork keys
+// the store on the player_info_t guid -- the same stable identity the
+// engine reports for the player across reconnects.
+// ---------------------------------------------------------------------------
+struct HL2SBVoiceVolumeScaleEntry
+{
+  char  guid[SIGNED_GUID_LEN + 1];
+  float flScale;
+};
+static CUtlVector<HL2SBVoiceVolumeScaleEntry> s_VoiceVolumeScales;
+
+static bool HL2SB_GetPlayerGuid( CHL2MP_Player *pPlayer, char *pszGuid, int nSize )
+{
+  player_info_t pi;
+  if ( !engine->GetPlayerInfo( pPlayer->entindex(), &pi ) )
+    return false;
+  if ( pi.guid[0] == '\0' )
+    return false;
+  Q_strncpy( pszGuid, pi.guid, nSize );
+  return true;
+}
+
+static float HL2SB_FindVoiceVolumeScale( const char *pszGuid )
+{
+  FOR_EACH_VEC( s_VoiceVolumeScales, i )
+  {
+    if ( FStrEq( s_VoiceVolumeScales[i].guid, pszGuid ) )
+      return s_VoiceVolumeScales[i].flScale;
+  }
+  return 1.0f;
+}
+
+static void HL2SB_StoreVoiceVolumeScale( const char *pszGuid, float flScale )
+{
+  FOR_EACH_VEC( s_VoiceVolumeScales, i )
+  {
+    if ( FStrEq( s_VoiceVolumeScales[i].guid, pszGuid ) )
+    {
+      s_VoiceVolumeScales[i].flScale = flScale;
+      return;
+    }
+  }
+
+  int iSlot = s_VoiceVolumeScales.AddToTail();
+  Q_strncpy( s_VoiceVolumeScales[iSlot].guid, pszGuid, sizeof( s_VoiceVolumeScales[iSlot].guid ) );
+  s_VoiceVolumeScales[iSlot].flScale = flScale;
 }
 #endif
 static int CHL2MP_Player_IsSpeaking (lua_State *L) {
 #ifdef CLIENT_DLL
-  lua_pushboolean(L, HL2SB_LocalPlayerSpeaking( luaL_checkhl2mpplayer(L, 1) ));
+  lua_pushboolean(L, HL2SB_PlayerSpeaking( luaL_checkhl2mpplayer(L, 1) ));
 #else
   lua_pushboolean(L, false);
 #endif
@@ -422,11 +498,59 @@ static int CHL2MP_Player_IsSpeaking (lua_State *L) {
 }
 static int CHL2MP_Player_VoiceVolume (lua_State *L) {
 #ifdef CLIENT_DLL
-  lua_pushnumber(L, HL2SB_LocalPlayerSpeaking( luaL_checkhl2mpplayer(L, 1) ) ? 1.0f : 0.0f);
+  lua_pushnumber(L, HL2SB_PlayerVoiceVolume( luaL_checkhl2mpplayer(L, 1) ));
 #else
   lua_pushnumber(L, 0.0f);
 #endif
   return 1;
+}
+static int CHL2MP_Player_GetVoiceVolumeScale (lua_State *L) {
+#ifdef CLIENT_DLL
+  char szGuid[SIGNED_GUID_LEN + 1];
+  if ( HL2SB_GetPlayerGuid( luaL_checkhl2mpplayer(L, 1), szGuid, sizeof(szGuid) ) )
+    lua_pushnumber(L, HL2SB_FindVoiceVolumeScale( szGuid ));
+  else
+    lua_pushnumber(L, 1.0f);	// reference: unknown players answer 1.0
+#else
+  lua_pushnumber(L, 1.0f);
+#endif
+  return 1;
+}
+static int CHL2MP_Player_SetVoiceVolumeScale (lua_State *L) {
+#ifdef CLIENT_DLL
+  float flScale = (float)luaL_checknumber(L, 2);
+  if ( flScale < 0.0f ) flScale = 0.0f;		// reference clamps 0..1
+  else if ( flScale > 1.0f ) flScale = 1.0f;
+  char szGuid[SIGNED_GUID_LEN + 1];
+  if ( HL2SB_GetPlayerGuid( luaL_checkhl2mpplayer(L, 1), szGuid, sizeof(szGuid) ) )
+    HL2SB_StoreVoiceVolumeScale( szGuid, flScale );
+#endif
+  return 0;
+}
+// Reference: Player:IsMuted answers the client's mute store for that player
+// (the same store the scoreboard squelch drives).
+static int CHL2MP_Player_IsMuted (lua_State *L) {
+#ifdef CLIENT_DLL
+  int entindex = luaL_checkhl2mpplayer(L, 1)->entindex();
+  CVoiceStatus *pVoiceMgr = GetClientVoiceMgr();
+  lua_pushboolean(L, pVoiceMgr != NULL && entindex >= 1 && entindex <= VOICE_MAX_PLAYERS &&
+                     pVoiceMgr->IsPlayerBlocked( entindex ));
+#else
+  lua_pushboolean(L, false);
+#endif
+  return 1;
+}
+// Reference: Player:SetMuted stores the requested state (set, not toggle) and
+// resyncs the engine-side voice ban mask.
+static int CHL2MP_Player_SetMuted (lua_State *L) {
+#ifdef CLIENT_DLL
+  int entindex = luaL_checkhl2mpplayer(L, 1)->entindex();
+  bool bMuted = luaL_checkboolean(L, 2) != 0;
+  CVoiceStatus *pVoiceMgr = GetClientVoiceMgr();
+  if ( pVoiceMgr != NULL && entindex >= 1 && entindex <= VOICE_MAX_PLAYERS )
+    pVoiceMgr->SetPlayerBlocked( entindex, bMuted );
+#endif
+  return 0;
 }
 
 // GMod: Entity:SetIK( bool ) - stored only in this fork (no engine plumbing
@@ -650,6 +774,15 @@ static const luaL_Reg CHL2MP_PlayerGModmeta[] = {
   {"IsTyping", CHL2MP_Player_IsTyping},
   {"IsSpeaking", CHL2MP_Player_IsSpeaking},
   {"VoiceVolume", CHL2MP_Player_VoiceVolume},
+#ifdef CLIENT_DLL
+  // HL2SB (2026-10-13): the rest of the GMod voice surface -- client-realm
+  // Player methods only (the reference registers them in its client Player
+  // table and its server carries no such names).
+  {"GetVoiceVolumeScale", CHL2MP_Player_GetVoiceVolumeScale},
+  {"SetVoiceVolumeScale", CHL2MP_Player_SetVoiceVolumeScale},
+  {"IsMuted", CHL2MP_Player_IsMuted},
+  {"SetMuted", CHL2MP_Player_SetMuted},
+#endif
   {"SetIK", CHL2MP_Player_SetIK},
   {"GetHands", CHL2MP_Player_GetHands},
   {"SetHands", CHL2MP_Player_SetHands},

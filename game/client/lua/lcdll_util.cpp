@@ -228,12 +228,24 @@ static int luasrc_util_IsSkyboxVisibleFromPoint (lua_State *L) {
   return 1;
 }
 
-// util.IsPlayerSpeaking( entIndex ) -> boolean.
+// util.IsPlayerSpeaking( entIndex ) -> boolean, number.  Reference behavior:
+// GMod answers the voice-manager speaking bit plus the per-player loudness
+// the engine's voice mixer forwards (volume 0..1, 0 when silent).  The
+// loudness channel is live in this fork; while no engine sample has arrived
+// yet for a speaking player (no mixer, Steam voice path, before the first
+// pull) the volume keeps the documented while-speaking / silent endpoints
+// (1 / 0).  Out-of-range indices return no values, same as the reference.
 static int luasrc_util_IsPlayerSpeaking (lua_State *L) {
   int nIndex = luaL_checkint( L, 1 );
+  if ( nIndex < 1 || nIndex > VOICE_MAX_PLAYERS )
+    return 0;
   CVoiceStatus *pVoiceMgr = GetClientVoiceMgr();
-  lua_pushboolean( L, pVoiceMgr != NULL && pVoiceMgr->IsPlayerSpeaking( nIndex ) );
-  return 1;
+  bool bSpeaking = pVoiceMgr != NULL && pVoiceMgr->IsPlayerSpeaking( nIndex );
+  bool bValid = false;
+  float flLoudness = pVoiceMgr != NULL ? pVoiceMgr->GetPlayerLoudness( nIndex, &bValid ) : 0.0f;
+  lua_pushboolean( L, bSpeaking );
+  lua_pushnumber( L, bSpeaking ? ( bValid ? (double)flLoudness : 1.0 ) : 0.0 );
+  return 2;
 }
 
 // util.GetSunInfo() -> SunInfo table or nil.  GMod's obstruction number comes

@@ -71,7 +71,16 @@ void CHudVoiceSelfStatus::VidInit( void )
 
 bool CHudVoiceSelfStatus::ShouldDraw()
 {
-	return GetClientVoiceMgr()->IsLocalPlayerSpeaking();
+	// HL2SB: reference behavior: the gamemode owns the voice UI.  The
+	// gamemode's Lua voice panel (gamemodes/base/gamemode/cl_voice.lua, the
+	// VoiceNotify list) is the only speaker indicator, covering the local
+	// player and every remote speaker alike.  The reference client ships no
+	// local-microphone element and keeps the engine voice HUD dark, so the
+	// stock HL2MP self icon is suppressed here rather than drawn as a second,
+	// out-of-place indicator.  The PlayerStartVoice / PlayerEndVoice gamemode
+	// hooks are driven from the voice status update path, not from this HUD
+	// element, so the Lua panel is unaffected by hiding this one.
+	return false;
 }
 
 void CHudVoiceSelfStatus::Paint()
@@ -315,10 +324,12 @@ void CHudVoiceStatus::OnThink( void )
 
 bool CHudVoiceStatus::ShouldDraw()
 {
-	if ( IsInFreezeCam() == true )
-		return false;
-
-	return true;
+	// HL2SB: same contract as CHudVoiceSelfStatus -- the gamemode's Lua voice
+	// panel is the only speaker indicator, so the stock HL2MP speaker list is
+	// not drawn.  (The reference keeps the engine voice HUD dark and does the
+	// whole voice UI from the gamemode; a stock list here would duplicate the
+	// Lua panel's per-speaker rows.)
+	return false;
 }
 
 void CHudVoiceStatus::Paint()

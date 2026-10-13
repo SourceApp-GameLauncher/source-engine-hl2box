@@ -131,6 +131,26 @@ public:
 	// blocks the target client from being heard
 	void	SetPlayerBlockedState(int iPlayerIndex, bool blocked);
 
+	// HL2SB: set-not-toggle mute for the Lua Player:SetMuted surface (the
+	// reference's mute store takes the requested state and resyncs the vban
+	// mask; SetPlayerBlockedState above is the stock scoreboard toggle).
+	void	SetPlayerBlocked(int iPlayerIndex, bool bBlocked);
+
+	// HL2SB: per-player loudness (0..1) pushed from the engine voice path,
+	// keyed by real player entity index (the client resolves the local
+	// microphone marker).  pValid answers whether the engine has delivered a
+	// sample yet, so voice HUD readers can fall back to the speaking
+	// endpoints (1/0) while no mixer data has arrived (no mixer, Steam voice
+	// path, before the first pull).  Plain aligned floats: written from the
+	// mixer thread, read from the main thread; a naturally aligned 32-bit
+	// store is atomic on the supported architectures.
+	void	SetPlayerLoudness(int entindex, float flLoudness);
+	float	GetPlayerLoudness(int iPlayerIndex, bool *pValid) const;
+
+	// HL2SB: forget a player's loudness validity when a new speaking stretch
+	// begins so readers never serve a stale sample from the previous one.
+	void	ClearLoudnessValid(int iPlayerIndex);
+
 	void	SetHeadLabelMaterial( const char *pszMaterial );
 
 	IMaterial *GetHeadLabelMaterial( void ) { return m_pHeadLabelMaterial; }
@@ -160,6 +180,11 @@ private:
 	// This is who the server THINKS we have banned (it can become incorrect when a new player arrives on the server).
 	// It is checked periodically, and the server is told to squelch or unsquelch the appropriate players.
 	CPlayerBitVec	m_ServerBannedPlayers;
+
+	// HL2SB: per-player loudness samples from the engine voice path (see the
+	// accessors above for the threading contract).  Indexed by client index.
+	float			m_flVoiceLoudness[VOICE_MAX_PLAYERS];
+	bool			m_bVoiceLoudnessValid[VOICE_MAX_PLAYERS];
 
 	IVoiceStatusHelper	*m_pHelper;		// Each mod provides an implementation of this.
 

@@ -20,6 +20,9 @@
 #include "filesystem.h"
 #include "filesystem_engine.h"
 #include "tier1/utlbuffer.h"
+// HL2SB: ClientDLL_VoiceLoudness - the client push channel for per-speaker
+// loudness samples.
+#include "cdll_engine_int.h"
 #if defined( _X360 )
 #include "xauddefs.h"
 #endif
@@ -28,6 +31,34 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+// HL2SB: mean absolute level of one decoded/captured voice block, scaled to
+// 0..1 and pushed to the client for the per-player voice HUD (reference
+// behavior: GMod forwards exactly this value from its own voice consumption
+// points - the remote playback mix pull and the local microphone capture).
+// iEntIndex -1 marks the local microphone leg.  Called from the mixer pull
+// path as well as the main thread; the client-side sink only stores an
+// aligned float, so no locking is needed.
+static void Voice_ComputeLoudness( int iEntIndex, const short *pSamples, int nSamples )
+{
+	if ( pSamples == NULL || nSamples <= 0 )
+		return;
+
+	double flSum = 0.0;
+	for ( int i = 0; i < nSamples; ++i )
+	{
+		int iSample = pSamples[i];
+		flSum += ( iSample < 0 ) ? (double)(-iSample) : (double)iSample;
+	}
+
+	float flLoudness = (float)( flSum / ( (double)nSamples * 32768.0 ) );
+	if ( flLoudness < 0.0f )
+		flLoudness = 0.0f;
+	else if ( flLoudness > 1.0f )
+		flLoudness = 1.0f;
+
+	ClientDLL_VoiceLoudness( iEntIndex, flLoudness );
+}
 
 static CSteamAPIContext g_SteamAPIContext;
 static CSteamAPIContext *steamapicontext = NULL;
@@ -521,6 +552,15 @@ int Voice_GetOutputData(
 	if(voice_showchannels.GetInt() >= 2)
 	{
 		Msg("Voice - mixed %d samples from channel %d\n", nSamplesGotten, iChannel);
+	}
+
+	// HL2SB: the mixer's per-channel sample pull is this engine's remote-voice
+	// consumption point - forward the block's loudness for the voice HUD.
+	// pCopyBuf already carries the end-of-buffer fade, so starvation reads as
+	// ~0 like the reference.
+	if ( pChannel->m_iEntity > 0 )
+	{
+		Voice_ComputeLoudness( pChannel->m_iEntity, pCopyBuf, nSamplesGotten );
 	}
 
 	VoiceSE_MoveMouth(pChannel->m_iEntity, (short*)copyBufBytes, nSamplesGotten);
@@ -1145,7 +1185,16 @@ int Voice_GetCompressedData(char *pchDest, int nCount, bool bFinal)
 			g_CurMicInputFileByte += gotten * BYTES_PER_SAMPLE;
 			g_MicStartTime = curtime;
 		}
-#ifdef VOICE_VOX_ENABLE	
+
+		// HL2SB: the local capture path is the local-microphone consumption
+		// point - forward the block's loudness (entindex -1 = local leg).
+		// Computed before the voice_vox threshold gate so a vox-rejected
+		// silent block still reports ~0 instead of a stale level.  The Steam
+		// voice branch above never surfaces raw samples, so it forwards
+		// nothing and the client keeps its speaking-endpoint fallback.
+		Voice_ComputeLoudness( -1, tempData, gotten );
+
+#ifdef VOICE_VOX_ENABLE
 		else if ( gotten && voice_vox.GetBool() == true )
 		{
 			// If the voice data is essentially silent, don't transmit
