@@ -566,6 +566,8 @@ public:
 
 	virtual float	GetPausedExpireTime( void ) OVERRIDE;
 
+	virtual bool	SendLuaNetMessage( const void *pData, int nBits, bool bReliable );
+
 	virtual bool	StartDemoRecording( const char *pszFilename, const char *pszFolder = NULL );
 	virtual void	StopDemoRecording( void );
 	virtual void	TakeScreenshot( const char *pszFilename, const char *pszFolder = NULL );
@@ -2040,6 +2042,17 @@ void ClientDLL_VoiceStatus( int entindex, bool bTalking )
 		g_ClientDLL->VoiceStatus( entindex, bTalking );
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: HL2SB - forward a per-speaker loudness sample (0..1) to the client
+// for the per-player voice HUD.  entindex -1 marks the local microphone leg;
+// the client resolves it to the local player's entity index.
+//-----------------------------------------------------------------------------
+void ClientDLL_VoiceLoudness( int entindex, float flLoudness )
+{
+	if( g_ClientDLL )
+		g_ClientDLL->VoiceLoudness( entindex, flLoudness );
+}
+
 
 #ifdef IS_WINDOWS_PC
 #include "winlite.h"
@@ -2067,6 +2080,15 @@ void CEngineClient::FlashWindow()
 int CEngineClient::GetInstancesRunningCount( )
 {
 	return CheckOtherInstancesRunning( );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: hand one Lua net message payload to the network layer; the message
+// goes out immediately (the caller decides when to throttle, if at all).
+//-----------------------------------------------------------------------------
+bool CEngineClient::SendLuaNetMessage( const void *pData, int nBits, bool bReliable )
+{
+	return CL_SendLuaNetMessage( pData, nBits, bReliable );
 }
 
 //-----------------------------------------------------------------------------

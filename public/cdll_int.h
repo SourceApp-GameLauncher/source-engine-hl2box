@@ -575,6 +575,12 @@ public:
 	virtual void DisconnectInternal() = 0;
 
 	virtual int GetInstancesRunningCount( ) = 0;
+
+	// HL2SB: hand a Lua net message payload to the engine for delivery on the
+	// client->server connection.  pData holds [16-bit pooled name id][payload]
+	// as raw bits; nBits is its length in bits (reference behavior: GMod's
+	// net.SendToServer performs one immediate engine send per message).
+	virtual bool SendLuaNetMessage( const void *pData, int nBits, bool bReliable ) = 0;
 };
 
 
@@ -791,6 +797,13 @@ public:
 	virtual bool IsConnectedUserInfoChangeAllowed( IConVar *pCvar ) = 0;
 
 	virtual void IN_TouchEvent( int type, int fingerId, int x, int y ) = 0;
+
+	// HL2SB (2026-10-13): per-speaker voice loudness pushed from the engine's
+	// voice path (mean absolute decoded/captured sample level, 0..1).  The
+	// engine forwards one value per consumed voice block; entindex -1 marks
+	// the local microphone leg.  Appended after IN_TouchEvent so every
+	// existing vtable slot keeps its position (paired engine/client builds).
+	virtual void VoiceLoudness( int entindex, float flLoudness ) = 0;
 };
 
 #define CLIENT_DLL_INTERFACE_VERSION		"VClient017"

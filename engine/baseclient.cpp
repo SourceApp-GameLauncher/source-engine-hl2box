@@ -789,6 +789,7 @@ void CBaseClient::ConnectionStart(INetChannel *chan)
 #endif
 
 	REGISTER_CLC_MSG( CmdKeyValues );
+	REGISTER_CLC_MSG( LuaNetMessage );
 }
 
 bool CBaseClient::ProcessTick( NET_Tick *msg )

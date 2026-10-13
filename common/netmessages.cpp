@@ -55,8 +55,34 @@ bool CLC_VoiceData::ReadFromBuffer( bf_read &buffer )
 	m_nLength = buffer.ReadWord();	// length in bits
 
 #if defined ( _X360 )
-	m_xuid	= buffer.ReadLongLong();
+	m_xuid = buffer.ReadLongLong();
 #endif
+
+	m_DataIn = buffer;
+
+	return buffer.SeekRelative( m_nLength );
+}
+
+const char *CLC_LuaNetMessage::ToString(void) const
+{
+	Q_snprintf(s_text, sizeof(s_text), "%s: %i bytes", GetName(), Bits2Bytes(m_nLength) );
+	return s_text;
+}
+
+bool CLC_LuaNetMessage::WriteToBuffer( bf_write &buffer )
+{
+	buffer.WriteUBitLong( GetType(), NETMSG_TYPE_BITS );
+
+	buffer.WriteLong( m_nLength );	// length in bits
+
+	return buffer.WriteBits( m_DataOut.GetBasePointer(), m_nLength );
+}
+
+bool CLC_LuaNetMessage::ReadFromBuffer( bf_read &buffer )
+{
+	VPROF( "CLC_LuaNetMessage::ReadFromBuffer" );
+
+	m_nLength = buffer.ReadLong();	// length in bits
 
 	m_DataIn = buffer;
 

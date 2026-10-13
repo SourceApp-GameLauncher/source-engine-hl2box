@@ -2661,10 +2661,58 @@ static int luasrc_util_FullPathToRelative (lua_State *L) {
   lua_pushstring( L, szRel );
   return 1;
 }
+
+// ---------------------------------------------------------------------------
+// HL2SB GMod compat: the pooled Lua net message names (see lnet.cpp).  The
+// pool is the engine network string table "LuaNetStrings", replicated to
+// clients automatically, so both realms resolve identical ids.
+// ---------------------------------------------------------------------------
+
+// 0 = not pooled (lutil has no header for the lnet internals; local externs)
+unsigned short HL2SB_NetStringToID( const char *pszName );
+const char *HL2SB_NetworkIDToString( unsigned short nID );
+unsigned short HL2SB_AddNetworkString( const char *pszName );
+
+static int luasrc_util_AddNetworkString (lua_State *L) {
+  const char *pName = luaL_checkstring( L, 1 );
+  // reference behavior: GMod's util.AddNetworkString is server side only and
+  // returns the pooled id; this fork keeps a permissive client realm variant
+  // that resolves already-replicated names (shared builtin scripts call it on
+  // both realms).
+  lua_pushinteger( L, HL2SB_AddNetworkString( pName ) );
+  return 1;
+}
+
+static int luasrc_util_NetworkStringToID (lua_State *L) {
+  const char *pName = luaL_checkstring( L, 1 );
+  // reference behavior: 0 when the name was never pooled
+  lua_pushinteger( L, HL2SB_NetStringToID( pName ) );
+  return 1;
+}
+
+static int luasrc_util_NetworkIDToString (lua_State *L) {
+  int nID = (int)luaL_checkint( L, 1 );
+  if ( nID <= 0 || nID > 0xffff ) {
+    lua_pushnil( L );
+    return 1;
+  }
+  const char *pName = HL2SB_NetworkIDToString( (unsigned short)nID );
+  if ( !pName ) {
+    lua_pushnil( L );
+    return 1;
+  }
+  lua_pushstring( L, pName );
+  return 1;
+}
+
 static const luaL_Reg util_funcs[] = {
   // HL2SB GMod compat (2026-09-25): engine-side JSON (see the block above).
   {"TableToJSON",  luasrc_UTIL_TableToJSON},
   {"JSONToTable",  luasrc_UTIL_JSONToTable},
+  // HL2SB: pooled Lua net message names (see the block above).
+  {"AddNetworkString",    luasrc_util_AddNetworkString},
+  {"NetworkStringToID",   luasrc_util_NetworkStringToID},
+  {"NetworkIDToString",   luasrc_util_NetworkIDToString},
   // {"UTIL_VecToYaw",  luasrc_UTIL_VecToYaw},
   {"VecToYaw",  luasrc_UTIL_VecToYaw},
   // {"UTIL_VecToPitch",  luasrc_UTIL_VecToPitch},

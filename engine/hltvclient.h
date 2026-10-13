@@ -56,6 +56,7 @@ public: // IClientMessageHandlers
 	PROCESS_CLC_MESSAGE( FileCRCCheck );
 	PROCESS_CLC_MESSAGE( FileMD5Check ) { return true; }
 	PROCESS_CLC_MESSAGE( SaveReplay );
+	PROCESS_CLC_MESSAGE( LuaNetMessage ) { return true; }	// HLTV proxies don't run game Lua
 
 public:
 	CClientFrame *GetDeltaFrame( int nTick );

@@ -27,6 +27,9 @@ void ClientDLL_HudVidInit( void );
 void ClientDLL_ProcessInput( void );
 void ClientDLL_Update( void );
 void ClientDLL_VoiceStatus( int entindex, bool bTalking );
+// HL2SB: per-speaker loudness (0..1) from the engine voice path; entindex -1
+// marks the local microphone leg.  Free-function channel, no interface slot.
+void ClientDLL_VoiceLoudness( int entindex, float flLoudness );
 void ClientDLL_FrameStageNotify( ClientFrameStage_t frameStage );
 ClientClass *ClientDLL_GetAllClasses( void );
 CreateInterfaceFn ClientDLL_GetFactory( void );

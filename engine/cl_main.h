@@ -176,6 +176,9 @@ void CL_SetupMapName( const char* pName, char* pFixedName, int maxlen );
 bool CL_CheckCRCs( const char *pszMap );
 bool CL_ShouldLoadBackgroundLevel( const CCommand &args );
 
+// send one Lua net message payload ([16-bit pooled id][payload], raw bits)
+bool CL_SendLuaNetMessage( const void *pData, int nBits, bool bReliable );
+
 bool CL_IsHL2Demo();
 bool CL_IsPortalDemo();
 void CL_SetSteamCrashComment();

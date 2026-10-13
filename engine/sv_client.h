@@ -93,7 +93,8 @@ public: // IClientMessageHandlers
 	PROCESS_CLC_MESSAGE( SaveReplay );
 #endif
 	PROCESS_CLC_MESSAGE( CmdKeyValues );
-	
+	PROCESS_CLC_MESSAGE( LuaNetMessage );
+
 public:
 
 	void	UpdateUserSettings( void );

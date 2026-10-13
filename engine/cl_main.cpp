@@ -10,6 +10,7 @@
 #include "client_pch.h"
 #include "sound.h"
 #include <inetchannel.h>
+#include "netmessages.h"
 #include "checksum_engine.h"
 #include "con_nprint.h"
 #include "r_local.h"
@@ -3159,3 +3160,30 @@ void CL_InstallAndInvokeClientStringTableCallbacks()
 
 // Singleton client state
 CClientState	cl;
+
+//-----------------------------------------------------------------------------
+// Purpose: send one Lua net message (net.SendToServer) on the client->server
+// connection.  pData carries [16-bit pooled name id][payload] as raw bits.
+// The message is delivered immediately - the caller owns throttling, exactly
+// like the reference implementation where every send is a single engine call.
+//-----------------------------------------------------------------------------
+bool CL_SendLuaNetMessage( const void *pData, int nBits, bool bReliable )
+{
+	// keep the payload well below the reliable stream buffer so a single
+	// message can always ride the connection
+	const int MAX_LUA_NET_BITS = 64 * 1024 * 8;
+
+	if ( !pData || nBits <= 0 || nBits > MAX_LUA_NET_BITS )
+		return false;
+
+	if ( !cl.m_NetChannel )
+		return false;
+
+	CLC_LuaNetMessage msg;
+
+	msg.m_DataOut.StartWriting( const_cast<void *>( pData ), Bits2Bytes( nBits ) );
+	msg.m_nLength = nBits;
+	msg.SetReliable( bReliable );
+
+	return cl.m_NetChannel->SendNetMsg( msg );
+}

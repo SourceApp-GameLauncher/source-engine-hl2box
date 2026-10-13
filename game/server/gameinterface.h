@@ -57,6 +57,9 @@ public:
 
 	// Notify that the player is spawned
 	virtual void			ClientSpawned( edict_t *pPlayer ) OVERRIDE;
+
+	// A variable length Lua net message arrived from a client (net.SendToServer)
+	virtual void			ProcessLuaNetMessage( edict_t *pEdict, bf_read &msg ) OVERRIDE;
 };
 
 

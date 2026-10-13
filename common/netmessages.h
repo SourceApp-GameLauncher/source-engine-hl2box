@@ -356,6 +356,23 @@ public:
 	explicit SVC_CmdKeyValues( KeyValues *pKeyValues = NULL );	// takes ownership
 };
 
+// Variable length payload written by the Lua net library (net.SendToServer).
+// The buffer carries the pooled message name id (16 bits) followed by whatever
+// the script wrote; the game DLL hands the payload to its Lua state untouched.
+class CLC_LuaNetMessage : public CNetMessage
+{
+	DECLARE_CLC_MESSAGE( LuaNetMessage );
+
+	int	GetGroup() const { return INetChannelInfo::GENERIC; }
+
+	CLC_LuaNetMessage() { m_bReliable = true; };
+
+public:
+	int				m_nLength;	// payload length in bits
+	bf_read			m_DataIn;
+	bf_write		m_DataOut;
+};
+
 ///////////////////////////////////////////////////////////////////////////////////////
 // server messages:
 ///////////////////////////////////////////////////////////////////////////////////////

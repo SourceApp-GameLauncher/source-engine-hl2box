@@ -321,6 +321,22 @@ bool CGameClient::ProcessFileMD5Check( CLC_FileMD5Check *msg )
 	return true;
 }
 
+bool CGameClient::ProcessLuaNetMessage( CLC_LuaNetMessage *msg )
+{
+	if ( msg->m_nLength <= 0 || msg->m_DataIn.IsOverflowed() )
+		return true;
+
+	// Hand the payload to the game DLL; the Lua state resolves the pooled
+	// name id and dispatches it (reference behavior: GMod's server wraps the
+	// incoming message in a bf_read and passes it to its Lua net.Incoming).
+	if ( serverGameClients )
+	{
+		serverGameClients->ProcessLuaNetMessage( edict, msg->m_DataIn );
+	}
+
+	return true;
+}
+
 
 #if defined( REPLAY_ENABLED )
 bool CGameClient::ProcessSaveReplay( CLC_SaveReplay *pMsg )

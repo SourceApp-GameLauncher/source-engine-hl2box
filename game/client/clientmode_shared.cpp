@@ -910,18 +910,16 @@ void ClientModeShared::Update()
 	}
 
 	// HL2SB (2026-09-25): the engine timer library (game/shared/lua/ltimer.cpp)
-	// and the rate-limited client->server net transport (lnet.cpp) pump here.
-	// They used to hang off CScriptedHudViewport::Paint, which only runs when a
-	// scripted HUD viewport control exists - client timers and queued net
-	// commands stalled on any client UI without one.  Not gated on IsInGame on
-	// purpose: connected-but-paused still ticks, like GMod.
+	// pumps here.  It used to hang off CScriptedHudViewport::Paint, which only
+	// runs when a scripted HUD viewport control exists - client timers stalled
+	// on any client UI without one.  Not gated on IsInGame on purpose:
+	// connected-but-paused still ticks, like GMod.
+	// (The client->server net transport no longer needs a per-frame pump: the
+	// rewrite sends each message to the engine immediately.)
 	if ( L != NULL )
 	{
 		LUA_API void HL2SB_TimerTick( void );
 		HL2SB_TimerTick();
-
-		LUA_API void HL2SB_NetCmdPump( void );
-		HL2SB_NetCmdPump();
 	}
 #endif
 }
@@ -1120,11 +1118,15 @@ vgui::Panel *ClientModeShared::GetMessagePanel()
 //-----------------------------------------------------------------------------
 void ClientModeShared::StartMessageMode( int iMessageModeType )
 {
-	// Can only show chat UI in multiplayer!!!
-	if ( gpGlobals->maxClients == 1 )
-	{
-		return;
-	}
+	// HL2SB (2026-10-13): reference behavior -- GMod's chat open path has no
+	// player-count gate; a listen server with maxplayers 1 still opens the chat
+	// input (the bind, the HUD chat element and the say flow are all
+	// client-local).  The stock Valve guard below ("Can only show chat UI in
+	// multiplayer!!!") silently swallowed every messagemode / messagemode2 /
+	// say / say_team bind whenever gpGlobals->maxClients==1, which is exactly
+	// this fork's normal single-player listen server -- hence the Y/U chat keys
+	// did nothing.  The HUD element pointer test is kept (GMod's own
+	// StartMessageMode forwards to m_pChatElement unconditionally).
 	if ( m_pChatElement )
 	{
 		m_pChatElement->StartMessageMode( iMessageModeType );

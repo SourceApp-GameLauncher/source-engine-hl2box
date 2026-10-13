@@ -738,6 +738,10 @@ public:
 
 	// Hook for player spawning
 	virtual void			ClientSpawned( edict_t *pPlayer ) = 0;
+
+	// A variable length Lua net message arrived from a client (net.SendToServer);
+	// msg is positioned on the payload (pooled name id first, then script data)
+	virtual void			ProcessLuaNetMessage( edict_t *pEdict, bf_read &msg ) = 0;
 };
 
 typedef IServerGameClients IServerGameClients003;

@@ -157,8 +157,9 @@ enum
 #define clc_SaveReplay			15		// client is sending a save replay request to the server.
 #define clc_CmdKeyValues		16
 #define clc_FileMD5Check		17		// client is sending a file's MD5 to the server to be verified.
+#define clc_LuaNetMessage		18		// variable length Lua net message payload (net.SendToServer)
 
-#define CLC_LASTMSG			17		//	last known client message
+#define CLC_LASTMSG			18		//	last known client message
 
 #define RES_FATALIFMISSING	(1<<0)   // Disconnect if we can't get this file.
 #define RES_PRELOAD			(1<<1)  // Load on client rather than just reserving name

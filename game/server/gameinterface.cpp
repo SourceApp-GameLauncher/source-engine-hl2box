@@ -1241,6 +1241,18 @@ void CServerGameDLL::ServerActivate( edict_t *pEdictList, int edictCount, int cl
 	}
 
 	IGameSystem::LevelInitPostEntityAllSystems();
+
+	// HL2SB (2026-10-13): reference behavior -- GMod's server fires the
+	// InitPostEntity gamemode hook once the map's entities are initialized
+	// (its hook-name table carries the name; server-side consumers include
+	// sandbox persistence and terrortown).  This SDK's IServerGameDLL has no
+	// dedicated post-entity callback, so the hook fires here where the
+	// entity Activate pass and the post-entity game systems have run.
+#if defined ( LUA_SDK )
+	BEGIN_LUA_CALL_HOOK( "InitPostEntity" );
+	END_LUA_CALL_HOOK( 0, 0 );
+#endif
+
 	// No more precaching after PostEntityAllSystems!!!
 	CBaseEntity::SetAllowPrecache( false );
 
@@ -1629,6 +1641,12 @@ void CServerGameDLL::CreateNetworkStringTables( void )
 	// "already published" flag with it.
 	g_pStringTableSMenuEntityList = networkstringtable->CreateStringTable( SMENU_ENTITYLIST_TABLE, SMENU_ENTITYLIST_MAX );
 	g_bSMenuEntityListPublished = false;
+
+	// HL2SB: pool of Lua net message names (util.AddNetworkString).  The engine
+	// replicates the table to clients automatically, so both realms agree on
+	// the numeric id of every pooled name (reference behavior: GMod pools net
+	// message names in a network string table too).
+	networkstringtable->CreateStringTable( "LuaNetStrings", 1024 );
 
 #ifdef TF_DLL
 	g_pStringTableServerPopFiles = networkstringtable->CreateStringTable( "ServerPopFiles", 128 );
@@ -2979,6 +2997,17 @@ void CServerGameClients::ClientSpawned( edict_t *pPlayer )
 	{
 		g_pGameRules->ClientSpawned( pPlayer );
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: a client->server Lua net message (net.SendToServer) arrived; hand the
+// payload to the Lua net library which resolves the pooled name id and calls
+// the Lua net.Incoming dispatcher.
+//-----------------------------------------------------------------------------
+void CServerGameClients::ProcessLuaNetMessage( edict_t *pEdict, bf_read &msg )
+{
+	void HL2SB_LuaNetMessageReceived( edict_t *pEdict, bf_read &msg );
+	HL2SB_LuaNetMessageReceived( pEdict, msg );
 }
 
 //-----------------------------------------------------------------------------
