@@ -26,6 +26,11 @@
 #include "multiplay_gamerules.h"
 #include "tier0/icommandline.h"
 
+// HL2SB (2026-10-13): GM:OnPlayerChat dispatch in MsgFunc_SayText2 below.
+#include "luamanager.h"
+#include "lbaseentity_shared.h"
+#include "lbaseplayer_shared.h"	// lua_pushplayer
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -467,6 +472,92 @@ vgui::Panel *CBaseHudChatInputLine::GetInputPanel( void )
 }
 #endif //_XBOX
 
+//-----------------------------------------------------------------------------
+// HL2SB (2026-10-13): chat entry key handling and text-changed reporting.
+// Reference behavior: TAB asks GM:OnChatTab( text ) for a replacement line --
+// a string return overwrites the entry (caret back to the end) and the key is
+// consumed; anything else keeps this fork's default of swallowing TAB so the
+// focus cannot wander.  Every user edit additionally reports the entry text to
+// GM:ChatTextChanged( text ) from FireActionSignal() below; that hook's return
+// value is discarded (no handler changes anything here).
+//-----------------------------------------------------------------------------
+void CBaseHudChatEntry::OnKeyCodeTyped( vgui::KeyCode code )
+{
+	if ( code == KEY_ENTER || code == KEY_PAD_ENTER || code == KEY_ESCAPE )
+	{
+		if ( code != KEY_ESCAPE )
+		{
+			if ( m_pHudChat )
+			{
+				PostMessage( m_pHudChat, new KeyValues("ChatEntrySend") );
+			}
+		}
+
+		// End message mode.
+		if ( m_pHudChat )
+		{
+			PostMessage( m_pHudChat, new KeyValues("ChatEntryStopMessageMode") );
+		}
+	}
+	else if ( code == KEY_TAB )
+	{
+#if defined ( LUA_SDK )
+		{
+			int iBase = lua_gettop( L );
+			BEGIN_LUA_CALL_HOOK( "OnChatTab" );
+				wchar_t wszEntry[512];
+				char szEntry[512];
+				GetText( wszEntry, sizeof( wszEntry ) );
+				g_pVGuiLocalize->ConvertUnicodeToANSI( wszEntry, szEntry, sizeof( szEntry ) );
+				lua_pushstring( L, szEntry );
+			END_LUA_CALL_HOOK( 1, 1 );
+
+			// luasrc_pcall's error path (and a missing hook) leaves nil in the
+			// result slot, which reads as "no replacement" -- TAB is swallowed
+			// below exactly as before the hook existed.
+			if ( lua_isstring( L, -1 ) )
+			{
+				const char *pszReplacement = lua_tostring( L, -1 );
+				if ( pszReplacement )
+				{
+					wchar_t wszReplacement[512];
+					g_pVGuiLocalize->ConvertANSIToUnicode( pszReplacement, wszReplacement, sizeof( wszReplacement ) );
+					lua_settop( L, iBase );
+					SetText( wszReplacement );
+					GotoTextEnd();
+					return;
+				}
+			}
+			lua_settop( L, iBase );
+		}
+#endif
+		// Ignore tab, otherwise vgui will screw up the focus.
+		return;
+	}
+	else
+	{
+		BaseClass::OnKeyCodeTyped( code );
+	}
+}
+
+void CBaseHudChatEntry::FireActionSignal()
+{
+	BaseClass::FireActionSignal();
+
+#if defined ( LUA_SDK )
+	{
+		int iBase = lua_gettop( L );
+		BEGIN_LUA_CALL_HOOK( "ChatTextChanged" );
+			wchar_t wszEntry[512];
+			char szEntry[512];
+			GetText( wszEntry, sizeof( wszEntry ) );
+			g_pVGuiLocalize->ConvertUnicodeToANSI( wszEntry, szEntry, sizeof( szEntry ) );
+			lua_pushstring( L, szEntry );
+		END_LUA_CALL_HOOK( 1, 1 );
+		lua_settop( L, iBase );
+	}
+#endif
+}
 
 CHudChatFilterButton::CHudChatFilterButton( vgui::Panel *pParent, const char *pName, const char *pText ) : 
 BaseClass( pParent, pName, pText )
@@ -846,6 +937,20 @@ void CBaseHudChat::MsgFunc_SayText2( bf_read &msg )
 	ReadLocalizedString( msg, szBuf[3], sizeof( szBuf[3] ), true );
 	ReadLocalizedString( msg, szBuf[4], sizeof( szBuf[4] ), true );
 
+	// HL2SB (2026-10-13): the game's chat path appends two trailing bytes to this
+	// message -- bTeamOnly and bPlayerIsDead -- so the GM:OnPlayerChat dispatch
+	// below receives the same four arguments GMod's chat handler derives from its
+	// own chat wire (reference behavior: GMod's chat message carries the team-only
+	// and dead flags next to the text for exactly this hook).  Senders that use the
+	// plain HL2 format stop before these bytes; the bit reader yields 0 for both,
+	// which reads as false/false.
+	bool bTeamOnly = false, bPlayerIsDead = false;
+	if ( msg.GetNumBitsLeft() >= 16 )
+	{
+		bTeamOnly = msg.ReadByte() != 0;
+		bPlayerIsDead = msg.ReadByte() != 0;
+	}
+
 	g_pVGuiLocalize->ConstructString( szBuf[5], sizeof( szBuf[5] ), msg_text, 4, szBuf[1], szBuf[2], szBuf[3], szBuf[4] );
 
 	char ansiString[512];
@@ -853,6 +958,36 @@ void CBaseHudChat::MsgFunc_SayText2( bf_read &msg )
 
 	if ( bWantsToChat )
 	{
+#if defined ( LUA_SDK )
+		// HL2SB (2026-10-13): GM:OnPlayerChat( player, text, bTeamOnly, bPlayerIsDead ).
+		// Reference behavior: the chat handler dispatches this hook for every
+		// chat-flagged message; a truthy return suppresses the default C++ print
+		// below (the base gamemode renders the line itself through chat.AddText).
+		// The hook's `text` is the raw message text -- the second SayText2 string
+		// parameter -- not the constructed "name: text" line; the gamemode builds
+		// the prefix from the player entity.  Console says (client index 0) push a
+		// NULL entity, which IsValid() rejects inside the gamemode method.
+		{
+			int iBase = lua_gettop( L );
+			BEGIN_LUA_CALL_HOOK( "OnPlayerChat" );
+				C_BasePlayer *pSpeaker = ( client > 0 ) ? UTIL_PlayerByIndex( client ) : NULL;
+				lua_pushplayer( L, pSpeaker );
+				char szRawText[512];
+				g_pVGuiLocalize->ConvertUnicodeToANSI( szBuf[2], szRawText, sizeof( szRawText ) );
+				lua_pushstring( L, szRawText );
+				lua_pushboolean( L, bTeamOnly );
+				lua_pushboolean( L, bPlayerIsDead );
+			END_LUA_CALL_HOOK( 4, 1 );
+
+			// luasrc_pcall's error path leaves a nil placeholder in the result
+			// slot, which reads as falsy here -- the default print still runs.
+			bool bSuppressDefault = ( lua_gettop( L ) > iBase ) && lua_toboolean( L, -1 );
+			lua_settop( L, iBase );
+			if ( bSuppressDefault )
+				return;
+		}
+#endif
+
 		int iFilter = CHAT_FILTER_NONE;
 
 		if ( client > 0 && (g_PR->GetTeam( client ) != g_PR->GetTeam( GetLocalPlayerIndex() )) )
@@ -944,6 +1079,36 @@ void CBaseHudChat::MsgFunc_TextMsg( bf_read &msg )
 	case HUD_PRINTTALK:
 		g_pVGuiLocalize->ConstructString( outputBuf, sizeof(outputBuf), szBuf[0], 4, szBuf[1], szBuf[2], szBuf[3], szBuf[4] );
 		g_pVGuiLocalize->ConvertUnicodeToANSI( outputBuf, szString, sizeof(szString) );
+#if defined ( LUA_SDK )
+		// HL2SB (2026-10-13): GM:ChatText( 0, "Console", text, "none" ) --
+		// reference behavior: the game routes its talk-area system messages
+		// through the chat printf path, which dispatches this hook before
+		// printing; a truthy answer suppresses both the chat line and the
+		// console mirror.  System messages carry no player, so the index is
+		// always 0 and the name resolves to the reference's "Console" fallback.
+		{
+			int iBase = lua_gettop( L );
+			BEGIN_LUA_CALL_HOOK( "ChatText" );
+				lua_pushinteger( L, 0 );
+				lua_pushstring( L, "Console" );
+				char szChatText[512];
+				Q_strncpy( szChatText, ConvertCRtoNL( szString ), sizeof( szChatText ) );
+				szChatText[sizeof( szChatText ) - 1] = 0;
+				int nChatLen = strlen( szChatText );
+				if ( nChatLen > 0 && szChatText[nChatLen - 1] == '\n' )
+					szChatText[nChatLen - 1] = 0;
+				lua_pushstring( L, szChatText );
+				lua_pushstring( L, "none" );
+			END_LUA_CALL_HOOK( 4, 1 );
+
+			// luasrc_pcall's error path leaves a nil placeholder, which reads
+			// as falsy -- the default print still runs.
+			bool bSuppressChatText = ( lua_gettop( L ) > iBase ) && lua_toboolean( L, -1 );
+			lua_settop( L, iBase );
+			if ( bSuppressChatText )
+				return;
+		}
+#endif
 		len = strlen( szString );
 		if ( len && szString[len-1] != '\n' && szString[len-1] != '\r' )
 		{
@@ -1238,7 +1403,40 @@ void CBaseHudChat::StartMessageMode( int iMessageModeType )
 	m_pFilterPanel->SetVisible( false );
 
 	engine->ClientCmd_Unrestricted( "gameui_preventescapetoshow\n" );
-		
+
+#if defined ( LUA_SDK )
+	// HL2SB (2026-10-13): GM:StartChat( isTeamChat ) -- dispatched once the
+	// chat input has opened, carrying one boolean that is true when the mode
+	// being opened is anything but plain say (i.e. team chat).  Reference
+	// behavior: a true return moves the whole chat panel off-screen to
+	// x = -2000, hiding the default chatbox; a false return restores the last
+	// on-screen x captured above.  nil (no handler, handler error, handler
+	// returned nothing) leaves the panel exactly where the open path put it.
+	{
+		int hx, hy;
+		GetPos( hx, hy );
+		static int s_iChatOpenSavedX = -2000;
+		if ( hx != -2000 )
+			s_iChatOpenSavedX = hx;
+
+		int iBase = lua_gettop( L );
+		BEGIN_LUA_CALL_HOOK( "StartChat" );
+			lua_pushboolean( L, iMessageModeType != MM_SAY );
+		END_LUA_CALL_HOOK( 1, 1 );
+
+		if ( lua_isboolean( L, -1 ) )
+		{
+			bool bHideChatBox = lua_toboolean( L, -1 );
+			lua_settop( L, iBase );
+			SetPos( bHideChatBox ? -2000 : s_iChatOpenSavedX, hy );
+		}
+		else
+		{
+			lua_settop( L, iBase );
+		}
+	}
+#endif
+
 #endif
 }
 
@@ -1271,6 +1469,18 @@ void CBaseHudChat::StopMessageMode( void )
 	m_pFilterPanel->SetVisible( false );
 
 	m_flHistoryFadeTime = gpGlobals->curtime + CHAT_HISTORY_FADE_TIME;
+
+#if defined ( LUA_SDK )
+	// HL2SB (2026-10-13): GM:FinishChat() -- dispatched when the chat input
+	// closes.  No arguments, the return value is discarded (reference
+	// behavior: closing the box proceeds either way).
+	{
+		int iBase = lua_gettop( L );
+		BEGIN_LUA_CALL_HOOK( "FinishChat" );
+		END_LUA_CALL_HOOK( 0, 1 );
+		lua_settop( L, iBase );
+	}
+#endif
 
 	m_nMessageMode = MM_NONE;
 #endif

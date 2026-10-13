@@ -108,6 +108,12 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 	char	*p;
 	char	text[256];
 	char    szTemp[256];
+	// HL2SB (2026-10-14): Local copy of a hook-replaced message.  The chat
+	// hooks may hand back their own string; it must be copied out of the Lua
+	// stack because this function later WRITES into p (the 127-char clamp and
+	// the p[j]=0 length fix-up below), and writing through the raw Lua string
+	// pointer overruns its heap block and corrupts the Lua heap.
+	char	szHookText[256];
 	const char *cpSay = "say";
 	const char *cpSayTeam = "say_team";
 	const char *pcmd = args[0];
@@ -166,7 +172,15 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 		}
 		else if ( lua_isstring( L, -1 ) )
 		{
-			p = (char *)luaL_checkstring( L, -1 );
+			// HL2SB (2026-10-14): the hook replaces the text with its own
+			// string (the base gamemode's GM:PlayerSay returns its text
+			// argument).  Copy it into a stable local buffer -- keeping the
+			// luaL_checkstring pointer leaves p dangling after the pop AND
+			// lets the p[j]=0 clamp below write out of bounds through it
+			// (reference behavior: the game copies the returned string).
+			Q_strncpy( szHookText, luaL_checkstring( L, -1 ), sizeof( szHookText ) );
+			szHookText[ sizeof( szHookText ) - 1 ] = 0;
+			p = szHookText;
 			lua_pop( L, 1 );
 		}
 		else
@@ -192,7 +206,15 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 		}
 		else if ( lua_isstring( L, -1 ) )
 		{
-			p = (char *)luaL_checkstring( L, -1 );
+			// HL2SB (2026-10-14): the hook replaces the text with its own
+			// string (the base gamemode's GM:PlayerSay returns its text
+			// argument).  Copy it into a stable local buffer -- keeping the
+			// luaL_checkstring pointer leaves p dangling after the pop AND
+			// lets the p[j]=0 clamp below write out of bounds through it
+			// (reference behavior: the game copies the returned string).
+			Q_strncpy( szHookText, luaL_checkstring( L, -1 ), sizeof( szHookText ) );
+			szHookText[ sizeof( szHookText ) - 1 ] = 0;
+			p = szHookText;
 			lua_pop( L, 1 );
 		}
 		else
@@ -288,12 +310,33 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 		if ( pPlayer && GetVoiceGameMgr() && GetVoiceGameMgr()->IsPlayerIgnoringPlayer( pPlayer->entindex(), i ) )
 			continue;
 
+		// HL2SB (2026-10-13): GM:PlayerCanSeePlayersChat( text, bTeamOnly, listener, speaker ).
+		// Reference behavior: the game dispatches this hook for every candidate
+		// recipient before the chat send; an explicit false hides the message from
+		// that listener only (the base gamemode default gates team-only chat by
+		// team).  A nil result -- no hook and no gamemode method answered -- lets
+		// the message through, matching the game's "hook absent -> send" default.
+		// The speaker's own echo below intentionally skips this check.
+		BEGIN_LUA_CALL_HOOK( "PlayerCanSeePlayersChat" );
+			lua_pushstring( L, p );
+			lua_pushboolean( L, teamonly );
+			lua_pushplayer( L, client );
+			lua_pushplayer( L, pPlayer );
+		END_LUA_CALL_HOOK( 4, 1 );
+
+		if ( lua_isboolean( L, -1 ) && !lua_toboolean( L, -1 ) )
+		{
+			lua_pop( L, 1 );
+			continue;
+		}
+		lua_pop( L, 1 );
+
 		CSingleUserRecipientFilter user( client );
 		user.MakeReliable();
 
 		if ( pszFormat )
 		{
-			UTIL_SayText2Filter( user, pPlayer, true, pszFormat, pszPlayerName, p, pszLocation );
+			UTIL_SayText2Filter( user, pPlayer, true, pszFormat, pszPlayerName, p, pszLocation, "", teamonly ? 1 : 0, bSenderDead ? 1 : 0 );
 		}
 		else
 		{
@@ -309,7 +352,7 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 
 		if ( pszFormat )
 		{
-			UTIL_SayText2Filter( user, pPlayer, true, pszFormat, pszPlayerName, p, pszLocation );
+			UTIL_SayText2Filter( user, pPlayer, true, pszFormat, pszPlayerName, p, pszLocation, "", teamonly ? 1 : 0, bSenderDead ? 1 : 0 );
 		}
 		else
 		{

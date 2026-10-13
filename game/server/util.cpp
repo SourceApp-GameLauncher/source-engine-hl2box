@@ -1305,7 +1305,7 @@ void UTIL_SayTextFilter( IRecipientFilter& filter, const char *pText, CBasePlaye
 	MessageEnd();
 }
 
-void UTIL_SayText2Filter( IRecipientFilter& filter, CBasePlayer *pEntity, bool bChat, const char *msg_name, const char *param1, const char *param2, const char *param3, const char *param4 )
+void UTIL_SayText2Filter( IRecipientFilter& filter, CBasePlayer *pEntity, bool bChat, const char *msg_name, const char *param1, const char *param2, const char *param3, const char *param4, int iTeamOnlyByte, int iDeadByte )
 {
 	UserMessageBegin( filter, "SayText2" );
 		if ( pEntity )
@@ -1340,6 +1340,16 @@ void UTIL_SayText2Filter( IRecipientFilter& filter, CBasePlayer *pEntity, bool b
 			WRITE_STRING( param4 );
 		else
 			WRITE_STRING( "" );
+
+		// HL2SB (2026-10-13): optional trailing chat-state bytes consumed by the
+		// client's GM:OnPlayerChat dispatch (reference behavior: the game's chat
+		// wire carries the team-only and dead flags alongside the text so the
+		// client hook receives them).  -1 keeps the legacy HL2 field layout, which
+		// the client also accepts -- it only reads these when the bits exist.
+		if ( iTeamOnlyByte >= 0 )
+			WRITE_BYTE( iTeamOnlyByte );
+		if ( iDeadByte >= 0 )
+			WRITE_BYTE( iDeadByte );
 
 	MessageEnd();
 }

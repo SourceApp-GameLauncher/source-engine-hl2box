@@ -454,7 +454,11 @@ void ClientPrint( CBasePlayer *player, int msg_dest, const char *msg_name, const
 void		UTIL_SayText( const char *pText, CBasePlayer *pEntity );
 void		UTIL_SayTextAll( const char *pText, CBasePlayer *pEntity = NULL, bool bChat = false );
 void		UTIL_SayTextFilter( IRecipientFilter& filter, const char *pText, CBasePlayer *pEntity, bool bChat );
-void		UTIL_SayText2Filter( IRecipientFilter& filter, CBasePlayer *pEntity, bool bChat, const char *msg_name, const char *param1 = NULL, const char *param2 = NULL, const char *param3 = NULL, const char *param4 = NULL );
+// HL2SB (2026-10-13): iTeamOnlyByte/iDeadByte are optional trailing chat-state
+// bytes (>= 0 writes the byte, -1 keeps the legacy field layout) for the client
+// GM:OnPlayerChat dispatch; reference behavior: the game's chat wire carries the
+// team-only and dead flags alongside the text.
+void		UTIL_SayText2Filter( IRecipientFilter& filter, CBasePlayer *pEntity, bool bChat, const char *msg_name, const char *param1 = NULL, const char *param2 = NULL, const char *param3 = NULL, const char *param4 = NULL, int iTeamOnlyByte = -1, int iDeadByte = -1 );
 
 byte		*UTIL_LoadFileForMe( const char *filename, int *pLength );
 void        UTIL_FreeFile( byte *buffer );

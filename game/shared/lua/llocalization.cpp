@@ -66,12 +66,39 @@ LUA_BINDING_BEGIN( Localizations, AddString, "library", "Adds a localized string
 }
 LUA_BINDING_END()
 
+// HL2SB (2026-10-13): GMod's `language` table (lua/includes/modules/language.lua
+// there) publishes GetPhrase/Add over the same localize system.  This fork's
+// engine-side library spells the functions Find/AddString under the name
+// "Localizations", and the only other definition of `language` (the
+// gmod_compatibility shim) sits behind a disabled switch -- so the base
+// gamemode's chat hooks, which call language.GetPhrase( "chat.dead" ) etc.
+// unguarded, had no working target.  Publish the GMod table here so both
+// spellings resolve to the same engine functions.
+static int HL2SB_language_GetPhrase( lua_State *L )
+{
+	return Localizations_Find( L );
+}
+
+static int HL2SB_language_Add( lua_State *L )
+{
+	return Localizations_AddString( L );
+}
+
+static const luaL_Reg language_funcs[] = {
+	{ "GetPhrase", HL2SB_language_GetPhrase },
+	{ "Add",       HL2SB_language_Add },
+	{ NULL, NULL }
+};
+
 /*
 ** Open localization library
 */
 LUALIB_API int luaopen_Localizations( lua_State *L )
 {
 	LUA_REGISTRATION_COMMIT_LIBRARY( Localizations );
+
+	luaL_register( L, "language", language_funcs );
+	lua_pop( L, 1 );
 
 	return 1;
 }

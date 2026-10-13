@@ -2933,6 +2933,18 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_pushinteger( L, 2 );  lua_setglobal( L, "STEPSOUNDTIME_WATER_KNEE" );
   lua_pushinteger( L, 3 );  lua_setglobal( L, "STEPSOUNDTIME_WATER_FOOT" );
 
+#ifdef CLIENT_DLL
+  // HL2SB (2026-10-13): GMod's Enums/TEXT_FILTER family (client-only in GMod --
+  // the names live in the client binary).  util.FilterText takes these as its
+  // filter context; the base gamemode's GM:OnPlayerChat branches on
+  // bit.band( cl_chatfilters, 64 ) to pick between GAME_CONTENT and CHAT.
+  // Values from the GMod wiki enum page.
+  lua_pushinteger( L, 0 );  lua_setglobal( L, "TEXT_FILTER_UNKNOWN" );
+  lua_pushinteger( L, 1 );  lua_setglobal( L, "TEXT_FILTER_GAME_CONTENT" );
+  lua_pushinteger( L, 2 );  lua_setglobal( L, "TEXT_FILTER_CHAT" );
+  lua_pushinteger( L, 3 );  lua_setglobal( L, "TEXT_FILTER_NAME" );
+#endif
+
   luaL_register(L, "_G", lua_metatable_funcs);
   lua_pop(L, 1);
 

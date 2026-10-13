@@ -350,34 +350,16 @@ public:
 		SetPaintBorderEnabled( false );
 	}
 
-	virtual void OnKeyCodeTyped(vgui::KeyCode code)
-	{
-		if ( code == KEY_ENTER || code == KEY_PAD_ENTER || code == KEY_ESCAPE )
-		{
-			if ( code != KEY_ESCAPE )
-			{
-				if ( m_pHudChat )
-				{
-					PostMessage( m_pHudChat, new KeyValues("ChatEntrySend") );
-				}
-			}
-		
-			// End message mode.
-			if ( m_pHudChat )
-			{
-				PostMessage( m_pHudChat, new KeyValues("ChatEntryStopMessageMode") );
-			}
-		}
-		else if ( code == KEY_TAB )
-		{
-			// Ignore tab, otherwise vgui will screw up the focus.
-			return;
-		}
-		else
-		{
-			BaseClass::OnKeyCodeTyped( code );
-		}
-	}
+	// HL2SB (2026-10-13): moved out of line -- the TAB branch now dispatches
+	// GM:OnChatTab (see the .cpp).
+	virtual void OnKeyCodeTyped(vgui::KeyCode code);
+
+	// HL2SB (2026-10-13): reference behavior - the chat entry fires
+	// GM:ChatTextChanged( text ) from its text-changed path on every user
+	// edit (the result is discarded).  vgui's TextEntry calls
+	// FireActionSignal() from the edit paths (InsertChar and friends) but
+	// NOT from SetText, which is exactly the reference's trigger set.
+	virtual void FireActionSignal();
 
 private:
 	vgui::Panel *m_pHudChat;
