@@ -693,11 +693,18 @@ const QAngle &C_HL2MP_Player::EyeAngles()
 //-----------------------------------------------------------------------------
 void C_HL2MP_Player::UpdateClientSideAnimation()
 {
-	// HL2SB (2026-10-02): advance the client-local gesture layers (GMod TE
+	// HL2SB (2026-09-27): advance the client-local gesture layers (GMod TE
 	// architecture).  This override runs for EVERY player - local and remote -
 	// through m_bClientSideAnimation, which is exactly the set of players whose
 	// locally-built gesture layers need their cycle driven.
 	HL2SB_ClientAdvanceGestures();
+
+	// HL2SB (2026-09-27): lua_pushplayer for the GM:UpdateAnimation dispatch.
+	// (declared here instead of including lbaseplayer_shared.h, which requires
+	// the full CBasePlayer type before its typedef)
+	class CBasePlayer;
+	LUA_API void lua_pushplayer( lua_State *L, CBasePlayer *pPlayer );
+
 
 	// HL2SB diagnostic: this override IS the client-side animation entry point for
 	// this entity (it deliberately does not chain to the base class, the same way
@@ -829,6 +836,21 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 				 s_nHL2SBRollbacks, s_flHL2SBLastRollbackMagnitude,
 				 g_nHL2SBCycleZeroCount[0], g_nHL2SBCycleZeroCount[1], g_nHL2SBCycleZeroCount[2] );
 		}
+	}
+
+	// HL2SB (2026-10-14): GM:UpdateAnimation runs here - for EVERY player, once
+	// per frame, AFTER the C++ animstate wrote its own pose parameters, so the
+	// gamemode's seat-pose work (the pod aim_yaw pin, the vehicle_steer
+	// conversion - animations.lua UpdateAnimation) wins, exactly the order the
+	// reference has.  It used to dispatch from PostThink, which never runs for
+	// the local player, and the local rider's arms bent in third person.
+	if ( L != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
+			lua_pushplayer( L, this );
+			lua_pushvector( L, GetAbsVelocity() );
+			lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
+		END_LUA_CALL_HOOK( 3, 0 );
 	}
 }
 
@@ -1519,18 +1541,14 @@ void C_HL2MP_Player::PostThink( void )
 {
 	BaseClass::PostThink();
 
-	// HL2SB (2026-09-27): the client realm dispatches GM:UpdateAnimation too -
-	// players run UseClientSideAnimation, so SetPlaybackRate has to be written
-	// here as well, and MouthMoveAnimation (voice flexes) is client-only in
-	// GMod (animations.lua:248).
-	if ( L != NULL )
-	{
-		BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
-			lua_pushplayer( L, this );
-			lua_pushvector( L, GetAbsVelocity() );
-			lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
-		END_LUA_CALL_HOOK( 3, 0 );
-	}
+	// HL2SB (2026-10-14): the GM:UpdateAnimation dispatch used to live here,
+	// but PostThink does not run for the LOCAL player - the local rider never
+	// got the gamemode's seat-pose work (the pod aim_yaw pin, the steer
+	// conversion), which is what bent his arms in third person.  The dispatch
+	// now runs from UpdateClientSideAnimation() below, which reaches every
+	// player every frame exactly once and runs after the C++ animstate wrote
+	// its own pose parameters - the same "gamemode wins" order the reference
+	// has.
 
 	// Store the eye angles pitch so the client can compute its animation state correctly.
 	m_angEyeAngles = EyeAngles();

@@ -772,28 +772,36 @@ void CPlayerAnimState::UpdateVehicleAnimation( void )
 		m_flHL2SBSeatYaw = 0.0f;
 	}
 
-	m_flHL2SBVehicleSteering = 0.5f;	// 0..1 convention: centred == unknown
+	// HL2SB (2026-10-14): the rider's vehicle_steer / aim_yaw / vertical_velocity
+	// pose parameters are written by the GAMEMODE - GM:UpdateAnimation
+	// (animations.lua) is the reference's only writer, including the pod's
+	// "steer = 0.5 -> x2-1" conversion and the aim_yaw-into-seat-frame fix.
+	// This C++ side used to write vehicle_steer itself ("owned by the server")
+	// and later even duplicated the aim pin, fighting the gamemode's writes;
+	// the visible player pose is client-driven here (m_flPoseParameter is
+	// excluded from the player DT) and GM:UpdateAnimation now dispatches from
+	// C_HL2MP_Player::UpdateClientSideAnimation for every player, so Lua is
+	// the only writer, exactly the reference's shape.  The member below is a
+	// debug-display value only.
+	m_flHL2SBVehicleSteering = 0.5f;
 
 	// --- steering (safe, model-driven) --------------------------------------
+	// Debug-display only: mirror the vehicle's own steering, normalised 0..1.
 	if ( pVehEnt )
 	{
 		CBaseAnimating *pVehAnim = pVehEnt->GetBaseAnimating();
 		if ( pVehAnim )
 		{
 			const int iVehSteer = pVehAnim->LookupPoseParameter( "vehicle_steer" );
-			if ( iVehSteer >= 0 )
-				m_flHL2SBVehicleSteering = pVehAnim->GetPoseParameter( iVehSteer );
+			if ( iVehSteer >= 0 && pVehAnim->GetModelPtr() )
+			{
+				const mstudioposeparamdesc_t &vehSteer = pVehAnim->GetModelPtr()->pPoseParameter( iVehSteer );
+				const float flSpan = vehSteer.end - vehSteer.start;
+				if ( flSpan > 0.0f )
+					m_flHL2SBVehicleSteering = ( pVehAnim->GetPoseParameter( iVehSteer ) - vehSteer.start ) / flSpan;
+			}
 		}
 	}
-
-	// The player's own steering pose is owned by the SERVER (the client receives it
-	// through m_flPoseParameter). Letting the client write it re-applied a stale
-	// value and fought the server, so the write stays server-side.
-#ifndef CLIENT_DLL
-	const int iPlayerSteer = pPlayer->LookupPoseParameter( "vehicle_steer" );
-	if ( iPlayerSteer >= 0 )
-		pPlayer->SetPoseParameter( iPlayerSteer, m_flHL2SBVehicleSteering );
-#endif
 
 	// --- seated body / head layering -----------------------------------------
 	// The body follows the SEAT, the head/upper body follows the view RELATIVE to it.

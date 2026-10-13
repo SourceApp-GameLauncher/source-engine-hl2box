@@ -21,6 +21,7 @@
 #include "cbase.h"
 #include "hl2sb_undo.h"
 #include "igameevents.h"
+#include "luamanager.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -141,7 +142,93 @@ static CBaseEntity *GM_SpawnAtEyeTrace( CBasePlayer *pPlayer, const char *pszCla
 	// sandbox does it.  Driveables and chairs both carry the field (free
 	// function in game/server/hl2/vehicle_prisoner_pod.cpp).
 	if ( pszVehicleClass != NULL && pszVehicleClass[0] != '\0' )
+	{
 		HL2SB_SetEntityVehicleClass( pEnt, pszVehicleClass );
+
+		// GMod's sandbox also writes the registry entry's Members ONTO the
+		// spawned entity (commands.lua:1116, table.Merge( Ent, vehicle.Members ))
+		// -- Members.HandleAnimation lands on the entity's instance table, and
+		// that field is what every variant of the gamemode's HandlePlayerDriving
+		// reads first (the current animations.lua checks the entity field before
+		// the registry; the older copy of that function some autorun packs
+		// install over the gamemode - e.g. portalgun's animations.lua - knows
+		// ONLY the entity field).  Writing it here keeps the seat pose intact
+		// no matter which version of HandlePlayerDriving is in place.
+		if ( L != NULL )
+		{
+			// All indices below are relative to iBase: the console-command frame
+			// does NOT start on an empty Lua stack (first map after launch had
+			// leftovers, a map change did not - the merge only ever worked when
+			// iTop happened to be 0).
+			const int iBase = lua_gettop( L );
+
+			lua_getglobal( L, "list" );                                      // iBase+1
+			if ( lua_istable( L, iBase + 1 ) )
+			{
+				lua_getfield( L, iBase + 1, "GetEntry" );                    // iBase+2
+				if ( lua_isfunction( L, iBase + 2 ) )
+				{
+					lua_pushstring( L, "Vehicles" );                         // iBase+3
+					lua_pushstring( L, pszVehicleClass );                    // iBase+4
+					luasrc_pcall( L, 2, 1, 0 );                              // iBase+2 = entry (nil on miss / pcall error)
+					if ( lua_istable( L, iBase + 2 ) )
+					{
+						if ( pEnt->m_nTableReference < 0 )
+						{
+							lua_newtable( L );
+							pEnt->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+						}
+						lua_rawgeti( L, LUA_REGISTRYINDEX, pEnt->m_nTableReference );  // iBase+3 instance table
+						if ( lua_istable( L, iBase + 3 ) )
+						{
+							lua_getfield( L, iBase + 2, "Members" );         // iBase+4
+							if ( lua_istable( L, iBase + 4 ) )
+							{
+								int nMerged = 0;
+								lua_pushnil( L );                            // iBase+5 first key
+								while ( lua_next( L, iBase + 4 ) != 0 )      // +5=key +6=value
+								{
+									lua_pushvalue( L, iBase + 5 );           // +7=key
+									lua_pushvalue( L, iBase + 6 );           // +8=value
+									lua_settable( L, iBase + 3 );            // instance[key] = value
+									lua_pop( L, 1 );                         // drop the copy, keep the key
+									nMerged++;
+								}
+								Msg( "[HL2SB vehmerge] %s: %d member(s) onto the entity\n", pszVehicleClass, nMerged );
+							}
+							else
+							{
+								Msg( "[HL2SB vehmerge] %s: entry has no Members table\n", pszVehicleClass );
+							}
+							lua_pop( L, 2 );                                 // Members, instance
+						}
+						else
+						{
+							Msg( "[HL2SB vehmerge] %s: no instance table\n", pszVehicleClass );
+							lua_pop( L, 1 );
+						}
+					}
+					else
+					{
+						Msg( "[HL2SB vehmerge] %s: no registry entry\n", pszVehicleClass );
+					}
+					lua_pop( L, 1 );                                         // entry
+				}
+				else
+				{
+					Msg( "[HL2SB vehmerge] %s: list.GetEntry missing\n", pszVehicleClass );
+					lua_pop( L, 2 );                                         // GetEntry, list
+				}
+			}
+			else
+			{
+				Msg( "[HL2SB vehmerge] %s: global list missing\n", pszVehicleClass );
+				lua_pop( L, 1 );                                             // list
+			}
+
+			lua_settop( L, iBase );
+		}
+	}
 
 	return pEnt;
 }
