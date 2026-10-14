@@ -118,7 +118,7 @@ ConVar physgun_wheelspeed( "physgun_wheelspeed", "10", FCVAR_ARCHIVE | FCVAR_REP
 ConVar physgun_minrange( "physgun_minrange", "40", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: minimum hold distance" );
 ConVar physgun_maxrange( "physgun_maxrange", "4096", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: maximum hold distance" );
 ConVar phys_spinspeed( "phys_spinspeed", "200", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: E+A/D spin speed (degrees per second)" );
-ConVar gm_snapangles( "gm_snapangles", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: Shift+E angle snap grid (degrees, 0 disables)" );
+ConVar gm_snapangles( "gm_snapangles", "45", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: Shift+E angle snap grid (degrees, 0 disables)" );
 ConVar gm_snapgrid( "gm_snapgrid", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: snap grid size (0 disables)" );
 
 // HL2SB (2026-10-03): physgun visual diagnostics, BOTH realms (the server
@@ -896,13 +896,12 @@ void CWeaponGravityGun::TraceLine( trace_t *ptr )
 //-----------------------------------------------------------------------------
 // HL2SB (2026-09-29, GMod reference): GMod does NOT force-drive held objects.
 // It computes the target pose every frame and GATES the move with sweeps
-// (server.dll ): trace current origin -> target with mask
-// 0x400B (= CONTENTS_SOLID|WINDOW|GRATE|MOVEABLE) and the object itself
-// ignored; clear -> the object may stand at the target; blocked -> the three
-// axis deltas are re-tested individually from the current origin and only the
+// (CBaseEntity::TraceEntityFiltered, mask 0x400B = SOLID|WINDOW|GRATE|MOVEABLE,
+// the entity's own hull, self excluded): clear -> the object may stand at the
+// target; blocked -> the axis deltas are re-tested individually and only the
 // free ones are kept (that is what makes a held prop SLIDE along a surface).
-// Both carry paths below aim the object at this function's answer, so nothing
-// can ever be shoved through a wall or into the floor.
+// The sweep uses the entity HULL, not a zero-radius ray - a ray ignores the
+// body, which let dragged NPCs sink hull-deep into the floor.
 //-----------------------------------------------------------------------------
 static Vector HL2SB_PhysgunGateTarget( CBaseEntity *pObject, const Vector &vecDest )
 {
@@ -910,7 +909,7 @@ static Vector HL2SB_PhysgunGateTarget( CBaseEntity *pObject, const Vector &vecDe
 	const Vector vecFrom = pObject->GetAbsOrigin();
 
 	trace_t tr;
-	UTIL_TraceLine( vecFrom, vecDest, uiGateMask, pObject, COLLISION_GROUP_NONE, &tr );
+	UTIL_TraceEntity( pObject, vecFrom, vecDest, uiGateMask, &tr );
 	if ( tr.fraction >= 1.0f && !tr.startsolid && !tr.allsolid )
 		return vecDest;
 
@@ -919,22 +918,22 @@ static Vector HL2SB_PhysgunGateTarget( CBaseEntity *pObject, const Vector &vecDe
 	Vector allowed( 0.0f, 0.0f, 0.0f );
 	trace_t axisTr;
 
-	UTIL_TraceLine( vecFrom, vecFrom + Vector( delta.x, 0.0f, 0.0f ), uiGateMask, pObject, COLLISION_GROUP_NONE, &axisTr );
+	UTIL_TraceEntity( pObject, vecFrom, vecFrom + Vector( delta.x, 0.0f, 0.0f ), uiGateMask, &axisTr );
 	if ( axisTr.fraction >= 1.0f && !axisTr.startsolid )
 		allowed.x = delta.x;
 
-	UTIL_TraceLine( vecFrom, vecFrom + Vector( 0.0f, delta.y, 0.0f ), uiGateMask, pObject, COLLISION_GROUP_NONE, &axisTr );
+	UTIL_TraceEntity( pObject, vecFrom, vecFrom + Vector( 0.0f, delta.y, 0.0f ), uiGateMask, &axisTr );
 	if ( axisTr.fraction >= 1.0f && !axisTr.startsolid )
 		allowed.y = delta.y;
 
-	UTIL_TraceLine( vecFrom, vecFrom + Vector( 0.0f, 0.0f, delta.z ), uiGateMask, pObject, COLLISION_GROUP_NONE, &axisTr );
+	UTIL_TraceEntity( pObject, vecFrom, vecFrom + Vector( 0.0f, 0.0f, delta.z ), uiGateMask, &axisTr );
 	if ( axisTr.fraction >= 1.0f && !axisTr.startsolid )
 		allowed.z = delta.z;
 
 	Vector vecResult = vecFrom + allowed;
 
 	// Re-test the combined slide and clamp at whatever it still touches.
-	UTIL_TraceLine( vecFrom, vecResult, uiGateMask, pObject, COLLISION_GROUP_NONE, &tr );
+	UTIL_TraceEntity( pObject, vecFrom, vecResult, uiGateMask, &tr );
 	if ( !tr.startsolid && tr.fraction < 1.0f )
 		vecResult = tr.endpos;
 
@@ -1055,32 +1054,32 @@ void CWeaponGravityGun::EffectUpdate( void )
 			MatrixAngles( matNewLocal, localAngles );
 
 			// Transform back to world orientation -- no pitch clamping!
-			m_heldWorldAngles = TransformAnglesToWorldSpace( localAngles, matPlayerYaw );
-
-			// Shift+E angle snap grid (degrees, 0 disables)
+			// Shift+E angle snap grid (degrees, 0 disables): GMod quantizes its
+			// accumulated VIEW-SPACE angles, so the snap rides the view axes and
+			// each notch re-rounds -- turning the mouse walks the object notch
+			// by notch regardless of world orientation.
 			float flSnap = gm_snapangles.GetFloat();
 			if ( flSnap > 0.0f && ( pOwner->m_nButtons & IN_SPEED ) )
 			{
-				m_heldWorldAngles.x = roundf( m_heldWorldAngles.x / flSnap ) * flSnap;
-				m_heldWorldAngles.y = roundf( m_heldWorldAngles.y / flSnap ) * flSnap;
-				m_heldWorldAngles.z = roundf( m_heldWorldAngles.z / flSnap ) * flSnap;
+				localAngles.x = roundf( localAngles.x / flSnap ) * flSnap;
+				localAngles.y = roundf( localAngles.y / flSnap ) * flSnap;
+				localAngles.z = roundf( localAngles.z / flSnap ) * flSnap;
 			}
+			m_heldWorldAngles = TransformAnglesToWorldSpace( localAngles, matPlayerYaw );
 		}
 
 #ifndef CLIENT_DLL
-		// HL2SB GMod compat (2026-09-25): mouse wheel push/pull through the
-		// HL2 gravity-gun wheel mechanism -- the client KeyInput maps
-		// MOUSE_WHEEL_UP/DOWN to IN_WEAPON1/2 for one cmd while IN_ATTACK is
-		// held, and those bits ride the RELIABLE usercmd button path (the
-		// earlier hl2sb_physgun_push/pull console-command forward depended on
-		// the client hold state, which kept reading false at scroll time).
-		// Works for both carry modes (shadow-carry and teleport-drive).
-		// HL2SB (2026-09-26): GMod moves max(|physgun_wheelspeed|,0.1) units
-		// per notch (reference ) -- not 45*wheelspeed.
-		if ( pOwner->m_nButtons & IN_WEAPON1 )
-			HL2SB_AdjustDistance( fmaxf( fabsf( physgun_wheelspeed.GetFloat() ), 0.1f ) );
-		if ( pOwner->m_nButtons & IN_WEAPON2 )
-			HL2SB_AdjustDistance( -fmaxf( fabsf( physgun_wheelspeed.GetFloat() ), 0.1f ) );
+		// HL2SB GMod compat (2026-10-14): wheel push/pull consumes the player's
+		// per-tick mouse-wheel accumulator (CInput packs it into every usercmd;
+		// player_command.cpp folds it into HL2SB_GetUserCmdMouseWheel).  GMod
+		// moves max(|physgun_wheelspeed|,0.1) units per notch the same way.
+		// The old IN_WEAPON1/2 button path never delivered its bits and is gone.
+		int iWheelDelta = pOwner->HL2SB_GetUserCmdMouseWheel();
+		if ( iWheelDelta != 0 )
+		{
+			HL2SB_AdjustDistance( (float)iWheelDelta * fmaxf( fabsf( physgun_wheelspeed.GetFloat() ), 0.1f ) );
+			pOwner->HL2SB_ResetUserCmdMouseWheel();
+		}
 #endif
 
 		QAngle angles = m_heldWorldAngles;
@@ -1467,6 +1466,10 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		return;
 	}
 
+	// HL2SB: a wheel burst accumulated while not holding must not fling the
+	// new hold distance on the first tick after the grab.
+	pOwner->HL2SB_ResetUserCmdMouseWheel();
+
 	// HL2SB GMod compat: 笔刷实体（func_reflective_glass, func_brush, func_door 等）
 	// 以及无刚体的世界装饰绝对不可抓取。
 	// 允许抓取的实体必须满足：
@@ -1517,13 +1520,13 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		// entity does not snap toward the player's eye line.
 		m_vecGrabOffset = pObject->GetAbsOrigin() - end;
 
-		// HL2SB: store the grab point in ENTITY-LOCAL space.
-		VMatrix mWorld( pObject->EntityToWorldTransform() );
-		VMatrix mLocal;
-		MatrixInverseTR( mWorld, mLocal );
-		Vector vecLocalHit;
-		VectorITransform( end, mLocal.As3x4(), vecLocalHit );
-		m_vecHoldPos = vecLocalHit;
+		// HL2SB: store the grab point in ENTITY-LOCAL space, via the same
+		// single world->entity transform the client inverts with
+		// EntityToWorldSpace.  (The old MatrixInverseTR + VectorITransform
+		// pair inverted TWICE - world point times the world rotation - so
+		// the networked hold point was garbage and the beam end flew off
+		// every dragged NPC.)
+		pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
 		Pickup_OnPhysGunPickup( pObject, pOwner );
 
 		m_distance = distance;
