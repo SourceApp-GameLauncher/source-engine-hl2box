@@ -22,6 +22,8 @@
 #include "hl2sb_undo.h"
 #include "igameevents.h"
 #include "luamanager.h"
+#include "lbaseentity_shared.h"
+#include "lbaseplayer_shared.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -228,6 +230,81 @@ static void GM_Record( CBasePlayer *pPlayer, CBaseEntity *pEnt, const char *pszL
 }
 
 //-----------------------------------------------------------------------------
+// HL2SB: the sandbox spawn limits live in the gamemode, not here.
+//
+// GMod's commands.lua asks the gamemode before it spawns and tells it after:
+//
+//     gamemode.Call( "PlayerSpawnVehicle", ply, model, vname, vtable )  -> false = refuse
+//     gamemode.Call( "PlayerSpawnedVehicle", ply, ent )                 -> ply:AddCount
+//
+// sandbox/gamemode/player.lua answers the first with LimitReachedProcess ->
+// ply:CheckLimit (which fires the limit notification), and the second with
+// ply:AddCount.  A spawn path that skips the pair neither counts nor limits
+// anything -- that is exactly why the menu could spawn unlimited vehicles and
+// the limit notification never appeared.  Both hooks also carry the addon
+// contract (PlayerSpawnProp etc. are the documented veto points), so the engine
+// commands route through them the same way the Lua commands do.
+//
+// An absent method answers false ("gamemode.Call" in this fork refuses when the
+// method does not exist), so these methods must exist in the active gamemode;
+// a NULL Lua state (Lua disabled) lets the spawn through.
+//-----------------------------------------------------------------------------
+
+// positionally optional string: GMod passes vtable / equipment in the middle of
+// the argument list, so a missing one has to be a real nil, not ""
+static void GM_PushOptionalString( lua_State *pL, const char *pszValue )
+{
+	if ( pszValue != NULL && pszValue[ 0 ] != '\0' )
+		lua_pushstring( pL, pszValue );
+	else
+		lua_pushnil( pL );
+}
+
+static bool GM_GamemodeAllowsSpawn( const char *pszMethod, CBasePlayer *pPlayer,
+                                    const char *pszArg1 = NULL, const char *pszArg2 = NULL )
+{
+	if ( L == NULL || pPlayer == NULL )
+		return true;
+
+	BEGIN_LUA_CALL_HOOK( pszMethod );
+		lua_pushplayer( L, pPlayer );
+		GM_PushOptionalString( L, pszArg1 );
+		GM_PushOptionalString( L, pszArg2 );
+	END_LUA_CALL_HOOK( 3, 1 );
+
+	const bool bAllowed = ( lua_toboolean( L, -1 ) != 0 );
+	lua_pop( L, 1 );
+
+	return bAllowed;
+}
+
+// PlayerSpawnedVehicle / PlayerSpawnedNPC / PlayerSpawnedSENT: ( ply, ent )
+static void GM_GamemodeSpawned( const char *pszMethod, CBasePlayer *pPlayer, CBaseEntity *pEnt )
+{
+	if ( L == NULL || pPlayer == NULL || pEnt == NULL )
+		return;
+
+	BEGIN_LUA_CALL_HOOK( pszMethod );
+		lua_pushplayer( L, pPlayer );
+		lua_pushentity( L, pEnt );
+	END_LUA_CALL_HOOK( 2, 0 );
+}
+
+// PlayerSpawnedProp / PlayerSpawnedRagdoll / PlayerSpawnedEffect: ( ply, model, ent )
+static void GM_GamemodeSpawnedWithModel( const char *pszMethod, CBasePlayer *pPlayer,
+                                         const char *pszModel, CBaseEntity *pEnt )
+{
+	if ( L == NULL || pPlayer == NULL || pEnt == NULL )
+		return;
+
+	BEGIN_LUA_CALL_HOOK( pszMethod );
+		lua_pushplayer( L, pPlayer );
+		GM_PushOptionalString( L, pszModel );
+		lua_pushentity( L, pEnt );
+	END_LUA_CALL_HOOK( 3, 0 );
+}
+
+//-----------------------------------------------------------------------------
 // gm_giveswep: GMod's "give yourself this weapon".  The weapon goes into the
 // player's inventory - no world weapon entity is created, which is exactly why the
 // RPG cannot reach the code that assumed an owner.
@@ -240,6 +317,11 @@ CON_COMMAND( gm_giveswep, "Give yourself a weapon: gm_giveswep <class>  (GMod)" 
 		return;
 
 	const char *pszClass = args[ 1 ];
+
+	// GMod's PlayerGiveSWEP veto point (the sandbox default answers true; no
+	// limit rides on it).
+	if ( !GM_GamemodeAllowsSpawn( "PlayerGiveSWEP", pPlayer, pszClass ) )
+		return;
 
 	// HL2SB (2026-09-26): no item_pickup here.  GiveNamedItem ends with
 	// Touch( this ), so a NEW weapon routes through BumpWeapon, which fires
@@ -262,11 +344,50 @@ CON_COMMAND( gm_spawn, "Spawn an entity: gm_spawn <class> [model]  (GMod)" )
 	if ( pPlayer == NULL || args.ArgC() < 2 )
 		return;
 
-	CBaseEntity *pEnt = GM_SpawnAtEyeTrace( pPlayer, args[ 1 ],
-		( args.ArgC() > 2 ) ? args[ 2 ] : NULL, NULL, NULL,
-		( args.ArgC() > 3 ) ? args[ 3 ] : NULL );
+	const char *pszClass = args[ 1 ];
+	const char *pszModel = ( args.ArgC() > 2 ) ? args[ 2 ] : NULL;
+	const char *pszName  = ( args.ArgC() > 3 ) ? args[ 3 ] : NULL;
 
-	GM_Record( pPlayer, pEnt, ( args.ArgC() > 3 ) ? args[ 3 ] : NULL );
+	// GMod splits its object spawn by what the MODEL is; the caller here hands
+	// us the real class, so the same split rides on the class name -- the prop /
+	// ragdoll / effect limits key off those, everything else counts as a SENT.
+	const char *pszPreMethod  = "PlayerSpawnSENT";
+	const char *pszPostMethod = "PlayerSpawnedSENT";
+	bool bModelArg = false;
+
+	if ( !Q_strnicmp( pszClass, "prop_physics", 12 ) )
+	{
+		pszPreMethod  = "PlayerSpawnProp";
+		pszPostMethod = "PlayerSpawnedProp";
+		bModelArg = true;
+	}
+	else if ( !Q_stricmp( pszClass, "prop_ragdoll" ) )
+	{
+		pszPreMethod  = "PlayerSpawnRagdoll";
+		pszPostMethod = "PlayerSpawnedRagdoll";
+		bModelArg = true;
+	}
+	else if ( !Q_stricmp( pszClass, "prop_effect" ) )
+	{
+		pszPreMethod  = "PlayerSpawnEffect";
+		pszPostMethod = "PlayerSpawnedEffect";
+		bModelArg = true;
+	}
+
+	if ( !GM_GamemodeAllowsSpawn( pszPreMethod, pPlayer, bModelArg ? pszModel : pszClass ) )
+		return;
+
+	CBaseEntity *pEnt = GM_SpawnAtEyeTrace( pPlayer, pszClass, pszModel, NULL, NULL, pszName );
+
+	if ( pEnt == NULL )
+		return;
+
+	if ( bModelArg )
+		GM_GamemodeSpawnedWithModel( pszPostMethod, pPlayer, pszModel, pEnt );
+	else
+		GM_GamemodeSpawned( pszPostMethod, pPlayer, pEnt );
+
+	GM_Record( pPlayer, pEnt, pszName );
 }
 
 //-----------------------------------------------------------------------------
@@ -283,14 +404,26 @@ CON_COMMAND( gm_spawnvehicle, "Spawn a vehicle: gm_spawnvehicle <class> [model] 
 	if ( pPlayer == NULL || args.ArgC() < 2 )
 		return;
 
-	CBaseEntity *pEnt = GM_SpawnAtEyeTrace( pPlayer, args[ 1 ],
-		( args.ArgC() > 2 ) ? args[ 2 ] : NULL, NULL,
-		( args.ArgC() > 3 ) ? args[ 3 ] : NULL,
-		( args.ArgC() > 4 ) ? args[ 4 ] : NULL,
-		&args, 5,
+	const char *pszModel = ( args.ArgC() > 2 ) ? args[ 2 ] : NULL;
+	const char *pszScript = ( args.ArgC() > 3 ) ? args[ 3 ] : NULL;
+	const char *pszName = ( args.ArgC() > 4 ) ? args[ 4 ] : NULL;
+
+	// PlayerSpawnVehicle( ply, model, vname, vtable ) -- the display name plays
+	// GMod's `vname` role here; the registry table is not passed (the method
+	// reads what it needs from the name).
+	if ( !GM_GamemodeAllowsSpawn( "PlayerSpawnVehicle", pPlayer, pszModel, pszName ) )
+		return;
+
+	CBaseEntity *pEnt = GM_SpawnAtEyeTrace( pPlayer, args[ 1 ], pszModel, NULL,
+		pszScript, pszName, &args, 5,
 		( Q_stricmp( args[ 1 ], "prop_vehicle_prisoner_pod" ) == 0 ) );
 
-	GM_Record( pPlayer, pEnt, ( args.ArgC() > 4 ) ? args[ 4 ] : NULL );
+	if ( pEnt == NULL )
+		return;
+
+	GM_GamemodeSpawned( "PlayerSpawnedVehicle", pPlayer, pEnt );
+
+	GM_Record( pPlayer, pEnt, pszName );
 }
 
 //-----------------------------------------------------------------------------
@@ -311,10 +444,19 @@ CON_COMMAND( gm_spawnnpc, "Spawn an NPC: gm_spawnnpc <class> [weapon]  (GMod)" )
 	// only the stock NPC comes out and the reskin "cannot be spawned".
 	const char *pszModel = ( args.ArgC() > 4 ) ? args[ 4 ] : NULL;
 
+	// PlayerSpawnNPC( ply, npc_type, equipment )
+	if ( !GM_GamemodeAllowsSpawn( "PlayerSpawnNPC", pPlayer, args[ 1 ], pszWeapon ) )
+		return;
+
 	// args[5..] are the NPC registry's KeyValues as name/value pairs
 	// (the menu forwards list.Set( "NPC", ... ) data.KeyValues).
 	CBaseEntity *pEnt = GM_SpawnAtEyeTrace( pPlayer, args[ 1 ], pszModel, pszWeapon, NULL, pszName,
 	                                        ( args.ArgC() > 5 ) ? &args : NULL, 5 );
+
+	if ( pEnt == NULL )
+		return;
+
+	GM_GamemodeSpawned( "PlayerSpawnedNPC", pPlayer, pEnt );
 
 	GM_Record( pPlayer, pEnt, pszName );
 }
@@ -330,7 +472,16 @@ CON_COMMAND( gm_spawnprop, "Spawn a prop: gm_spawnprop <model>  (GMod)" )
 	if ( pPlayer == NULL || args.ArgC() < 2 )
 		return;
 
+	if ( !GM_GamemodeAllowsSpawn( "PlayerSpawnProp", pPlayer, args[ 1 ] ) )
+		return;
+
 	CBaseEntity *pEnt = GM_SpawnAtEyeTrace( pPlayer, "prop_physics", args[ 1 ], NULL );
+
+	if ( pEnt == NULL )
+		return;
+
+	GM_GamemodeSpawnedWithModel( "PlayerSpawnedProp", pPlayer, args[ 1 ], pEnt );
 
 	GM_Record( pPlayer, pEnt );
 }
+
