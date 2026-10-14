@@ -209,15 +209,6 @@ void CHudAmmo::UpdatePlayerAmmo( C_BasePlayer *player )
 	}
 #endif
 
-	// HL2SB (2026-10-01) probe: once per weapon class, the final decision.
-	{
-		char szKey[ 192 ];
-		Q_snprintf( szKey, sizeof( szKey ), "ammoHud:%s", wpn->GetClassname() );
-		HL2SB_WarnOnce( szKey, "[HL2SB wp] CHudAmmo class='%s' clip1=%d ammo1=%d ammo2=%d usesClip=%d usesPrimary=%d\n",
-			wpn->GetClassname(), wpn->Clip1(), ammo1, ammo2,
-			wpn->UsesClipsForAmmo1() ? 1 : 0, wpn->UsesPrimaryAmmo() ? 1 : 0 );
-	}
-
 	hudlcd->SetGlobalStat( "(ammo_primary)", VarArgs( "%d", ammo1 ) );
 	hudlcd->SetGlobalStat( "(ammo_secondary)", VarArgs( "%d", ammo2 ) );
 

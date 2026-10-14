@@ -211,16 +211,6 @@ void CEffectsList::DrawEffects( double frametime )
 	int i;
 	CClientSideEffect *effect;
 
-	// HL2SB diagnostic: is the client effect list actually being drawn?  An
-	// effect that is created, never retired and still never seen means either
-	// this is never called (viewrender.cpp:1387) or its Draw()/Render() is
-	// silently doing nothing -- this names which.
-	if ( m_nEffects > 0 )
-	{
-		HL2SB_WarnOnce( "clienteffects-drawn",
-			"CEffectsList::DrawEffects is running (%d effect(s) on the list)\n", m_nEffects );
-	}
-
 	// Go backwards so deleting effects doesn't screw up
 	for ( i = m_nEffects - 1 ; i >= 0; i-- )
 	{
