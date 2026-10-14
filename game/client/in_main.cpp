@@ -571,6 +571,10 @@ Return 1 to allow engine to process the key, otherwise, act on it as needed
 // gun still gets its own MOUSE_WHEEL handling downstream).
 static int s_iHL2SBMouseWheel = 0;
 
+// HL2SB GMod compat (2026-10-14): defined in weapon_physgun.cpp.  True while
+// the local player's physgun has an object in its grip.
+bool HL2SB_PhysgunIsHolding( void );
+
 int CInput::KeyEvent( int down, ButtonCode_t code, const char *pszCurrentBinding )
 {
 	// Deal with camera intercepting the mouse
@@ -586,6 +590,21 @@ int CInput::KeyEvent( int down, ButtonCode_t code, const char *pszCurrentBinding
 			++s_iHL2SBMouseWheel;
 		else if ( code == MOUSE_WHEEL_DOWN )
 			--s_iHL2SBMouseWheel;
+
+		// HL2SB GMod compat (2026-10-14): while the local physgun is HOLDING
+		// something the wheel belongs to the hold distance (the accumulator
+		// above rides the usercmd to the server) and must never reach the
+		// invnext/invprev binds.  Returning 0 makes the engine's
+		// HandleClientKey treat the event as consumed and skip the binding.
+		// The reference intercepts the wheel in this same layer -- before the
+		// clientmode/Lua KeyInput routing, whose Lua branch short-circuits
+		// the weapon KeyInput dispatch that used to do this job, which is
+		// what let the weapon-switch binds through on every scroll.
+		if ( ( code == MOUSE_WHEEL_UP || code == MOUSE_WHEEL_DOWN ) &&
+			 HL2SB_PhysgunIsHolding() )
+		{
+			return 0;
+		}
 	}
 
 	if ( g_pClientMode )
