@@ -713,6 +713,16 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 	if ( bLocalPlayer )
 		++g_nHL2SBClientSideAnimUpdates;
 
+	// HL2SB (2026-10-14): the reference client's vehicle branch, verbatim shape
+	// (win64 C_GMOD_Player::UpdateClientSideAnimation): while m_hVehicle is
+	// valid it dispatches GM:PlayerDriveAnimate(ply) and SKIPS the animstate
+	// Update - no aim_yaw / aim_pitch / head / body pose writes happen while
+	// driving, which is why the reference rider's arms stay centred on the
+	// wheel no matter where the view points.  Everything else here (the cycle
+	// advance - the seated sequence must keep playing - and the bookkeeping)
+	// runs in both branches.
+	const bool bDriving = ( GetVehicle() != NULL );
+
 	float flCycleBefore = GetCycle();
 	float flInterval = 0.0f;
 
@@ -784,7 +794,9 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 		if ( bLocalPlayer )
 			m_angEyeAngles = EyeAngles();
 
-		m_PlayerAnimState.Update();
+		// HL2SB: skipped while driving - see bDriving above (reference behaviour).
+		if ( !bDriving )
+			m_PlayerAnimState.Update();
 
 		// latch old values
 		OnLatchInterpolatedVariables( LATCH_ANIMATION_VAR );
@@ -799,7 +811,8 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 	}
 	else
 	{
-		m_PlayerAnimState.Update();
+		if ( !bDriving )
+			m_PlayerAnimState.Update();
 	}
 
 	// HL2SB diagnostic: did the cycle move, and how big was the step? "before ==
@@ -838,19 +851,33 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 		}
 	}
 
-	// HL2SB (2026-10-14): GM:UpdateAnimation runs here - for EVERY player, once
-	// per frame, AFTER the C++ animstate wrote its own pose parameters, so the
-	// gamemode's seat-pose work (the pod aim_yaw pin, the vehicle_steer
-	// conversion - animations.lua UpdateAnimation) wins, exactly the order the
-	// reference has.  It used to dispatch from PostThink, which never runs for
-	// the local player, and the local rider's arms bent in third person.
+	// HL2SB (2026-10-14): the reference's per-frame Lua call is split by state:
+	//   no vehicle -> GM:UpdateAnimation (dispatched from inside the animstate
+	//                 Update after its aim writes, i.e. Lua last - same order
+	//                 here because this runs after every Update() above);
+	//   vehicle    -> GM:PlayerDriveAnimate ONLY (hook id 93; the reference
+	//                 skips animstate Update and UpdateAnimation entirely while
+	//                 driving).  The base gamemode's PlayerDriveAnimate is an
+	//                 empty function for HL2 vehicles (sandbox's version only
+	//                 serves the drive.* library entities), so the net effect is
+	//                 "nobody writes pose while driving" - which is what keeps
+	//                 the arms on the wheel.
 	if ( L != NULL )
 	{
-		BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
-			lua_pushplayer( L, this );
-			lua_pushvector( L, GetAbsVelocity() );
-			lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
-		END_LUA_CALL_HOOK( 3, 0 );
+		if ( bDriving )
+		{
+			BEGIN_LUA_CALL_HOOK( "PlayerDriveAnimate" );
+				lua_pushplayer( L, this );
+			END_LUA_CALL_HOOK( 1, 0 );
+		}
+		else
+		{
+			BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
+				lua_pushplayer( L, this );
+				lua_pushvector( L, GetAbsVelocity() );
+				lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
+			END_LUA_CALL_HOOK( 3, 0 );
+		}
 	}
 }
 
@@ -863,7 +890,11 @@ void C_HL2MP_Player::AddEntity( void )
 
 	SetLocalAngles( vTempAngles );
 		
-	m_PlayerAnimState.Update();
+	// HL2SB (2026-10-14): while driving the animstate Update is skipped here
+	// too - see bDriving in UpdateClientSideAnimation() (the reference writes no
+	// player pose parameters while a vehicle handle is valid).
+	if ( GetVehicle() == NULL )
+		m_PlayerAnimState.Update();
 
 	// Zero out model pitch, blending takes care of all of it.
 	SetLocalAnglesDim( X_INDEX, 0 );
