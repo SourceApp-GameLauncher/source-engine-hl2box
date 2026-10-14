@@ -154,6 +154,27 @@ LUA_API lua_FireBulletsInfo_t lua_tofirebulletsinfo (lua_State *L, int idx) {
     info.m_pAttacker = lua_toentity(L, -1);
   lua_pop(L, 1);
 
+  // HL2SB GMod compat (2026-10-14): GMod's Entity:FireBullets Lua binding
+  // clamps the bullet table's Num to [1,128] and Force to [0,100] before the
+  // shot reaches CBaseEntity::FireBullets (reference: GMod server.dll
+  // Entity:FireBullets binding).  Damage is NOT clamped - GMod passes it
+  // through unchanged, and the wiki documents no damage cap.
+  // Without the Force clamp a SWEP carrying Force = 1000000 (the "Ultimate
+  // Admin Gun" addon) applies 10000x GMod's maximum bullet force to every
+  // physics object the shot touches; the client's sprite particle renderer
+  // then exhausts the queued-render vertex pool (AllocVertices deliberate
+  // crash) after a few shots.  Clamp here, at the single Lua entry point,
+  // so C++ weapons (which GMod also leaves unclamped) keep their behavior.
+  if ( info.m_iShots <= 0 )
+    info.m_iShots = 1;
+  else if ( info.m_iShots > 128 )
+    info.m_iShots = 128;
+
+  if ( info.m_flDamageForceScale < 0.0f )
+    info.m_flDamageForceScale = 0.0f;
+  else if ( info.m_flDamageForceScale > 100.0f )
+    info.m_flDamageForceScale = 100.0f;
+
   return info;
 }
 

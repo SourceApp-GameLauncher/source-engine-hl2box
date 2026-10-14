@@ -95,16 +95,17 @@ Color HL2SB_GetWeaponColor( int iUserID );
 // names GMod exposes.  SERVER side: the shadow controller and the input maths
 // run there.  (physgun_halo / physgun_drawbeams are CLIENT -- see lhalo.cpp.)
 #ifndef CLIENT_DLL
-ConVar physgun_timeToArrive( "physgun_timeToArrive", "0.05", FCVAR_ARCHIVE, "Physgun: seconds for the held object to reach the target" );
-ConVar physgun_timeToArriveRagdoll( "physgun_timeToArriveRagdoll", "0.1", FCVAR_ARCHIVE, "Physgun: seconds for a held ragdoll to reach the target" );
-ConVar physgun_teleportDistance( "physgun_teleportDistance", "250", FCVAR_ARCHIVE, "Physgun: distance at which the held object teleports instead of sliding" );
-ConVar physgun_maxSpeed( "physgun_maxSpeed", "5000", FCVAR_ARCHIVE, "Physgun: maximum linear speed of the held object" );
-ConVar physgun_maxAngular( "physgun_maxAngular", "5400", FCVAR_ARCHIVE, "Physgun: maximum angular speed of the held object" );
-ConVar physgun_maxSpeedDamping( "physgun_maxSpeedDamping", "10000", FCVAR_ARCHIVE, "Physgun: linear speed where damping kicks in" );
-ConVar physgun_maxAngularDamping( "physgun_maxAngularDamping", "10000", FCVAR_ARCHIVE, "Physgun: angular speed where damping kicks in" );
+ConVar physgun_timeToArrive( "physgun_timeToArrive", "0.05", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: seconds for the held object to reach the target" );
+ConVar physgun_timeToArriveRagdoll( "physgun_timeToArriveRagdoll", "0.1", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: seconds for a held ragdoll to reach the target" );
+ConVar physgun_teleportDistance( "physgun_teleportDistance", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: distance at which the held object teleports instead of sliding" );
+ConVar physgun_maxSpeed( "physgun_maxSpeed", "5000", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: maximum linear speed of the held object" );
+ConVar physgun_maxAngular( "physgun_maxAngular", "5000", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: maximum angular speed of the held object" );
+ConVar physgun_maxSpeedDamping( "physgun_maxSpeedDamping", "10000", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: linear speed where damping kicks in" );
+ConVar physgun_maxAngularDamping( "physgun_maxAngularDamping", "10000", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: angular speed where damping kicks in" );
+ConVar physgun_DampingFactor( "physgun_DampingFactor", "0.8", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: damping factor for held object movement" );
 #endif
 
-// HL2SB (2026-09-26): defaults reference from GMod server.dll ():
+// HL2SB: defaults reference from GMod:
 // E-rotate is mousedx * 0.05 deg per RAW mouse count (the usercmd carries
 // unscaled accumulators -- mouse sensitivity never touches cmd->mousedx), the
 // wheel moves max(|wheelspeed|,0.1) units per notch, the hold distance clamps
@@ -112,12 +113,13 @@ ConVar physgun_maxAngularDamping( "physgun_maxAngularDamping", "10000", FCVAR_AR
 // phys_spinspeed deg/s and Shift+E snaps the held angles to gm_snapangles.
 // Registered on BOTH realms like GMod does (its client.dll registers the same
 // names without reading them -- plugins may query them client-side).
-ConVar physgun_rotation_sensitivity( "physgun_rotation_sensitivity", "0.05", FCVAR_ARCHIVE, "Physgun: E+mouse rotation (degrees per mouse count)" );
-ConVar physgun_wheelspeed( "physgun_wheelspeed", "10", FCVAR_ARCHIVE, "Physgun: wheel push/pull distance per notch" );
-ConVar physgun_minrange( "physgun_minrange", "40", FCVAR_ARCHIVE, "Physgun: minimum hold distance" );
-ConVar physgun_maxrange( "physgun_maxrange", "4096", FCVAR_ARCHIVE, "Physgun: maximum hold distance" );
-ConVar phys_spinspeed( "phys_spinspeed", "200", FCVAR_ARCHIVE, "Physgun: E+A/D spin speed (degrees per second)" );
-ConVar gm_snapangles( "gm_snapangles", "45", FCVAR_ARCHIVE, "Physgun: Shift+E angle snap grid (degrees, 0 disables)" );
+ConVar physgun_rotation_sensitivity( "physgun_rotation_sensitivity", "0.05", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: E+mouse rotation (degrees per mouse count)" );
+ConVar physgun_wheelspeed( "physgun_wheelspeed", "10", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: wheel push/pull distance per notch" );
+ConVar physgun_minrange( "physgun_minrange", "40", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: minimum hold distance" );
+ConVar physgun_maxrange( "physgun_maxrange", "4096", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: maximum hold distance" );
+ConVar phys_spinspeed( "phys_spinspeed", "200", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: E+A/D spin speed (degrees per second)" );
+ConVar gm_snapangles( "gm_snapangles", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: Shift+E angle snap grid (degrees, 0 disables)" );
+ConVar gm_snapgrid( "gm_snapgrid", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: snap grid size (0 disables)" );
 
 // HL2SB (2026-10-03): physgun visual diagnostics, BOTH realms (the server
 // prints its beam-entity spawn, the client prints the client entity's
@@ -333,7 +335,26 @@ void CGravControllerPoint::AttachEntity( CBasePlayer *pPlayer, CBaseEntity *pEnt
 	m_saveMass = pPhys->GetMass();
 	float damping = 2;
 	pPhys->SetDamping( NULL, &damping );
-	pPhys->SetMass( 50000 );
+
+	// GMod reference: set mass to 45678.0f to prevent controller droop and oscillation.
+	// Vehicles (prop_vehicle_jeep or any server vehicle) preserve their native mass (savedMass = -1).
+	bool bIsVehicle = false;
+#ifndef CLIENT_DLL
+	if ( pEntity && ( FClassnameIs( pEntity, "prop_vehicle_jeep" ) || pEntity->GetServerVehicle() != NULL ) )
+		bIsVehicle = true;
+#else
+	if ( pEntity && FClassnameIs( pEntity, "prop_vehicle_jeep" ) )
+		bIsVehicle = true;
+#endif
+	if ( bIsVehicle )
+	{
+		m_saveMass = -1.0f;
+	}
+	else
+	{
+		pPhys->SetMass( 45678.0f );
+	}
+
 	m_controller = physenv->CreateMotionController( this );
 	m_controller->AttachObject( pPhys, true );
 	Vector position;
@@ -354,7 +375,10 @@ void CGravControllerPoint::DetachEntity( void )
 			// on the odd chance that it's gone to sleep while under anti-gravity
 			pPhys->Wake();
 			pPhys->SetDamping( NULL, &m_saveDamping );
-			pPhys->SetMass( m_saveMass );
+			if ( m_saveMass > 0.0f )
+			{
+				pPhys->SetMass( m_saveMass );
+			}
 		}
 	}
 	m_attachedEntity = NULL;
@@ -389,6 +413,7 @@ IMotionEvent::simresult_e CGravControllerPoint::Simulate( IPhysicsMotionControll
 	shadowParams.maxDampSpeed = physgun_maxSpeedDamping.GetFloat();
 	shadowParams.maxDampAngular = physgun_maxAngularDamping.GetFloat();
 	shadowParams.teleportDistance = physgun_teleportDistance.GetFloat();
+	shadowParams.dampFactor = physgun_DampingFactor.GetFloat();
 	// HL2SB (2026-10-03, reference): the arrival constant is per-TARGET-TYPE
 	// -- physgun_timeToArrive (0.05) normally, physgun_timeToArriveRagdoll
 	// (0.1) when the held entity is a ragdoll; it is NOT frametime-based.
@@ -858,11 +883,11 @@ void CWeaponGravityGun::TraceLine( trace_t *ptr )
 	if ( !pOwner )
 		return;
 
-	Vector start, forward, right;
-	pOwner->EyeVectors( &forward, &right, NULL );
+	Vector start, forward;
+	pOwner->EyeVectors( &forward, NULL, NULL );
 
 	start = pOwner->Weapon_ShootPosition();
-	Vector end = start + forward * 4096;
+	Vector end = start + forward * physgun_maxrange.GetFloat();
 
 	// UTIL_TraceLine( start, end, MASK_SHOT, pOwner, COLLISION_GROUP_NONE, ptr );
 	UTIL_TraceLine( start, end, MASK_SHOT|CONTENTS_GRATE, pOwner, COLLISION_GROUP_NONE, ptr );
@@ -931,7 +956,7 @@ void CWeaponGravityGun::EffectUpdate( void )
 
 	TraceLine( &tr );
 	Vector end = tr.endpos;
-	float distance = tr.fraction * 4096;
+	float distance = tr.fraction * physgun_maxrange.GetFloat();
 
 	if ( m_hObject == NULL && !m_bFreezeReleaseLatch && tr.DidHitNonWorldEntity() )
 	{
@@ -978,112 +1003,22 @@ void CWeaponGravityGun::EffectUpdate( void )
 	// not a physgun path; the reference weapon class has no light members
 	// and no ClientThink.  All light-looking behaviour is the beam ribbon
 	// and the two sprite clusters drawn in DrawPhysgunVisuals.
-	// HL2SB GMod compat: RMB freezes the held object in place AND releases it
-	// (GMod's physgun behaviour), instead of the old freeze-while-held toggle.
+	// HL2SB GMod compat: RMB freezes the held object in place AND releases it.
+	// In GMod, SecondaryAttack handles freeze completely.
 	if ( pObject && ( pOwner->m_afButtonPressed & IN_ATTACK2 ) )
 	{
-#ifndef CLIENT_DLL
-		if ( m_bDraggingNPC )
-		{
-			// a dragged NPC has no physics body to freeze - RMB just drops it
-			DetachObject();
-			EffectDestroy();
-			SoundDestroy();
-			return;
-		}
-
-		// HL2SB (2026-09-29, GMod reference CORRECTION): the freeze function
-		// (server.dll ) has NO vehicle special case at all -
-		// a held vehicle freezes like anything else (its chassis physics
-		// object simply gets EnableMotion(false) through the OnPhysgunFreeze
-		// path below).  The old "exclude vehicles" branch came from a wiki
-		// claim the binary contradicts (binary > docs, standing rule).
-
-		IPhysicsObject *pPhys = GetPhysObjFromPhysicsBone( pObject, m_physicsBone );
-
-		if ( pPhys != NULL )
-		{
-			// GM:OnPhysgunFreeze( weapon, physobj, ent, ply ) -- GMod contract:
-			// any non-nil return blocks the default freeze (the object stays
-			// held and unfrozen).
-			bool bFreezeBlocked = false;
-			if ( L != NULL )
-			{
-				BEGIN_LUA_CALL_HOOK( "OnPhysgunFreeze" );
-					lua_pushentity( L, this );
-					lua_pushphysicsobject( L, pPhys );
-					lua_pushentity( L, pObject );
-					lua_pushplayer( L, pOwner );
-				END_LUA_CALL_HOOK( 4, 1 );
-
-				if ( lua_gettop( L ) > 0 )
-				{
-					bFreezeBlocked = !lua_isnil( L, -1 );
-					lua_pop( L, 1 );
-				}
-			}
-
-			if ( !bFreezeBlocked )
-			{
-				pPhys->EnableMotion( false );
-
-				// HL2SB (2026-10-03, reference correction): the freeze DOES
-				// fire ONE grab animation through the weapon (the reference
-				// freeze body ends in the slot-translate vcall with activity
-				// 181 = ACT_VM_PRIMARYATTACK -- the same one-shot the grab
-				// plays).  The earlier "silent and effect-free" reading was
-				// right about sounds/effects but missed this anim.  A second
-				// fire in the same freeze used to sit below -- it only
-				// restarted the sequence this one just started (the one-shot
-				// must stay single on this engine's ideal-activity path).
-				SendWeaponAnim( ACT_VM_PRIMARYATTACK );
-
-				// HL2SB GMod compat: RMB freeze also ENDS the hold (GMod
-				// behaviour).  Latch off the auto-regrab while LMB stays
-				// down -- AttachObject unfreezes on grab, so without the
-				// latch the next frame's scan re-grabbed and unfroze the
-				// body within one tick (the "RMB never freezes" bug).
-				m_bFreezeReleaseLatch = true;
-
-				// record it on the player's frozen list -- what R / double-R /
-				// Player:PhysgunUnfreeze / UnfreezePhysicsObjects drain from
-				HL2SB_PlayerAddFrozenObject( pOwner, pObject, pPhys );
-
-				// HL2SB (2026-09-29, GMod reference): the freeze is SILENT and
-				// EFFECT-FREE here.   dispatches only the
-				// OnPhysgunFreeze hook and releases; GMod's base
-				// gamemode/player.lua:6 OnPhysgunFreeze is pure
-				// EnableMotion(false) + AddFrozenPhysicsObject.  The old
-				// TeslaHitboxes zap + "Weapon_Physgun.Special1" EmitSound
-				// (an HL2 cannon lock-on cue mislabelled as freeze feedback)
-				// were fork inventions -- gone.
-
-				// HL2SB GMod compat: GM:PhysgunDrop( ply, ent ) -- the freeze
-				// releases the object, so the drop hook fires here too.
-				DetachObject();
-			}
-			else
-			{
-				// blocked: keep holding the unfrozen object, GMod-style
-				// (no EffectDestroy/SoundDestroy -- the beam stays up)
-				return;
-			}
-		}
-#endif
-
-		EffectDestroy();
-		SoundDestroy();
+		SecondaryAttack();
 		return;
 	}
 
 	if ( pObject )
 	{
 #ifndef CLIENT_DLL
-		// HL2SB GMod compat: E+mouse rotates - the mouse deltas arrive with the
-		// user command (the client freezes the VIEW while E is held, see
-		// HL2SB_PhysgunMouseRotate in in_mouse.cpp), so the object rotates
-		// without the camera swinging along.  Runs for BOTH carry modes
-		// (shadow-carry and teleport-drive) -- before the drive's early return.
+		// HL2SB GMod compat: E+mouse rotates relative to the PLAYER'S VIEW SPACE.
+		// The mouse deltas arrive with the user command (the client freezes the
+		// VIEW while E is held, see HL2SB_PhysgunMouseRotate in in_mouse.cpp).
+		// Rotating in player-view space allows smooth pitch/yaw/roll in any
+		// compass direction with zero clamping at vertical.
 		if ( pOwner->m_nButtons & IN_USE )
 		{
 			int nMouseDx = 0, nMouseDy = 0;
@@ -1094,41 +1029,41 @@ void CWeaponGravityGun::EffectUpdate( void )
 				nMouseDy = pCmd->mousedy;
 			}
 
-			// HL2SB (2026-09-26): GMod applies the rotation at
-			// physgun_rotation_sensitivity degrees per RAW mouse count
-			// (reference: 0.05, clamped to +-1000; the usercmd deltas are
-			// unscaled accumulators) and clamps pitch so the prop cannot
-			// flip over the top.
 			float flRotSens = clamp( physgun_rotation_sensitivity.GetFloat(), -1000.0f, 1000.0f );
-			if ( nMouseDx != 0 )
-				m_heldWorldAngles.y -= nMouseDx * flRotSens;
-			if ( nMouseDy != 0 )
-			{
-				m_heldWorldAngles.x += nMouseDy * flRotSens;
-				m_heldWorldAngles.x = clamp( m_heldWorldAngles.x, -89.0f, 89.0f );
-			}
+			float flDeltaYaw   = -(float)nMouseDx * flRotSens;
+			float flDeltaPitch =  (float)nMouseDy * flRotSens;
 
-			// HL2SB (2026-09-26): GMod spins the held object at
-			// phys_spinspeed deg/s while A/D is held together with E
-			// (reference ).  The player still walks -- GMod
-			// does not gate the movement keys.
+			// GMod reference: construct a coordinate frame from the player's view yaw
+			QAngle playerYawAngles( 0, pOwner->EyeAngles().y, 0 );
+			matrix3x4_t matPlayerYaw;
+			AngleMatrix( playerYawAngles, matPlayerYaw );
+
+			// Transform current held orientation into player view space
+			QAngle localAngles = TransformAnglesToLocalSpace( m_heldWorldAngles, matPlayerYaw );
+
+			// Apply mouse pitch/yaw deltas and A/D spin roll in player view space
+			QAngle deltaAngles( flDeltaPitch, flDeltaYaw, 0.0f );
 			if ( pOwner->m_nButtons & IN_MOVELEFT )
-				m_heldWorldAngles.y += phys_spinspeed.GetFloat() * gpGlobals->frametime;
+				deltaAngles.z -= phys_spinspeed.GetFloat() * gpGlobals->frametime;
 			else if ( pOwner->m_nButtons & IN_MOVERIGHT )
-				m_heldWorldAngles.y -= phys_spinspeed.GetFloat() * gpGlobals->frametime;
+				deltaAngles.z += phys_spinspeed.GetFloat() * gpGlobals->frametime;
 
-			// HL2SB (2026-09-26): GMod snaps the held angles to the
-			// gm_snapangles grid while Shift is held with E (reference
-			// : angle = round(angle/snap)*snap, gated on
-			// buttons & (IN_SPEED|IN_USE)); each tick re-rounds so turning
-			// the mouse walks the object notch by notch.
+			matrix3x4_t matLocal, matDelta, matNewLocal;
+			AngleMatrix( localAngles, matLocal );
+			AngleMatrix( deltaAngles, matDelta );
+			ConcatTransforms( matDelta, matLocal, matNewLocal );
+			MatrixAngles( matNewLocal, localAngles );
+
+			// Transform back to world orientation -- no pitch clamping!
+			m_heldWorldAngles = TransformAnglesToWorldSpace( localAngles, matPlayerYaw );
+
+			// Shift+E angle snap grid (degrees, 0 disables)
 			float flSnap = gm_snapangles.GetFloat();
 			if ( flSnap > 0.0f && ( pOwner->m_nButtons & IN_SPEED ) )
 			{
 				m_heldWorldAngles.x = roundf( m_heldWorldAngles.x / flSnap ) * flSnap;
 				m_heldWorldAngles.y = roundf( m_heldWorldAngles.y / flSnap ) * flSnap;
 				m_heldWorldAngles.z = roundf( m_heldWorldAngles.z / flSnap ) * flSnap;
-				m_heldWorldAngles.x = clamp( m_heldWorldAngles.x, -89.0f, 89.0f );
 			}
 		}
 
@@ -1230,8 +1165,6 @@ void CWeaponGravityGun::EffectUpdate( void )
 
 void CWeaponGravityGun::SoundCreate( void )
 {
-	m_soundState = SS_SCANNING;
-	SoundStart();
 }
 
 void CWeaponGravityGun::SoundDestroy( void )
@@ -1241,135 +1174,34 @@ void CWeaponGravityGun::SoundDestroy( void )
 
 void CWeaponGravityGun::SoundStop( void )
 {
-	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-	if ( !pOwner )
-		return;
-
-	switch( m_soundState )
+	if ( m_sndMotor )
 	{
-	case SS_SCANNING:
 		(CSoundEnvelopeController::GetController()).SoundDestroy( m_sndMotor );
 		m_sndMotor = NULL;
-		break;
-	case SS_LOCKEDON:
-		(CSoundEnvelopeController::GetController()).SoundDestroy( m_sndMotor );
-		m_sndMotor = NULL;
+	}
+	if ( m_sndLockedOn )
+	{
 		(CSoundEnvelopeController::GetController()).SoundDestroy( m_sndLockedOn );
 		m_sndLockedOn = NULL;
+	}
+	if ( m_sndLightObject )
+	{
 		(CSoundEnvelopeController::GetController()).SoundDestroy( m_sndLightObject );
 		m_sndLightObject = NULL;
+	}
+	if ( m_sndHeavyObject )
+	{
 		(CSoundEnvelopeController::GetController()).SoundDestroy( m_sndHeavyObject );
 		m_sndHeavyObject = NULL;
-		break;
 	}
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: returns the linear fraction of value between low & high (0.0 - 1.0) * scale
-//			e.g. UTIL_LineFraction( 1.5, 1, 2, 1 ); will return 0.5 since 1.5 is
-//			halfway between 1 and 2
-// Input  : value - a value between low & high (clamped)
-//			low - the value that maps to zero
-//			high - the value that maps to "scale"
-//			scale - the output scale
-// Output : parametric fraction between low & high
-//-----------------------------------------------------------------------------
-static float UTIL_LineFraction( float value, float low, float high, float scale )
-{
-	if ( value < low )
-		value = low;
-	if ( value > high )
-		value = high;
-
-	float delta = high - low;
-	if ( delta == 0 )
-		return 0;
-
-	return scale * (value-low) / delta;
 }
 
 void CWeaponGravityGun::SoundStart( void )
 {
-	CPASAttenuationFilter filter( this );
-
-	switch( m_soundState )
-	{
-	case SS_SCANNING:
-		{
-			m_sndMotor = (CSoundEnvelopeController::GetController()).SoundCreate( filter, entindex(), CHAN_STATIC, "Weapon_Physgun.Scanning", ATTN_NORM );
-			(CSoundEnvelopeController::GetController()).Play( m_sndMotor, 1.0f, 100 );
-		}
-		break;
-	case SS_LOCKEDON:
-		{
-			m_sndLockedOn = (CSoundEnvelopeController::GetController()).SoundCreate( filter, entindex(), CHAN_STATIC, "Weapon_Physgun.LockedOn", ATTN_NORM );
-			(CSoundEnvelopeController::GetController()).Play( m_sndLockedOn, 1.0f, 100 );
-			m_sndMotor = (CSoundEnvelopeController::GetController()).SoundCreate( filter, entindex(), CHAN_STATIC, "Weapon_Physgun.Scanning", ATTN_NORM );
-			(CSoundEnvelopeController::GetController()).Play( m_sndMotor, 1.0f, 100 );
-			m_sndLightObject = (CSoundEnvelopeController::GetController()).SoundCreate( filter, entindex(), CHAN_STATIC, "Weapon_Physgun.LightObject", ATTN_NORM );
-			(CSoundEnvelopeController::GetController()).Play( m_sndLightObject, 1.0f, 100 );
-			m_sndHeavyObject = (CSoundEnvelopeController::GetController()).SoundCreate( filter, entindex(), CHAN_STATIC, "Weapon_Physgun.HeavyObject", ATTN_NORM );
-			(CSoundEnvelopeController::GetController()).Play( m_sndHeavyObject, 1.0f, 100 );
-		}
-		break;
-	}
-													//   volume, att, flags, pitch
 }
 
 void CWeaponGravityGun::SoundUpdate( void )
 {
-	int newState;
-
-	if ( m_hObject )
-		newState = SS_LOCKEDON;
-	else
-		newState = SS_SCANNING;
-
-	if ( newState != m_soundState )
-	{
-		SoundStop();
-		m_soundState = newState;
-		SoundStart();
-	}
-
-	switch( m_soundState )
-	{
-	case SS_SCANNING:
-		break;
-	case SS_LOCKEDON:
-		{
-			CPASAttenuationFilter filter( this );
-
-			float height = m_hObject->GetAbsOrigin().z - m_originalObjectPosition.z;
-
-			// go from pitch 90 to 150 over a height of 500
-			int pitch = 90 + (int)UTIL_LineFraction( height, 0, 500, 60 );
-
-			assert(m_sndLockedOn!=NULL);
-			if ( m_sndLockedOn != NULL )
-			{
-				(CSoundEnvelopeController::GetController()).SoundChangePitch( m_sndLockedOn, pitch, 0.0f );
-			}
-
-			// attenutate the movement sounds over 200 units of movement
-			float distance = UTIL_LineFraction( m_movementLength, 0, 200, 1.0 );
-
-			// blend the "mass" sounds between 50 and 500 kg
-			IPhysicsObject *pPhys = GetPhysObjFromPhysicsBone( m_hObject, m_physicsBone );
-			if ( pPhys == NULL )
-			{
-				// we no longer exist!
-				break;
-			}
-
-			float fade = UTIL_LineFraction( pPhys->GetMass(), 50, 500, 1.0 );
-
-			(CSoundEnvelopeController::GetController()).SoundChangeVolume( m_sndLightObject, fade * distance, 0.0f );
-
-			(CSoundEnvelopeController::GetController()).SoundChangeVolume( m_sndHeavyObject, (1.0 - fade) * distance, 0.0f );
-		}
-		break;
-	}
 }
 
 
@@ -1635,15 +1467,26 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		return;
 	}
 
-	// HL2SB GMod compat: GMod grabs EVERYTHING. Anything with a vphysics body
-	// rides the shadow controller; everything else -- NPCs, nextbots, scripted
-	// NPCs, body-less script ents -- rides the teleport-drive. Players only
-	// when the gamemode force-allowed the pickup (hook returned true).
+	// HL2SB GMod compat: 笔刷实体（func_reflective_glass, func_brush, func_door 等）
+	// 以及无刚体的世界装饰绝对不可抓取。
+	// 允许抓取的实体必须满足：
+	// 1) 拥有 MOVETYPE_VPHYSICS 且带有有效物理对象；
+	// 2) 或者属于真 NPC / NextBot（通过 IsNPC 或 MyNPCPointer 判断）；
+	// 3) 或者属于被 gamemode 显式放行的玩家。
 	bool bHasBody = ( pPhysics != NULL && pObject->GetMoveType() == MOVETYPE_VPHYSICS );
-	if ( pObject->IsPlayer() )
+	bool bIsNPC = pObject->IsNPC() || ( pObject->MyNPCPointer() != NULL );
+	bool bIsPlayer = pObject->IsPlayer();
+
+	if ( !bHasBody && !bIsNPC && !bIsPlayer )
+	{
+		m_hObject = NULL;
+		return;
+	}
+
+	if ( bIsPlayer )
 		m_bDraggingNPC = bForceAllow && !bHasBody;
 	else
-		m_bDraggingNPC = !bHasBody;
+		m_bDraggingNPC = bIsNPC && !bHasBody;
 
 	// GMod style: the held object keeps its WORLD orientation, E+mouse rotates
 	m_heldWorldAngles = pObject->GetAbsAngles();
@@ -1674,14 +1517,7 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		// entity does not snap toward the player's eye line.
 		m_vecGrabOffset = pObject->GetAbsOrigin() - end;
 
-		// HL2SB (2026-10-03, branch-free hold point): ALWAYS store the grab
-		// point in ENTITY-LOCAL space.  The old two-way branch (world offset
-		// while unrotated, entity-local otherwise) is the "beam offsets on
-		// NPC grabs" root cause: server stores by the grab-time angles,
-		// client re-branches by the CURRENT networked angles, and any
-		// disagreement (nextbot/script-NPC angle jitter, a yaw that changed
-		// between grab and draw) applies the vector in the wrong frame and
-		// throws the beam end across the room.  One frame, both realms.
+		// HL2SB: store the grab point in ENTITY-LOCAL space.
 		VMatrix mWorld( pObject->EntityToWorldTransform() );
 		VMatrix mLocal;
 		MatrixInverseTR( mWorld, mLocal );
@@ -1704,14 +1540,8 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		// HL2SB (2026-09-29, GMod reference): a successful grab fires ONE
 		// ACT_VM_PRIMARYATTACK through the weapon (server.dll 
 		// tail: the slot-translate fn +0x930 with activity 181 ==
-		// ACT_VM_PRIMARYATTACK).  The earlier "GMod plays no anim" reading was
-		// wrong -- the scan matched the SendWeaponAnim symbol, not the slot
-		// path.  What DID kill the arms was HL2's per-tick re-send pinning the
-		// sequence at frame 0; a single fire is exactly GMod's "动一下"
-		// (2026-10-03: no ItemPostFrame hand-back to idle any more - the
-		// reference weapon has ZERO SendWeaponAnim on the per-frame path).
+		// ACT_VM_PRIMARYATTACK).
 		SendWeaponAnim( ACT_VM_PRIMARYATTACK );
-
 
 		return;
 	}
@@ -1730,18 +1560,26 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		pPhysics->WorldToLocal( &worldPosition, end );
 		m_worldPosition = worldPosition;
 
-		// HL2SB (2026-10-03, GMod DT_PhysBeam m_HoldPos): the grab point in
-		// TARGET-LOCAL space.  A physics entity stores the element-local point
-		// (same transform as m_worldPosition above); an unrotated entity a
-		// plain world offset; anything else the entity-matrix local.  The
-		// client transforms it back by the matching rule every frame.
-	if ( pObject->GetAbsAngles() == vec3_angle )
+		// HL2SB GMod compat: 抓取点统一以实体自身局部坐标系存储（对于多骨骼 ragdoll 走对应骨骼），
+		// 客户端渲染时用同规则反变换，端点将 100% 咬死在模型点击表面，绝不跳变或偏移。
+		if ( pObject->GetMoveType() == MOVETYPE_VPHYSICS && physicsbone > 0 )
 		{
-			m_vecHoldPos = end - pObject->GetAbsOrigin();
+			CBaseAnimating *pAnim = pObject->GetBaseAnimating();
+			CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
+			if ( pHdr != NULL && pHdr->IsValid() && physicsbone < pHdr->numbones() )
+			{
+				matrix3x4_t boneMatrix;
+				pAnim->GetBoneTransform( physicsbone, boneMatrix );
+				VectorITransform( end, boneMatrix, m_vecHoldPos.GetForModify() );
+			}
+			else
+			{
+				pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
+			}
 		}
 		else
 		{
-			m_vecHoldPos = worldPosition;
+			pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
 		}
 		Vector vecOrigin;
 		pPhysics->GetPosition( &vecOrigin, NULL );
@@ -1771,11 +1609,7 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 #endif
 
 		// HL2SB: the grab twitch, same one-shot as the drag path above
-		// (GMod  tail). See the drag-path comment for the full
-		// reference rationale.
 		SendWeaponAnim( ACT_VM_PRIMARYATTACK );
-
-
 	}
 	else
 	{
@@ -1788,16 +1622,6 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 //=========================================================
 void CWeaponGravityGun::PrimaryAttack( void )
 {
-	// HL2SB (2026-09-28, reference-confirmed): GMod's CWeaponPhysGun contains
-	// ZERO SendWeaponAnim calls (server vtable set, client class and the whole
-	// physgun code region scanned) -- its viewmodel lives on ACT_VM_IDLE
-	// permanently; the prong pose + material glow do the expressing.  HL2's
-	// physcannon sent ACT_VM_PRIMARYATTACK here, but c_superphyscannon's
-	// 'fire' one-shot ends with the arms off screen, and after an RMB freeze
-	// (m_active stays false + the regrab latch) a held LMB re-sent it every
-	// tick, pinning the viewmodel on the animation's first frame -- the
-	// "RMB makes the arms disappear" report.  Keep the one-shot grab
-	// effect/sound, drop the animation.
 	if ( !m_active )
 	{
 		EffectCreate();
@@ -1812,7 +1636,58 @@ void CWeaponGravityGun::PrimaryAttack( void )
 
 void CWeaponGravityGun::SecondaryAttack( void )
 {
-	return;
+#ifndef CLIENT_DLL
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	if ( !pOwner || !m_hObject.Get() )
+		return;
+
+	// GMod slot 332: 0.5s attack gate
+	if ( m_flNextSecondaryAttack > gpGlobals->curtime )
+		return;
+
+	m_flNextPrimaryAttack = gpGlobals->curtime + 0.5f;
+	m_flNextSecondaryAttack = gpGlobals->curtime + 0.5f;
+
+	CBaseEntity *pObject = m_hObject.Get();
+	if ( m_bDraggingNPC )
+	{
+		// a dragged NPC has no physics body to freeze - RMB just drops it
+		DetachObject();
+		EffectDestroy();
+		SoundDestroy();
+		return;
+	}
+
+	IPhysicsObject *pPhys = GetPhysObjFromPhysicsBone( pObject, m_physicsBone );
+	if ( pPhys != NULL )
+	{
+		bool bFreezeBlocked = false;
+		if ( L != NULL )
+		{
+			BEGIN_LUA_CALL_HOOK( "OnPhysgunFreeze" );
+				lua_pushentity( L, this );
+				lua_pushphysicsobject( L, pPhys );
+				lua_pushentity( L, pObject );
+				lua_pushplayer( L, pOwner );
+			END_LUA_CALL_HOOK( 4, 1 );
+
+			if ( lua_gettop( L ) > 0 )
+			{
+				bFreezeBlocked = !lua_isnil( L, -1 );
+				lua_pop( L, 1 );
+			}
+		}
+
+		if ( !bFreezeBlocked )
+		{
+			pPhys->EnableMotion( false );
+			SendWeaponAnim( ACT_VM_PRIMARYATTACK );
+			m_bFreezeReleaseLatch = true;
+			HL2SB_PlayerAddFrozenObject( pOwner, pObject, pPhys );
+			DetachObject();
+		}
+	}
+#endif
 }
 
 #ifdef CLIENT_DLL
@@ -1948,21 +1823,22 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 	bool bBoneTarget = ( m_physicsBone > 0 );
 
 	// The beam end: m_vecHoldPos transformed back by the target, or the scan
-	// trace endpos when nothing is held.  HL2SB (2026-10-03, branch-free):
-	// non-vphysics targets ALWAYS get the entity-matrix transform, matching
-	// the server's always-local storage - the old angle-equality re-branch
-	// let the two realms disagree and threw the end off NPC grabs.
+	// trace endpos when nothing is held.
+	// For multi-bone ragdolls, bone-matrix transform is used.
+	// For standard props, EntityToWorldSpace mirrors server's WorldToLocal exactly.
 	C_BaseEntity *pTarget = m_hObject;
 	Vector vecEnd;
 	if ( pTarget != NULL )
 	{
-		if ( pTarget->GetMoveType() == MOVETYPE_VPHYSICS && m_physicsBone >= 0 )
+		if ( pTarget->GetMoveType() == MOVETYPE_VPHYSICS && m_physicsBone > 0 )
 		{
-			C_BaseAnimating *pAnim = static_cast< C_BaseAnimating * >( pTarget );
+			C_BaseAnimating *pAnim = pTarget->GetBaseAnimating();
 			CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
 			if ( pHdr != NULL && pHdr->IsValid() && m_physicsBone < pHdr->numbones() )
 			{
-				VectorTransform( m_vecHoldPos, pAnim->GetBone( m_physicsBone ), vecEnd );
+				matrix3x4_t boneMatrix;
+				pAnim->GetBoneTransform( m_physicsBone, boneMatrix );
+				VectorTransform( m_vecHoldPos, boneMatrix, vecEnd );
 			}
 			else
 			{
@@ -2246,6 +2122,12 @@ void CWeaponGravityGun::ItemPostFrame( void )
 	}
 #endif
 
+	// HL2SB GMod compat: SecondaryAttack (freeze)
+	if ( pOwner->m_afButtonPressed & IN_ATTACK2 )
+	{
+		SecondaryAttack();
+	}
+
 	// HL2SB GMod compat: R works whether or not LMB is held (unfreeze aimed /
 	// dragged / everything on double-tap)
 	if ( pOwner->m_afButtonPressed & IN_RELOAD )
@@ -2312,53 +2194,27 @@ bool HL2SB_PhysgunServerIsHolding( CBasePlayer *pPlayer )
 bool CWeaponGravityGun::Reload( void )
 {
 #ifndef CLIENT_DLL
-	// HL2SB GMod compat (2026-09-22 physgun audit), GMod's R contract:
-	//   GM:OnPhysgunReload( physgun, ply )   non-nil return -> NO default action
-	//   single R   -> unfreeze the frozen bodies of the entity under the
-	//                 crosshair (GM:Player:PhysgunUnfreeze semantics)
-	//   double-R   -> unfreeze EVERYTHING THIS PLAYER froze
-	//                (Player:UnfreezePhysicsObjects semantics -- NOT the
-	//                whole map, which the first cut did)
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 	if ( pOwner == NULL )
 		return false;
 
+	// GMod 0.05s gate
+	float flNow = gpGlobals->curtime;
+	if ( flNow - m_flLastReloadPress < 0.05f )
+		return false;
+	m_flLastReloadPress = flNow;
+
+	// GMod reference: C++ Reload only dispatches GM:OnPhysgunReload( weapon, ply )
+	// Unfreezing and player notifications are handled completely by Lua
 	if ( L != NULL )
 	{
 		BEGIN_LUA_CALL_HOOK( "OnPhysgunReload" );
 			lua_pushentity( L, this );
 			lua_pushplayer( L, pOwner );
-		END_LUA_CALL_HOOK( 2, 1 );
-
-		if ( lua_gettop( L ) > 0 )
-		{
-			bool bBlocked = !lua_isnil( L, -1 );
-			lua_pop( L, 1 );
-			if ( bBlocked )
-				return false;
-		}
+		END_LUA_CALL_HOOK( 2, 0 );
 	}
 
-	float flNow = gpGlobals->curtime;
-	bool bDoubleTap = ( flNow - m_flLastReloadPress ) < 0.35f;
-	m_flLastReloadPress = flNow;
-
-	if ( bDoubleTap )
-	{
-		int nUnfrozen = HL2SB_PlayerUnfreezeAll( pOwner );
-
-		static int s_nUnfreezeAllDiag = 0;
-		if ( s_nUnfreezeAllDiag < 15 )
-		{
-			++s_nUnfreezeAllDiag;
-			luasrc_LuaInfoMsgF( "[HL2SB physgun] double-R unfroze %d object(s) on the player's list\n", nUnfrozen );
-		}
-		return nUnfrozen > 0;
-	}
-
-	// single R: the aimed entity's frozen bodies (GMod counts them too)
-	int nUnfrozen = HL2SB_PlayerUnfreezeAimed( pOwner );
-	return nUnfrozen > 0;
+	return true;
 #endif
 	return false;
 }
