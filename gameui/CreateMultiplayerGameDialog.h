@@ -38,6 +38,11 @@ protected:
 	virtual void OnCommand( const char *command );
 	virtual void ApplySchemeSettings( vgui::IScheme *pScheme );
 	virtual void PerformLayout();
+	// HL2SB: the max-players combo posts the stock "TextChanged" action
+	// signal when a row is picked (registered below with
+	// AddActionSignalTarget).  Crossing the single player boundary swaps
+	// the whole sidebar shape, GMod-style.
+	MESSAGE_FUNC( OnMaxPlayersChanged, "TextChanged" );
 
 private:
 	void BuildGameModeList();
@@ -51,6 +56,12 @@ private:
 	const char *GetHostName();
 	const char *GetPassword();
 	int GetMaxPlayers();
+	// HL2SB: the sidebar has two shapes, GMod-style.  Single player keeps the
+	// small column (fall damage / max ammo / loadout / god / HEV); every
+	// multiplayer row swaps in the sandbox options (LAN, pvp damage, limited
+	// physgun and the scrollable sbox_max* limits list).  Recomputed whenever
+	// the max-players combo changes ("TextChanged").
+	void UpdateSidebarMode();
 	// Current value of mp_falldamage (1 = on).  The cvar is registered by the
 	// server DLL, so while the main menu is up it is usually not visible and
 	// this falls back to the sandbox default (off).
@@ -122,6 +133,28 @@ private:
 	vgui::CheckButton *m_pLoadoutCheck;
 	vgui::CheckButton *m_pGodModeCheck;
 	vgui::CheckButton *m_pSuitCheck;
+	// HL2SB (2026-10-15): multiplayer sidebar options, the GMod create-server
+	// column.  LAN rides the map command (sv_lan); everything else persists
+	// into ServerConfig.vdf and is applied by sandbox's init.lua once the
+	// gamemode's convars exist.  The limits list scrolls (24 rows will not fit
+	// the column), one row per sbox_max* entry, plus three bone-manipulate
+	// checkboxes at its end.
+	vgui::CheckButton *m_pLanCheck;
+	vgui::CheckButton *m_pPvPCheck;             // sbox_playershurtplayers
+	vgui::CheckButton *m_pPhysgunLimitedCheck;  // physgun_limited
+	vgui::Label *m_pSandboxHeader;              // "Sandbox limits" section title
+	vgui::PanelListPanel *m_pSandboxList;
+
+	// One persisted sandbox option.  Either the checkbox or the text entry is
+	// set; pszDefault is the GMod default shown when ServerConfig.vdf has no
+	// value for the key yet.
+	struct SandboxOption_t
+	{
+		const char *pszConVar;
+		vgui::TextEntry *pEntry;     // numeric row
+		vgui::CheckButton *pCheck;   // checkbox row
+	};
+	CUtlVector< SandboxOption_t > m_SandboxOptions;
 
 	CUtlVector<char*> m_MapNames; // own the strings
 

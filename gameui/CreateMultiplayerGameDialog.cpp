@@ -42,6 +42,105 @@ using namespace vgui;
 #define MAX_PLAYERS_DEFAULT 32
 
 //-----------------------------------------------------------------------------
+// HL2SB: the multiplayer sandbox options, in the order the Lua dialog (built
+// from the gamemode settings file) shows them.  Everything here persists into
+// ServerConfig.vdf and lands on the live convars through sandbox/init.lua's
+// HL2SB_ApplyStartOptions(), so the C++ and Lua menus drive the exact same
+// server-side values.
+//-----------------------------------------------------------------------------
+static const struct
+{
+	const char *pszConVar;
+	const char *pszToken;
+	const char *pszDefault;
+} s_SandboxLimits[] =
+{
+	{ "sbox_maxprops",           "#HL2SB_LimitProps",           "200" },
+	{ "sbox_maxragdolls",        "#HL2SB_LimitRagdolls",        "10" },
+	{ "sbox_maxvehicles",        "#HL2SB_LimitVehicles",        "4" },
+	{ "sbox_maxeffects",         "#HL2SB_LimitEffects",         "200" },
+	{ "sbox_maxballoons",        "#HL2SB_LimitBalloons",        "100" },
+	{ "sbox_maxcameras",         "#HL2SB_LimitCameras",         "10" },
+	{ "sbox_maxnpcs",            "#HL2SB_LimitNPCs",            "10" },
+	{ "sbox_maxsents",           "#HL2SB_LimitSents",           "100" },
+	{ "sbox_maxdynamite",        "#HL2SB_LimitDynamite",        "10" },
+	{ "sbox_maxlamps",           "#HL2SB_LimitLamps",           "3" },
+	{ "sbox_maxlights",          "#HL2SB_LimitLights",          "5" },
+	{ "sbox_maxwheels",          "#HL2SB_LimitWheels",          "50" },
+	{ "sbox_maxthrusters",       "#HL2SB_LimitThrusters",       "50" },
+	{ "sbox_maxhoverballs",      "#HL2SB_LimitHoverballs",      "50" },
+	{ "sbox_maxbuttons",         "#HL2SB_LimitButtons",         "50" },
+	{ "sbox_maxemitters",        "#HL2SB_LimitEmitters",        "20" },
+	{ "sbox_maxconstraints",     "#HL2SB_LimitConstraints",     "2000" },
+	{ "sbox_maxropeconstraints", "#HL2SB_LimitRopeConstraints", "1000" },
+};
+
+static const struct
+{
+	const char *pszConVar;
+	const char *pszToken;
+	const char *pszDefault;
+} s_SandboxChecks[] =
+{
+	{ "sbox_playershurtplayers", "#HL2SB_PvPDamage",       "1" },
+	{ "physgun_limited",         "#HL2SB_PhysgunLimited",  "0" },
+	{ "sbox_bonemanip_npc",      "#HL2SB_BoneManipNPC",    "1" },
+	{ "sbox_bonemanip_player",   "#HL2SB_BoneManipPlayer", "0" },
+	{ "sbox_bonemanip_misc",     "#HL2SB_BoneManipMisc",   "0" },
+};
+
+//-----------------------------------------------------------------------------
+// HL2SB: one numeric limits row -- label on the left, number entry on the
+// right.  Lives inside the scrollable limits list, so it relayouts itself to
+// whatever width the list gives it.
+//-----------------------------------------------------------------------------
+class CSandboxLimitRow : public vgui::EditablePanel
+{
+	DECLARE_CLASS_SIMPLE( CSandboxLimitRow, vgui::EditablePanel );
+public:
+	CSandboxLimitRow( vgui::PanelListPanel *parent, const char *pszToken )
+		: BaseClass( parent, "SandboxLimitRow" )
+	{
+		SetPaintBackgroundEnabled( true );
+
+		m_pLabel = new vgui::Label( this, "LimitLabel", pszToken );
+		m_pLabel->SetContentAlignment( vgui::Label::a_west );
+		m_pLabel->SetTextInset( 4, 0 );
+		m_pLabel->SetMouseInputEnabled( false );
+
+		m_pEntry = new vgui::TextEntry( this, "LimitEntry" );
+		m_pEntry->SetAllowNumericInputOnly( true );
+		m_pEntry->SetMaximumCharCount( 7 );
+
+		SetSize( 300, 26 );
+	}
+
+	vgui::TextEntry *GetEntry() { return m_pEntry; }
+
+	virtual void PerformLayout()
+	{
+		BaseClass::PerformLayout();
+
+		int w, h;
+		GetSize( w, h );
+		if ( m_pLabel )
+			m_pLabel->SetBounds( 0, 0, w - 100, h );
+		if ( m_pEntry )
+			m_pEntry->SetBounds( w - 96, ( h - 22 ) / 2, 92, 22 );
+	}
+
+	virtual void PaintBackground()
+	{
+		vgui::surface()->DrawSetColor( 0, 0, 0, 110 );
+		vgui::surface()->DrawFilledRect( 0, 0, GetWide(), GetTall() );
+	}
+
+private:
+	vgui::Label *m_pLabel;
+	vgui::TextEntry *m_pEntry;
+};
+
+//-----------------------------------------------------------------------------
 // Purpose: A single selectable map card (thumbnail + name)
 //-----------------------------------------------------------------------------
 class CMapCardPanel : public vgui::EditablePanel
@@ -183,6 +282,11 @@ CCreateMultiplayerGameDialog::CCreateMultiplayerGameDialog(vgui::Panel *parent) 
 	m_pLoadoutCheck = NULL;
 	m_pGodModeCheck = NULL;
 	m_pSuitCheck = NULL;
+	m_pLanCheck = NULL;
+	m_pPvPCheck = NULL;
+	m_pPhysgunLimitedCheck = NULL;
+	m_pSandboxHeader = NULL;
+	m_pSandboxList = NULL;
 
 	SetDeleteSelfOnClose(true);
 
@@ -274,32 +378,73 @@ void CCreateMultiplayerGameDialog::PerformLayout()
 	if ( m_pMaxPlayers )
 		m_pMaxPlayers->SetBounds( rightX, topY + 166, rightW, 26 );
 
-	if ( m_pFallDamageCheck )
-		m_pFallDamageCheck->SetBounds( rightX, topY + 200, rightW, 24 );
+	// HL2SB: the sidebar has two shapes (GMod-style).  The single player row
+	// keeps the small column; every multiplayer row swaps in the sandbox
+	// options and the scrollable limits list.  UpdateSidebarMode() owns the
+	// visibility flip; this only positions whichever shape is active.
+	bool bSinglePlayerSidebar = ( GetMaxPlayers() <= 1 );
+	int btnHLayout = (int)(sh * 0.05);
+	int btnYLayout = sh - btnHLayout - (int)(sh * 0.02);
 
-	// HL2SB (2026-09-28): sidebar options stack below the fall-damage row
-	// (label+input for the ammo cap, then three checkboxes), well above the
-	// start button at ~0.93 of the screen height.
+	if ( bSinglePlayerSidebar )
 	{
-		int optY = topY + 234;
-		if ( m_pMaxAmmoLabel )
-			m_pMaxAmmoLabel->SetBounds( rightX, optY, rightW, 20 );
-		if ( m_pMaxAmmo )
-			m_pMaxAmmo->SetBounds( rightX, optY + 20, rightW, 26 );
-		optY += 54;
-		if ( m_pLoadoutCheck )
-			m_pLoadoutCheck->SetBounds( rightX, optY, rightW, 24 );
-		optY += 30;
-		if ( m_pGodModeCheck )
-			m_pGodModeCheck->SetBounds( rightX, optY, rightW, 24 );
-		optY += 30;
-		if ( m_pSuitCheck )
-			m_pSuitCheck->SetBounds( rightX, optY, rightW, 24 );
+		if ( m_pFallDamageCheck )
+			m_pFallDamageCheck->SetBounds( rightX, topY + 200, rightW, 24 );
+
+		// HL2SB (2026-09-28): sidebar options stack below the fall-damage row
+		// (label+input for the ammo cap, then three checkboxes), well above the
+		// start button at ~0.93 of the screen height.
+		{
+			int optY = topY + 234;
+			if ( m_pMaxAmmoLabel )
+				m_pMaxAmmoLabel->SetBounds( rightX, optY, rightW, 20 );
+			if ( m_pMaxAmmo )
+				m_pMaxAmmo->SetBounds( rightX, optY + 20, rightW, 26 );
+			optY += 54;
+			if ( m_pLoadoutCheck )
+				m_pLoadoutCheck->SetBounds( rightX, optY, rightW, 24 );
+			optY += 30;
+			if ( m_pGodModeCheck )
+				m_pGodModeCheck->SetBounds( rightX, optY, rightW, 24 );
+			optY += 30;
+			if ( m_pSuitCheck )
+				m_pSuitCheck->SetBounds( rightX, optY, rightW, 24 );
+		}
+	}
+	else
+	{
+		// Multiplayer: LAN / pvp / limited physgun checkboxes, then the
+		// scrollable sandbox limits list down to the start button.
+		if ( m_pLanCheck )
+			m_pLanCheck->SetBounds( rightX, topY + 200, rightW, 24 );
+		if ( m_pPvPCheck )
+			m_pPvPCheck->SetBounds( rightX, topY + 230, rightW, 24 );
+		if ( m_pPhysgunLimitedCheck )
+			m_pPhysgunLimitedCheck->SetBounds( rightX, topY + 260, rightW, 24 );
+		if ( m_pSandboxHeader )
+			m_pSandboxHeader->SetBounds( rightX, topY + 294, rightW, 20 );
+
+		int listY = topY + 318;
+		int listH = btnYLayout - 8 - listY;
+		if ( m_pSandboxList )
+		{
+			m_pSandboxList->SetBounds( rightX, listY, rightW, MAX( 60, listH ) );
+
+			// rows fill the viewport width (minus the scrollbar), so the
+			// number entries hug the right edge at any resolution
+			int rowW = rightW - 20;
+			for ( int nItemID = m_pSandboxList->FirstItem(); nItemID != m_pSandboxList->InvalidItemID(); nItemID = m_pSandboxList->NextItem( nItemID ) )
+			{
+				vgui::Panel *pItem = m_pSandboxList->GetItemPanel( nItemID );
+				if ( pItem )
+					pItem->SetSize( rowW, dynamic_cast< vgui::CheckButton * >( pItem ) ? 24 : 26 );
+			}
+		}
 	}
 
 	// start / back buttons at bottom
-	int btnH = (int)(sh * 0.05);
-	int btnY = sh - btnH - (int)(sh * 0.02);
+	int btnH = btnHLayout;
+	int btnY = btnYLayout;
 
 	if ( m_pStartButton )
 	{
@@ -347,6 +492,9 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		m_pHostName = new TextEntry( this, "HostName" );
 		m_pPassword = new TextEntry( this, "Password" );
 		m_pMaxPlayers = new ComboBox( this, "MaxPlayers", 8, false );
+		// HL2SB: receive the combo's stock "TextChanged" action signal (row
+		// picks re-fire it through OnMenuItemSelected -> SetText).
+		m_pMaxPlayers->AddActionSignalTarget( this );
 
 		m_pTitleLabel = new Label( this, "TitleLabel", "#GameUI_CreateServer" );
 		m_pHostNameLabel = new Label( this, "HostNameLabel", "#GameUI_ServerName" );
@@ -371,6 +519,42 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		m_pLoadoutCheck = new CheckButton( this, "LoadoutCheck", "#HL2SB_GiveWeapons" );
 		m_pGodModeCheck = new CheckButton( this, "GodModeCheck", "#HL2SB_GodMode" );
 		m_pSuitCheck = new CheckButton( this, "SuitCheck", "#HL2SB_EnableHEV" );
+
+		// HL2SB (2026-10-15): the multiplayer sidebar.  LAN rides the map
+		// command; the pvp / limited-physgun pair and the scrollable limits
+		// list persist through ServerConfig.vdf exactly like the singleplayer
+		// column does.  Defaults below match GMod's sandbox settings file.
+		m_pLanCheck = new CheckButton( this, "LanCheck", "#HL2SB_LAN" );
+		m_pLanCheck->SetSelected( true );
+		m_pPvPCheck = new CheckButton( this, "PvPCheck", "#HL2SB_PvPDamage" );
+		m_pPhysgunLimitedCheck = new CheckButton( this, "PhysgunLimitedCheck", "#HL2SB_PhysgunLimited" );
+		m_pSandboxHeader = new Label( this, "SandboxHeader", "#HL2SB_SandboxLimits" );
+
+		m_pSandboxList = new vgui::PanelListPanel( this, "SandboxList" );
+		m_pSandboxList->SetFirstColumnWidth( 0 );
+
+		for ( int i = 0; i < ARRAYSIZE( s_SandboxLimits ); ++i )
+		{
+			CSandboxLimitRow *pRow = new CSandboxLimitRow( m_pSandboxList, s_SandboxLimits[i].pszToken );
+			m_pSandboxList->AddItem( NULL, pRow );
+
+			SandboxOption_t option;
+			option.pszConVar = s_SandboxLimits[i].pszConVar;
+			option.pEntry = pRow->GetEntry();
+			option.pCheck = NULL;
+			m_SandboxOptions.AddToTail( option );
+		}
+		for ( int i = 0; i < ARRAYSIZE( s_SandboxChecks ); ++i )
+		{
+			vgui::CheckButton *pCheck = new vgui::CheckButton( m_pSandboxList, "SandboxCheckRow", s_SandboxChecks[i].pszToken );
+			m_pSandboxList->AddItem( NULL, pCheck );
+
+			SandboxOption_t option;
+			option.pszConVar = s_SandboxChecks[i].pszConVar;
+			option.pEntry = NULL;
+			option.pCheck = pCheck;
+			m_SandboxOptions.AddToTail( option );
+		}
 
 		m_pStartButton = new Button( this, "StartButton", "#GameUI_Start" );
 		m_pStartButton->SetCommand( "CreateGame" );
@@ -422,6 +606,60 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 			m_pGodModeCheck->SetSelected( GetGodMode() );
 		if ( m_pSuitCheck )
 			m_pSuitCheck->SetSelected( GetSuit() );
+
+		// HL2SB multiplayer sidebar: same ServerConfig.vdf-first restore.  LAN
+		// defaults to on (the map command always sent sv_lan 1 before this
+		// checkbox existed, so staying on preserves the old behaviour).
+		if ( m_pLanCheck && m_pSavedData && m_pSavedData->FindKey( "sv_lan" ) )
+			m_pLanCheck->SetSelected( m_pSavedData->GetInt( "sv_lan", 1 ) != 0 );
+		for ( int i = 0; i < m_SandboxOptions.Count(); ++i )
+		{
+			const char *pszDefault = "";
+			for ( int j = 0; j < ARRAYSIZE( s_SandboxLimits ); ++j )
+			{
+				if ( !Q_stricmp( s_SandboxLimits[j].pszConVar, m_SandboxOptions[i].pszConVar ) )
+				{
+					pszDefault = s_SandboxLimits[j].pszDefault;
+					break;
+				}
+			}
+			for ( int j = 0; j < ARRAYSIZE( s_SandboxChecks ); ++j )
+			{
+				if ( !Q_stricmp( s_SandboxChecks[j].pszConVar, m_SandboxOptions[i].pszConVar ) )
+				{
+					pszDefault = s_SandboxChecks[j].pszDefault;
+					break;
+				}
+			}
+
+			char szValue[32];
+			Q_strncpy( szValue, pszDefault, sizeof( szValue ) );
+			if ( m_pSavedData && m_pSavedData->FindKey( m_SandboxOptions[i].pszConVar ) )
+				Q_snprintf( szValue, sizeof( szValue ), "%d", m_pSavedData->GetInt( m_SandboxOptions[i].pszConVar, atoi( pszDefault ) ) );
+
+			if ( m_SandboxOptions[i].pEntry )
+				m_SandboxOptions[i].pEntry->SetText( szValue );
+			else if ( m_SandboxOptions[i].pCheck )
+				m_SandboxOptions[i].pCheck->SetSelected( atoi( szValue ) != 0 );
+		}
+
+		// Restore the saved player count so the sidebar reopens in the same
+		// single/multiplayer shape it was left in.
+		if ( m_pMaxPlayers && m_pSavedData && m_pSavedData->FindKey( "maxplayers" ) )
+		{
+			int nSavedPlayers = m_pSavedData->GetInt( "maxplayers", 1 );
+			for ( int i = 0; i < m_pMaxPlayers->GetItemCount(); ++i )
+			{
+				KeyValues *kv = m_pMaxPlayers->GetItemUserData( i );
+				if ( kv && kv->GetInt( "val", 0 ) == nSavedPlayers )
+				{
+					m_pMaxPlayers->ActivateItemByRow( i );
+					break;
+				}
+			}
+		}
+
+		UpdateSidebarMode();
 
 		BuildGameModeList();
 		BuildMapGrid();
@@ -839,6 +1077,51 @@ int CCreateMultiplayerGameDialog::GetMaxPlayers()
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: HL2SB - the max-players combo posted its stock "TextChanged"
+//          action signal.  Swapping between the single player row and a
+//          multiplayer row swaps the whole sidebar shape, GMod-style.
+//-----------------------------------------------------------------------------
+void CCreateMultiplayerGameDialog::OnMaxPlayersChanged( void )
+{
+	UpdateSidebarMode();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: HL2SB - flip the sidebar between the singleplayer column and the
+//          multiplayer sandbox column whenever the player-count combo moves.
+//-----------------------------------------------------------------------------
+void CCreateMultiplayerGameDialog::UpdateSidebarMode()
+{
+	bool bSingle = ( GetMaxPlayers() <= 1 );
+
+	if ( m_pFallDamageCheck )
+		m_pFallDamageCheck->SetVisible( bSingle );
+	if ( m_pMaxAmmoLabel )
+		m_pMaxAmmoLabel->SetVisible( bSingle );
+	if ( m_pMaxAmmo )
+		m_pMaxAmmo->SetVisible( bSingle );
+	if ( m_pLoadoutCheck )
+		m_pLoadoutCheck->SetVisible( bSingle );
+	if ( m_pGodModeCheck )
+		m_pGodModeCheck->SetVisible( bSingle );
+	if ( m_pSuitCheck )
+		m_pSuitCheck->SetVisible( bSingle );
+
+	if ( m_pLanCheck )
+		m_pLanCheck->SetVisible( !bSingle );
+	if ( m_pPvPCheck )
+		m_pPvPCheck->SetVisible( !bSingle );
+	if ( m_pPhysgunLimitedCheck )
+		m_pPhysgunLimitedCheck->SetVisible( !bSingle );
+	if ( m_pSandboxHeader )
+		m_pSandboxHeader->SetVisible( !bSingle );
+	if ( m_pSandboxList )
+		m_pSandboxList->SetVisible( !bSingle );
+
+	InvalidateLayout();
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: current mp_falldamage value.  The cvar is registered by the server
 // DLL, which is not loaded while the main menu is up, so this normally falls
 // back to the sandbox default (off).
@@ -1056,6 +1339,39 @@ void CCreateMultiplayerGameDialog::SaveConfig()
 		m_pSavedData->SetInt( "gmod_suit",
 			( m_pSuitCheck && m_pSuitCheck->IsSelected() ) ? 1 : 0 );
 
+		// HL2SB (2026-10-15): multiplayer sandbox options.  The checkboxes in
+		// the limits list sit directly on their convar names; the number rows
+		// read their TextEntry text.  An emptied-out number row keeps its GMod
+		// default instead of poisoning the file with 0.
+		m_pSavedData->SetInt( "sv_lan",
+			( m_pLanCheck && m_pLanCheck->IsSelected() ) ? 1 : 0 );
+		for ( int i = 0; i < m_SandboxOptions.Count(); ++i )
+		{
+			const SandboxOption_t &option = m_SandboxOptions[ i ];
+			if ( option.pCheck )
+			{
+				m_pSavedData->SetInt( option.pszConVar, option.pCheck->IsSelected() ? 1 : 0 );
+			}
+			else if ( option.pEntry )
+			{
+				char szValue[16];
+				szValue[0] = 0;
+				option.pEntry->GetText( szValue, sizeof( szValue ) );
+
+				const char *pszDefault = "0";
+				for ( int j = 0; j < ARRAYSIZE( s_SandboxLimits ); ++j )
+				{
+					if ( !Q_stricmp( s_SandboxLimits[j].pszConVar, option.pszConVar ) )
+					{
+						pszDefault = s_SandboxLimits[j].pszDefault;
+						break;
+					}
+				}
+				m_pSavedData->SetInt( option.pszConVar,
+					( szValue[0] != 0 ) ? clamp( Q_atoi( szValue ), 0, 100000 ) : atoi( pszDefault ) );
+			}
+		}
+
 		m_pSavedData->SaveToFile( g_pFullFileSystem, "ServerConfig.vdf", "GAME" );
 	}
 }
@@ -1105,8 +1421,14 @@ void CCreateMultiplayerGameDialog::CreateGame()
 	WriteListenServerConfig( m_pFallDamageCheck && m_pFallDamageCheck->IsSelected(),
 		nMaxAmmo, m_pSuitCheck && m_pSuitCheck->IsSelected() );
 
+	// HL2SB: single player always starts as a LAN listen server (GMod does the
+	// same); multiplayer rows honour the LAN checkbox, defaulting to on to
+	// match the old unconditional "sv_lan 1".
+	bool bLan = ( m_pLanCheck && m_pLanCheck->IsSelected() ) || ( GetMaxPlayers() <= 1 );
+
 	char szMapCommand[1024];
-	Q_snprintf(szMapCommand, sizeof( szMapCommand ), "disconnect\nwait\nwait\nsv_lan 1\nsetmaster enable\ngamemode \"%s\"\nmaxplayers %i\nsv_password \"%s\"\nhostname \"%s\"\nprogress_enable\nmap %s\n",
+	Q_snprintf(szMapCommand, sizeof( szMapCommand ), "disconnect\nwait\nwait\nsv_lan %d\nsetmaster enable\ngamemode \"%s\"\nmaxplayers %i\nsv_password \"%s\"\nhostname \"%s\"\nprogress_enable\nmap %s\n",
+		bLan ? 1 : 0,
 		szGamemode,
 		GetMaxPlayers(),
 		szPassword,
