@@ -44,6 +44,17 @@ extern void CAM_ToFirstPerson( void );
 #undef CHL2MP_Player
 #endif
 
+// HL2SB (2026-09-27): lua_pushplayer for the GM:UpdateAnimation dispatch.
+// Declared here instead of including lbaseplayer_shared.h, which requires the
+// full CBasePlayer type before its typedef.  This MUST stay at file scope: a
+// block-scope `class CBasePlayer;` declares a NEW incomplete class that
+// shadows the real global one for the rest of the function, and clang
+// (Linux/Android) then rejects both C_BasePlayer::GetLocalPlayer() and
+// passing `this` where the parameter wants C_BasePlayer* - MSVC merges the
+// names, which is why Windows never saw the break.
+class CBasePlayer;
+LUA_API void lua_pushplayer( lua_State *L, CBasePlayer *pPlayer );
+
 // ============================================================================
 // HL2SB (2026-10-02): GMod gesture broadcast receiver - C_TEPlayerAnimEvent.
 //
@@ -698,13 +709,6 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 	// through m_bClientSideAnimation, which is exactly the set of players whose
 	// locally-built gesture layers need their cycle driven.
 	HL2SB_ClientAdvanceGestures();
-
-	// HL2SB (2026-09-27): lua_pushplayer for the GM:UpdateAnimation dispatch.
-	// (declared here instead of including lbaseplayer_shared.h, which requires
-	// the full CBasePlayer type before its typedef)
-	class CBasePlayer;
-	LUA_API void lua_pushplayer( lua_State *L, CBasePlayer *pPlayer );
-
 
 	// HL2SB diagnostic: this override IS the client-side animation entry point for
 	// this entity (it deliberately does not chain to the base class, the same way
@@ -1582,12 +1586,6 @@ void C_HL2MPRagdoll::SetupWeights( const matrix3x4_t *pBoneToWorld, int nFlexWei
 		}
 	}
 }
-
-// HL2SB (2026-09-27): lua_pushplayer for the GM:UpdateAnimation dispatch.
-// (declared here instead of including lbaseplayer_shared.h, which requires
-// the full CBasePlayer type before its typedef)
-class CBasePlayer;
-LUA_API void lua_pushplayer( lua_State *L, CBasePlayer *pPlayer );
 
 void C_HL2MP_Player::PostThink( void )
 {
