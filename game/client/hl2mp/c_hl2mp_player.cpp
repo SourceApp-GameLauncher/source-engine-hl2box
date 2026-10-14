@@ -895,14 +895,12 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 				lua_pushplayer( L, this );
 			END_LUA_CALL_HOOK( 1, 0 );
 		}
-		else
-		{
-			BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
-				lua_pushplayer( L, this );
-				lua_pushvector( L, GetAbsVelocity() );
-				lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
-			END_LUA_CALL_HOOK( 3, 0 );
-		}
+
+		BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
+			lua_pushplayer( L, this );
+			lua_pushvector( L, GetAbsVelocity() );
+			lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
+		END_LUA_CALL_HOOK( 3, 0 );
 	}
 }
 

@@ -5765,16 +5765,21 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 
 	SetParent( pEnt, iSeatAttachment );
 
-	// HL2SB: anchor EXACTLY onto the attachment.  SetParent measures the local
-	// offset with its own attachment read, and the entry sequences sweep the
-	// seat bone (jeep enter1's jump-in arc) inside the microseconds between the
-	// seat-point query above and that read - the difference then baked a
-	// several-hundred-unit offset into the rider's local.  An explicit zero
-	// local is deterministic: the rider sits ON the attachment and rides the
-	// sweep, which is the same end state the reference's two agreeing reads
-	// produce.
-	SetLocalOrigin( vec3_origin );
-	SetLocalAngles( vec3_angle );
+		// HL2SB: anchor onto the attachment when one exists.  SetParent measures the local
+		// offset with its own attachment read, and the entry sequences sweep the
+		// seat bone (jeep enter1's jump-in arc) inside the microseconds between the
+		// seat-point query above and that read - the difference then baked a
+		// several-hundred-unit offset into the rider's local.  When attached to a real
+		// bone (iSeatAttachment > 0), an explicit zero local sits the rider ON the
+		// attachment.  When there is NO attachment (iSeatAttachment == 0, e.g. wooden
+		// chairs and simple seats), SetAbsOrigin( vSeatOrigin ) before SetParent already
+		// placed the rider onto the seat point; zeroing the local origin would crush the
+		// rider down to the floor at (0,0,0) of the chair model.
+		if ( iSeatAttachment > 0 )
+		{
+			SetLocalOrigin( vec3_origin );
+			SetLocalAngles( vec3_angle );
+		}
 
 	SetCollisionGroup( COLLISION_GROUP_IN_VEHICLE );
 	
