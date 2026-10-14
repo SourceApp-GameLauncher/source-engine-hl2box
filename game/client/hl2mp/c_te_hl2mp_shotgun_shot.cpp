@@ -14,16 +14,6 @@
 // server shipped with this TE (see TE_HL2MPFireBullets).
 #include "networkstringtable_clientdll.h"
 
-// HL2SB: game/shared/lua/luamanager.h is not on this file's include path
-// (client_hl2mp.vpc vs client_lua.vpc -- same reason c_te_effect_dispatch.cpp
-// declares HL2SB_CreateLuaEffect by hand), so the bounded one-shot warning
-// helper is declared here.
-void HL2SB_WarnOnce( const char *pszKey, const char *pszFormat, ... );
-
-// HL2SB: same include-path reason -- the unbounded, colour-tagged Lua console
-// message used by the PostDataUpdate diagnostic below.
-void luasrc_LuaInfoMsgF( const char *pszFormat, ... );
-
 class C_TEHL2MPFireBullets : public C_BaseTempEntity
 {
 public:
@@ -105,18 +95,6 @@ void C_TEHL2MPFireBullets::CreateEffects( void )
 		pWpn = dynamic_cast<C_BaseCombatWeapon *>( pPlayer->GetActiveWeapon() );
 	}
 
-	// HL2SB diagnostic: says whether this TE arrived at all and what it carried,
-	// once per (shooter, weapon index, resolved-or-not).  Before this, a TE whose
-	// weapon lookup failed left no trace in the log anywhere.
-	{
-		char szKey[ 160 ];
-		Q_snprintf( szKey, sizeof( szKey ), "te-firebullets-enter:%d:%d:%d", m_iPlayer, m_iWeaponIndex, ( pWpn != NULL ) ? 1 : 0 );
-		HL2SB_WarnOnce( szKey,
-			"TE_HL2MPFireBullets: shooter=%d weaponIndex=%d weapon='%s' tracers=%d impacts=%d shots=%d spread=%.4f tracerIndex=%d\n",
-			m_iPlayer, m_iWeaponIndex, ( pWpn != NULL ) ? pWpn->GetClassname() : "<none>",
-			m_bDoTracers ? 1 : 0, m_bDoImpacts ? 1 : 0, m_iShots, m_flSpread, m_iTracerName );
-	}
-
 	if ( pPlayer == NULL && pWpn == NULL )
 	{
 		return;
@@ -165,17 +143,14 @@ void C_TEHL2MPFireBullets::CreateEffects( void )
 
 					// HL2SB: capture everything that comes from the weapon BEFORE
 					// any Lua runs (see the handle comment above): the tracer's
-					// entity handle, the class name for the diagnostic, and the
-					// tracer effect name.  Without a weapon (a script removed it,
-					// or the index was stale) the tracer still has a name and the
-					// shooter to start from, so fall back to the shooter's handle
-					// -- GetTracerShootPos() then uses the local player's viewmodel
-					// muzzle, which is the right muzzle anyway.
+					// entity handle and the tracer effect name.  Without a weapon
+					// (a script removed it, or the index was stale) the tracer
+					// still has a name and the shooter to start from, so fall back
+					// to the shooter's handle -- GetTracerShootPos() then uses the
+					// local player's viewmodel muzzle, which is the right muzzle
+					// anyway.
 					const CBaseHandle hTracerEnt = ( pWpn != NULL ) ? pWpn->GetRefEHandle()
 												   : ( ( pPlayer != NULL ) ? pPlayer->GetRefEHandle() : CBaseHandle() );
-
-					char szWeapon[ 64 ];
-					Q_strncpy( szWeapon, ( pWpn != NULL ) ? pWpn->GetClassname() : "<none>", sizeof( szWeapon ) );
 
 					char szTracerName[ 128 ] = { 0 };
 
@@ -222,23 +197,6 @@ void C_TEHL2MPFireBullets::CreateEffects( void )
 						{
 							Q_strncpy( szTracerName, pTracerName, sizeof( szTracerName ) );
 						}
-
-						// HL2SB diagnostic: names the source of the tracer name in
-						// ds_debug.log, once per weapon per DLL load (Warning, not
-						// DevMsg -- DevMsg needs developer 1 and is then missing
-						// exactly when we need it).  Keyed by weapon class so a
-						// shot with another weapon in hand cannot hide this one.
-						char szKey[ 192 ];
-						Q_snprintf( szKey, sizeof( szKey ), "te-firebullets-tracer:%s:%d", szWeapon, m_iTracerName );
-						HL2SB_WarnOnce( szKey,
-							"TE_HL2MPFireBullets: tracers=%d impacts=%d tracer='%s' (from %s, table index %d) weapon='%s' shooter=%d\n",
-							m_bDoTracers ? 1 : 0,
-							m_bDoImpacts ? 1 : 0,
-							szTracerName,
-							( m_iTracerName > 0 ) ? "server TE" : "weapon GetTracerType",
-							m_iTracerName,
-							szWeapon,
-							m_iPlayer );
 					}
 
 					// Impacts first: DoImpactEffect() calls into Lua and must be
@@ -277,13 +235,6 @@ void C_TEHL2MPFireBullets::CreateEffects( void )
 
 void C_TEHL2MPFireBullets::PostDataUpdate( DataUpdateType_t updateType )
 {
-	// HL2SB: InfoMsg (unbounded) on purpose -- the WarnOnce budget was spent
-	// before this ever fired, and the recv side of the chain then had no trace
-	// at all.  One line per received TE names every field that matters.
-	luasrc_LuaInfoMsgF(
-		"[HL2SB] TE_HL2MPFireBullets RECV: shooter=%d weapon=%d tracers=%d impacts=%d tracerIndex=%d\n",
-		m_iPlayer, m_iWeaponIndex, m_bDoTracers ? 1 : 0, m_bDoImpacts ? 1 : 0, m_iTracerName );
-
 	if ( m_bDoTracers || m_bDoImpacts )
 	{
 		CreateEffects();

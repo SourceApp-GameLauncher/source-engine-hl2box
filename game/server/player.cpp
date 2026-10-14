@@ -5850,20 +5850,6 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 
 	OnVehicleStart();
 
-	// HL2SB vehdbg (hl2sb_vehicle_anim_debug 1): one line per entry with every
-	// number the seat-placement chain depends on.
-	extern ConVar hl2sb_vehicle_anim_debug;
-	if ( hl2sb_vehicle_anim_debug.GetBool() )
-	{
-		Msg( "[HL2SB vehdbg] enter veh=%s att=%d seat=(%.1f %.1f %.1f) local=(%.1f %.1f %.1f) abs=(%.1f %.1f %.1f) viewoff=(%.1f %.1f %.1f) mt=%d\n",
-			pEnt ? pEnt->GetClassname() : "<none>", iSeatAttachment,
-			vSeatOrigin.x, vSeatOrigin.y, vSeatOrigin.z,
-			GetLocalOrigin().x, GetLocalOrigin().y, GetLocalOrigin().z,
-			GetAbsOrigin().x, GetAbsOrigin().y, GetAbsOrigin().z,
-			GetViewOffset().x, GetViewOffset().y, GetViewOffset().z,
-			GetMoveType() );
-	}
-
 	return true;
 }
 

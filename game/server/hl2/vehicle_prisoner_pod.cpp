@@ -752,15 +752,6 @@ void CPropVehiclePrisonerPod::HL2SB_UpdateCameraState( CBasePlayer *pDriver )
 		float flDistance = m_flCameraDistance;
 		flDistance = clamp( flDistance - iWheel * 0.03f * ( 1.1f + flDistance ), -1.0f, 10.0f );
 		m_flCameraDistance = flDistance;
-
-		// HL2SB (sbrust): throttled wheel diagnostic (hl2sb_veh_thirdperson_debug 1).
-		static float s_flNextWheelLine = 0.0f;
-		extern ConVar hl2sb_vehicle_anim_debug;
-		if ( hl2sb_vehicle_anim_debug.GetBool() && gpGlobals->curtime >= s_flNextWheelLine )
-		{
-			s_flNextWheelLine = gpGlobals->curtime + 0.5f;
-			Msg( "[HL2SB vehcam] pod wheel=%d dist=%.3f\n", iWheel, flDistance );
-		}
 	}
 }
 

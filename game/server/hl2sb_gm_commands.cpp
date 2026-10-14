@@ -184,7 +184,6 @@ static CBaseEntity *GM_SpawnAtEyeTrace( CBasePlayer *pPlayer, const char *pszCla
 							lua_getfield( L, iBase + 2, "Members" );         // iBase+4
 							if ( lua_istable( L, iBase + 4 ) )
 							{
-								int nMerged = 0;
 								lua_pushnil( L );                            // iBase+5 first key
 								while ( lua_next( L, iBase + 4 ) != 0 )      // +5=key +6=value
 								{
@@ -192,37 +191,24 @@ static CBaseEntity *GM_SpawnAtEyeTrace( CBasePlayer *pPlayer, const char *pszCla
 									lua_pushvalue( L, iBase + 6 );           // +8=value
 									lua_settable( L, iBase + 3 );            // instance[key] = value
 									lua_pop( L, 1 );                         // drop the copy, keep the key
-									nMerged++;
 								}
-								Msg( "[HL2SB vehmerge] %s: %d member(s) onto the entity\n", pszVehicleClass, nMerged );
-							}
-							else
-							{
-								Msg( "[HL2SB vehmerge] %s: entry has no Members table\n", pszVehicleClass );
 							}
 							lua_pop( L, 2 );                                 // Members, instance
 						}
 						else
 						{
-							Msg( "[HL2SB vehmerge] %s: no instance table\n", pszVehicleClass );
 							lua_pop( L, 1 );
 						}
-					}
-					else
-					{
-						Msg( "[HL2SB vehmerge] %s: no registry entry\n", pszVehicleClass );
 					}
 					lua_pop( L, 1 );                                         // entry
 				}
 				else
 				{
-					Msg( "[HL2SB vehmerge] %s: list.GetEntry missing\n", pszVehicleClass );
 					lua_pop( L, 2 );                                         // GetEntry, list
 				}
 			}
 			else
 			{
-				Msg( "[HL2SB vehmerge] %s: global list missing\n", pszVehicleClass );
 				lua_pop( L, 1 );                                             // list
 			}
 

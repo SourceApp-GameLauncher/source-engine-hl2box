@@ -574,8 +574,8 @@ static void HL2SB_VehicleModelToWorldSpace( CBaseEntity *pEntity, Vector &vecPos
 //    CHL2MP_Player::SetAnimation() (IsInAVehicle() -> ACT_HL2MP_SIT ->
 //    sit_<holdtype> family, verified in the log as "sit_pistol"). This state machine
 //    classifies what the player is doing inside the vehicle, so pose parameters
-//    (body/head/steering) and the debug output can be layered on top of that pose
-//    without touching the ground/walk/run path at all.
+//    (body/head/steering) can be layered on top of that pose without touching the
+//    ground/walk/run path at all.
 //  * ENTER/EXIT are server-authoritative: IServerVehicle::IsPassengerEntering()/
 //    IsPassengerExiting() plus the vehicle's own entry/exit animation. The client
 //    cannot see those, so it classifies IDLE and lets the networked sequence drive
@@ -586,23 +586,6 @@ static void HL2SB_VehicleModelToWorldSpace( CBaseEntity *pEntity, Vector &vecPos
 //    vehicle model's `vehicle_steer` pose parameter when present and handed to the
 //    player model only when THAT model declares `vehicle_steer` (the m_anm 9-way
 //    family does). Missing parameters are a no-op, never a crash.
-//-----------------------------------------------------------------------------
-ConVar hl2sb_vehicle_anim_debug( "hl2sb_vehicle_anim_debug", "0", FCVAR_REPLICATED | FCVAR_NOTIFY,
-								 "Print HL2MP vehicle animation state once per second." );
-
-static const char *HL2SB_VehicleStateName( CPlayerAnimState::VehicleAnimState_t e )
-{
-	switch ( e )
-	{
-	case CPlayerAnimState::VEHICLE_ANIM_ENTER:		return "ENTER";
-	case CPlayerAnimState::VEHICLE_ANIM_IDLE:		return "IDLE";
-	case CPlayerAnimState::VEHICLE_ANIM_DRIVER:		return "DRIVER";
-	case CPlayerAnimState::VEHICLE_ANIM_PASSENGER:	return "PASSENGER";
-	case CPlayerAnimState::VEHICLE_ANIM_EXIT:		return "EXIT";
-	default:										return "NONE";
-	}
-}
-
 //-----------------------------------------------------------------------------
 // HL2SB: write one seated pose parameter in the MODEL's own units.
 //
@@ -668,29 +651,6 @@ void CPlayerAnimState::UpdateVehicleAnimation( bool bWriteSeatedPose )
 #endif
 	if ( !pVehicle )
 		return;
-
-	// HL2SB vehdbg (hl2sb_vehicle_anim_debug 1): one line per second per realm with
-	// the rider's transform while seated - pairs with the enter/exit lines to show
-	// whether a misplacement lives on the server, on the client, or in between.
-	{
-		extern ConVar hl2sb_vehicle_anim_debug;
-		static float s_flNextVehDbgLine = 0.0f;
-		if ( hl2sb_vehicle_anim_debug.GetBool() && gpGlobals->curtime >= s_flNextVehDbgLine )
-		{
-			s_flNextVehDbgLine = gpGlobals->curtime + 1.0f;
-			CBaseEntity *pDbgParent = pPlayer->GetMoveParent();
-			Msg( "[HL2SB vehdbg] %s tick parent=%s local=(%.1f %.1f %.1f) abs=(%.1f %.1f %.1f) mt=%d\n",
-#ifdef CLIENT_DLL
-				"cl",
-#else
-				"sv",
-#endif
-				pDbgParent ? pDbgParent->GetClassname() : "<none>",
-				pPlayer->GetLocalOrigin().x, pPlayer->GetLocalOrigin().y, pPlayer->GetLocalOrigin().z,
-				pPlayer->GetAbsOrigin().x, pPlayer->GetAbsOrigin().y, pPlayer->GetAbsOrigin().z,
-				pPlayer->GetMoveType() );
-		}
-	}
 
 	// --- role (shared API, works on both realms) -----------------------------
 	// IVehicle::GetPassengerRole() returns VEHICLE_ROLE_DRIVER for the driver seat,
@@ -839,11 +799,6 @@ void CPlayerAnimState::UpdateVehicleAnimation( bool bWriteSeatedPose )
 		// roll are 0, so this is bit-identical to the old yaw-only pin there; only tilted
 		// seats change.
 		//
-		// HL2SB: the seat attachment's yaw in the vehicle's own space, for the debug line at the
-		// bottom of this function (declared out here because that line sits outside the state
-		// block below).
-		float flSeatYawLocal = 0.0f;
-
 		if ( m_eHL2SBVehicleAnimState != VEHICLE_ANIM_NONE )
 		{
 			QAngle angSeatWorld( 0.0f, 0.0f, 0.0f );
@@ -869,10 +824,9 @@ void CPlayerAnimState::UpdateVehicleAnimation( bool bWriteSeatedPose )
 			// the two realms cannot disagree about where the seat points.
 				Vector vecSeatPos;
 				QAngle angSeat;
-				if ( HL2SB_GetRestingAttachmentLocal( pSeatAnim, "vehicle_feet_passenger0", &vecSeatPos, &angSeat ) )
-				{
-					flSeatYawLocal = angSeat[YAW];
-					HL2SB_VehicleModelToWorldSpace( pVehEnt, vecSeatPos, angSeat );
+			if ( HL2SB_GetRestingAttachmentLocal( pSeatAnim, "vehicle_feet_passenger0", &vecSeatPos, &angSeat ) )
+			{
+				HL2SB_VehicleModelToWorldSpace( pVehEnt, vecSeatPos, angSeat );
 					angSeatWorld = angSeat;
 					bHaveSeat = true;
 				}
@@ -973,84 +927,6 @@ void CPlayerAnimState::UpdateVehicleAnimation( bool bWriteSeatedPose )
 		}
 	}
 
-	// --- debug (stage 11) ----------------------------------------------------
-	if ( hl2sb_vehicle_anim_debug.GetBool() )
-	{
-		static float s_flNextVehAnimPrint = 0.0f;
-		if ( gpGlobals->curtime >= s_flNextVehAnimPrint )
-		{
-			s_flNextVehAnimPrint = gpGlobals->curtime + 1.0f;
-
-			CStudioHdr *pStudioHdr = pPlayer->GetModelPtr();
-			const int iSequence = pPlayer->GetSequence();
-			const char *pszLabel = "?";
-			const char *pszActivity = "?";
-			if ( pStudioHdr && iSequence >= 0 && iSequence < pStudioHdr->GetNumSeq() )
-			{
-				pszLabel = pStudioHdr->pSeqdesc( iSequence ).pszLabel();
-				pszActivity = ActivityList_NameForIndex( (int)pPlayer->GetSequenceActivity( iSequence ) );
-				if ( !pszActivity )
-					pszActivity = "?";
-			}
-
-			const int iBodyYaw = pPlayer->LookupPoseParameter( "body_yaw" );
-			const int iAimYaw = pPlayer->LookupPoseParameter( "aim_yaw" );
-			const int iHeadYaw = pPlayer->LookupPoseParameter( "head_yaw" );
-			const int iHeadPitch = pPlayer->LookupPoseParameter( "head_pitch" );
-
-#ifdef CLIENT_DLL
-			const char *pszRealm = "cl";
-#else
-			const char *pszRealm = "sv";
-#endif
-			// HL2SB: C_BaseEntity::GetClassname() returns ONE shared static buffer on the
-			// client (game/client/c_baseentity.cpp:4813), so two calls inside a single
-			// Msg() print the SAME name whichever way the compiler orders the arguments.
-			// That is where the client's misleading "vehicle=player" (vs the server's
-			// "vehicle=prop_vehicle_prisoner_pod") came from - a logging artifact, not a
-			// player-backed vehicle. Copy both names out first.
-			char szPlayerClass[128];
-			char szVehicleClass[128];
-			Q_strncpy( szPlayerClass, pPlayer->GetClassname(), sizeof( szPlayerClass ) );
-			Q_strncpy( szVehicleClass, pVehEnt ? pVehEnt->GetClassname() : "<none>", sizeof( szVehicleClass ) );
-
-			// HL2SB: the seated layering, for "does the body follow the seat and only
-			// the head follow the view?". seat_yaw is the vehicle's own
-			// vehicle_feet_passenger0 yaw (m_angRender); view_yaw is the player's eye
-			// yaw; aim_yaw/head_yaw are read back out of the model (DEGREES in the anim
-			// models) and should equal wrap(view_yaw - seat_yaw), clamped.
-			//
-			// view_ofs is the seated view offset GetInVehicle() now takes from the
-			// vehicle's feet->eyes attachment pair, so
-			//     seat line world_z + view_ofs.z == veh3rd/calc eye z
-			// is the check that the player's own eye and the vehicle camera agree.
-			//
-			// parent=Y/N and seat_pose=Y/N are the two signals that decide whether this
-			// body is seated or merely still owns a (dying) vehicle handle: parent=N with
-			// state=NONE right after a dismount is the fix for "the seat pose lingered for
-			// a fraction of a second" working. seat_pose=Y means the player is still
-			// playing THIS vehicle's seat sequence (networked), which keeps the layering on
-			// for the frame or two it takes a parent change to arrive.
-			//
-			// seat_ofs is the seat yaw in the vehicle's own (model) space and seat_yaw is
-			// the world yaw derived from it. seat_ofs must stay constant for the whole ride
-			// (it is read from the vehicle's resting pose) while seat_yaw follows the
-			// vehicle - if seat_ofs moves while driving, the seat datum is being read from
-			// the live animation again.
-			const Vector vecViewOfs = pPlayer->GetViewOffset();
-			Msg( "[HL2SB veh/%s] player=%s vehicle=%s state=%s role=%d parent=%d seat_pose=%d seq=%d(%s) act=%s steer=%.3f body_yaw=%.1f aim_yaw=%.1f head_yaw=%.1f head_pitch=%.1f seat_ofs=%.1f seat_yaw=%.1f view_yaw=%.1f view_ofs=(%.1f %.1f %.1f)\n",
-				 pszRealm, szPlayerClass, szVehicleClass,
-				 HL2SB_VehicleStateName( m_eHL2SBVehicleAnimState ), m_iHL2SBVehicleRole,
-				 ( pPlayer->GetMoveParent() != NULL ) ? 1 : 0, bPlayingSeatPose ? 1 : 0,
-				 iSequence, pszLabel, pszActivity, m_flHL2SBVehicleSteering,
-				 ( iBodyYaw >= 0 ) ? pPlayer->GetPoseParameter( iBodyYaw ) : 0.0f,
-				 ( iAimYaw >= 0 ) ? pPlayer->GetPoseParameter( iAimYaw ) : 0.0f,
-				 ( iHeadYaw >= 0 ) ? pPlayer->GetPoseParameter( iHeadYaw ) : 0.0f,
-				 ( iHeadPitch >= 0 ) ? pPlayer->GetPoseParameter( iHeadPitch ) : 0.0f,
-				 flSeatYawLocal, m_flHL2SBSeatYaw, pPlayer->EyeAngles()[YAW],
-				 vecViewOfs.x, vecViewOfs.y, vecViewOfs.z );
-		}
-	}
 }
 
 CPlayerAnimState::CPlayerAnimState( CHL2MP_Player *outer )

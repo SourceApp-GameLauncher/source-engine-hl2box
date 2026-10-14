@@ -508,100 +508,6 @@ void CBaseServerVehicle::SetPassenger( int nRole, CBaseCombatCharacter *pPasseng
 }
 	
 //-----------------------------------------------------------------------------
-// HL2SB: which branch produced the seat point, and the point + orientation itself.
-//
-// The seat point is the difference between "a GMod chair looks right" and "the player
-// stands inside the floorboard", and the four branches of GetPassengerSeatPoint below
-// (animated idle attachment / bind-pose attachment / current-pose attachment / vehicle
-// origin) are indistinguishable from a screenshot - the player is simply in the wrong
-// place. Behind hl2sb_vehicle_anim_debug, the existing vehicle debug convar
-// (game/shared/hl2mp/hl2mp_player_shared.cpp, FCVAR_REPLICATED, so it exists in server.dll
-// too), one line per seat answers it:
-//
-//   [HL2SB veh/sv] seat veh=prop_vehicle_prisoner_pod att=vehicle_feet_passenger0
-//                  src=resting sequence anim (no ACT_IDLE) local=(0.0 0.0 27.7)
-//                  local_ang=(0.0 -90.0 0.0) world=(...) world_ang=(...)
-//
-//   src=ACT_IDLE anim                       a vehicle with an ACT_IDLE: the seat at cycle 0
-//                                           of that sequence (SDK behaviour, the jeep)
-//   src=resting sequence anim (no ACT_IDLE) a model with no ACT_IDLE: the seat in its own
-//                                           resting sequence ("idle" by label, else
-//                                           sequence 0) - GMod chairs/seats (the "sits
-//                                           below the chair" fix) AND Valve's airboat
-//   src=current pose attachment             last resort: the pose it is playing right now
-//   src=vehicle origin (no attachment)      no seat data at all (e.g. xqm coaster seats)
-//
-// The ANGLES are printed because the seat yaw is what the seated body is rendered at
-// (CPlayerAnimState::UpdateVehicleAnimation); a seat point that jumped onto the vehicle's
-// entry path used to be visible here as a yaw that did not match the vehicle's.
-//
-// HL2SB: THROTTLED. GetPassengerSeatPoint() is called from the player's animation
-// update as well as on entry, which produced 3434 identical lines in one session
-// (engine.log: "[HL2SB veh/sv] seat veh=prop_vehicle_prisoner_pod ... local=(-0.0 4.0
-// 22.5)" x3434). One line per second, and only when the rounded answer changed, keeps
-// it useful without owning the log.
-//-----------------------------------------------------------------------------
-static void HL2SB_DebugSeatPoint( CBaseEntity *pVehicle, const char *pszAttachment, const char *pszSource,
-								  const Vector &vecLocalOrigin, const QAngle &angLocal,
-								  const Vector &vecWorldOrigin, const QAngle &angWorld )
-{
-	extern ConVar hl2sb_vehicle_anim_debug;
-	if ( !hl2sb_vehicle_anim_debug.GetBool() )
-	{
-		return;
-	}
-
-	// Round to 0.1 so a jittering cover driver does not defeat the change test.
-	const int nLocalX = (int)( vecLocalOrigin.x * 10.0f );
-	const int nLocalY = (int)( vecLocalOrigin.y * 10.0f );
-	const int nLocalZ = (int)( vecLocalOrigin.z * 10.0f );
-	const int nWorldX = (int)( vecWorldOrigin.x * 10.0f );
-	const int nWorldY = (int)( vecWorldOrigin.y * 10.0f );
-	const int nWorldZ = (int)( vecWorldOrigin.z * 10.0f );
-	// Whole degrees: a seat that has wandered onto the vehicle's entry animation shows up
-	// as a wrong YAWW here long before anything moves a whole unit.
-	const int nLocalYaw = (int)angLocal[YAW];
-	const int nWorldYaw = (int)angWorld[YAW];
-
-	static int s_nLastLocalX = 0, s_nLastLocalY = 0, s_nLastLocalZ = 0;
-	static int s_nLastWorldX = 0, s_nLastWorldY = 0, s_nLastWorldZ = 0;
-	static int s_nLastLocalYaw = 0, s_nLastWorldYaw = 0;
-	static const char *s_pszLastSource = NULL;
-	static const char *s_pszLastAttachment = NULL;
-	static float s_flNextPrint = 0.0f;
-
-	const bool bChanged = ( nLocalX != s_nLastLocalX ) || ( nLocalY != s_nLastLocalY ) ||
-						  ( nLocalZ != s_nLastLocalZ ) || ( nWorldX != s_nLastWorldX ) ||
-						  ( nWorldY != s_nLastWorldY ) || ( nWorldZ != s_nLastWorldZ ) ||
-						  ( nLocalYaw != s_nLastLocalYaw ) || ( nWorldYaw != s_nLastWorldYaw ) ||
-						  ( pszSource != s_pszLastSource ) || ( pszAttachment != s_pszLastAttachment );
-
-	if ( !bChanged || gpGlobals->curtime < s_flNextPrint )
-	{
-		return;
-	}
-
-	s_flNextPrint = gpGlobals->curtime + 1.0f;
-	s_nLastLocalX = nLocalX;
-	s_nLastLocalY = nLocalY;
-	s_nLastLocalZ = nLocalZ;
-	s_nLastWorldX = nWorldX;
-	s_nLastWorldY = nWorldY;
-	s_nLastWorldZ = nWorldZ;
-	s_nLastLocalYaw = nLocalYaw;
-	s_nLastWorldYaw = nWorldYaw;
-	s_pszLastSource = pszSource;
-	s_pszLastAttachment = pszAttachment;
-
-	Msg( "[HL2SB veh/sv] seat veh=%s att=%s src=%s local=(%.1f %.1f %.1f) local_ang=(%.1f %.1f %.1f) world=(%.1f %.1f %.1f) world_ang=(%.1f %.1f %.1f)\n",
-		 pVehicle ? pVehicle->GetClassname() : "<none>", pszAttachment, pszSource,
-		 vecLocalOrigin.x, vecLocalOrigin.y, vecLocalOrigin.z,
-		 angLocal[PITCH], angLocal[YAW], angLocal[ROLL],
-		 vecWorldOrigin.x, vecWorldOrigin.y, vecWorldOrigin.z,
-		 angWorld[PITCH], angWorld[YAW], angWorld[ROLL] );
-}
-
-//-----------------------------------------------------------------------------
 // Purpose: Get a position in *world space* inside the vehicle for the player to start at
 //-----------------------------------------------------------------------------
 void CBaseServerVehicle::GetPassengerSeatPoint( int nRole, Vector *pPoint, QAngle *pAngles )
@@ -722,8 +628,6 @@ void CBaseServerVehicle::GetPassengerSeatPoint( int nRole, Vector *pPoint, QAngl
 					angLocal = vecAngles;
 				}
 				UTIL_ParentToWorldSpace( pAnimating, vecOrigin, vecAngles );
-				HL2SB_DebugSeatPoint( pAnimating, pAttachmentName, pszSeatSource,
-									  vecLocalOrigin, angLocal, vecOrigin, vecAngles );
 
 				if ( pPoint )
 				{
@@ -750,9 +654,6 @@ void CBaseServerVehicle::GetPassengerSeatPoint( int nRole, Vector *pPoint, QAngl
 	{
 		*pAngles = m_pVehicle->GetAbsAngles();
 	}
-
-	HL2SB_DebugSeatPoint( m_pVehicle, "(none)", "vehicle origin (no attachment)",
-						  vec3_origin, vec3_angle, m_pVehicle->GetAbsOrigin(), m_pVehicle->GetAbsAngles() );
 }
 
 //---------------------------------------------------------------------------------
@@ -811,23 +712,6 @@ bool CBaseServerVehicle::GetPassengerExitPoint( int nRole, Vector *pExitPoint, Q
 				*pExitPoint = tr.endpos;
 				return true;
 			}
-
-			// HL2SB vehdbg
-			{
-				extern ConVar hl2sb_vehicle_anim_debug;
-				if ( hl2sb_vehicle_anim_debug.GetBool() )
-				{
-					static float s_flNextExitAttLine = 0.0f;
-					if ( gpGlobals->curtime >= s_flNextExitAttLine )
-					{
-						s_flNextExitAttLine = gpGlobals->curtime + 1.0f;
-						Msg( "[HL2SB vehdbg] exitpt att veh=%s at=(%.1f %.1f %.1f) startsolid blocked by %s\n",
-							m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-							vehicleExitOrigin.x, vehicleExitOrigin.y, vehicleExitOrigin.z,
-							tr.m_pEnt ? tr.m_pEnt->GetClassname() : "<world>" );
-					}
-				}
-			}
 		}
 	}
 
@@ -858,24 +742,6 @@ bool CBaseServerVehicle::GetPassengerExitPoint( int nRole, Vector *pExitPoint, Q
 	trace_t tr;
 	CTraceFilterSkipTwoEntities topFilter( m_pVehicle, GetPassenger( VEHICLE_ROLE_DRIVER ), COLLISION_GROUP_NONE );
 	UTIL_TraceHull( m_pVehicle->CollisionProp()->WorldSpaceCenter(), *pExitPoint, VEC_HULL_MIN, VEC_HULL_MAX, MASK_PLAYERSOLID, &topFilter, &tr );
-
-	// HL2SB vehdbg
-	{
-		extern ConVar hl2sb_vehicle_anim_debug;
-		if ( hl2sb_vehicle_anim_debug.GetBool() )
-		{
-			static float s_flNextTopLine = 0.0f;
-			if ( gpGlobals->curtime >= s_flNextTopLine )
-			{
-				s_flNextTopLine = gpGlobals->curtime + 1.0f;
-				Msg( "[HL2SB vehdbg] exitpt top veh=%s top=(%.1f %.1f %.1f) startsolid=%d blocked by %s\n",
-					m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-					pExitPoint->x, pExitPoint->y, pExitPoint->z,
-					tr.startsolid ? 1 : 0,
-					tr.m_pEnt ? tr.m_pEnt->GetClassname() : "<world>" );
-			}
-		}
-	}
 
 	if ( !tr.startsolid )
 	{
@@ -1317,35 +1183,10 @@ void CBaseServerVehicle::HandlePassengerEntry( CBaseCombatCharacter *pPassenger,
 				// GM:PlayerEnteredVehicle like GMod's use-key entry does.
 				pPlayer->EnterVehicle( this, VEHICLE_ROLE_DRIVER );
 			}
-			else
-			{
-				// HL2SB vehdbg
-				extern ConVar hl2sb_vehicle_anim_debug;
-				if ( hl2sb_vehicle_anim_debug.GetBool() )
-				{
-					CBaseCombatCharacter *pOccupant = GetPassenger( VEHICLE_ROLE_DRIVER );
-					Msg( "[HL2SB vehdbg] entry refused (player gate) veh=%s occupant=%s alive=%d\n",
-						m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-						pOccupant ? pOccupant->GetClassname() : "<none>",
-						pPlayer->IsAlive() ? 1 : 0 );
-				}
 			}
 		}
 		else
 		{
-			// HL2SB vehdbg
-			extern ConVar hl2sb_vehicle_anim_debug;
-			if ( hl2sb_vehicle_anim_debug.GetBool() )
-			{
-				CBaseEntity *pCurrent = GetDrivableVehicle()->GetDriver();
-					Msg( "[HL2SB vehdbg] entry refused (vehicle gate) veh=%s driver=%s\n",
-						m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-						pCurrent ? pCurrent->GetClassname() : "<none>" );
-			}
-		}
-	}
-	else
-	{
 		// NPCs handle transitioning themselves, they should NOT call this function
 		Assert( 0 );
 	}
@@ -1384,22 +1225,6 @@ bool CBaseServerVehicle::HandlePassengerExit( CBaseCombatCharacter *pPassenger )
 			bool bGotStaticExit = GetPassengerExitPoint( nRole, &vecNewPos, &angNewAngles );
 			if ( !bGotStaticExit && !GetDrivableVehicle()->AllowBlockedExit( pPlayer, nRole ) )
 			{
-				// HL2SB vehdbg
-				{
-					extern ConVar hl2sb_vehicle_anim_debug;
-					if ( hl2sb_vehicle_anim_debug.GetBool() )
-					{
-						static float s_flNextDenyLine = 0.0f;
-						if ( gpGlobals->curtime >= s_flNextDenyLine )
-						{
-							s_flNextDenyLine = gpGlobals->curtime + 1.0f;
-							Msg( "[HL2SB vehdbg] exit deny veh=%s seq=%d blocked=%d staticexit=0 rider=(%.1f %.1f %.1f)\n",
-								m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-								iSequence, bAllPointsBlocked ? 1 : 0,
-								pPlayer->GetAbsOrigin().x, pPlayer->GetAbsOrigin().y, pPlayer->GetAbsOrigin().z );
-						}
-					}
-				}
 				return false;
 			}
 
@@ -1411,18 +1236,6 @@ bool CBaseServerVehicle::HandlePassengerExit( CBaseCombatCharacter *pPassenger )
 		// Now we either have an exit sequence to play, a valid static exit position, or we don't care
 		// whether we're blocked or not. We're getting out, one way or another.
 		GetDrivableVehicle()->PreExitVehicle( pPlayer, nRole );
-
-		// HL2SB vehdbg
-		{
-			extern ConVar hl2sb_vehicle_anim_debug;
-			if ( hl2sb_vehicle_anim_debug.GetBool() )
-			{
-				Msg( "[HL2SB vehdbg] exitpick veh=%s seq=%d blocked=%d newpos=(%.1f %.1f %.1f)\n",
-					m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-					iSequence, bAllPointsBlocked ? 1 : 0,
-					vecNewPos.x, vecNewPos.y, vecNewPos.z );
-			}
-		}
 
 		if ( iSequence > ACTIVITY_NOT_AVAILABLE )
 		{
@@ -1729,21 +1542,6 @@ int CBaseServerVehicle::GetExitAnimToUse( Vector &vecEyeExitEndpoint, bool &bAll
 //-----------------------------------------------------------------------------
 void CBaseServerVehicle::HandleEntryExitFinish( bool bExitAnimOn, bool bResetAnim )
 {
-	// HL2SB vehdbg
-	{
-		extern ConVar hl2sb_vehicle_anim_debug;
-		if ( hl2sb_vehicle_anim_debug.GetBool() )
-		{
-			CBasePlayer *pDbgRider = ToBasePlayer( GetDriver() );
-			Msg( "[HL2SB vehdbg] finish veh=%s exitanim=%d resetanim=%d rider=(%.1f %.1f %.1f)\n",
-				m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-				bExitAnimOn ? 1 : 0, bResetAnim ? 1 : 0,
-				pDbgRider ? pDbgRider->GetLocalOrigin().x : 0.0f,
-				pDbgRider ? pDbgRider->GetLocalOrigin().y : 0.0f,
-				pDbgRider ? pDbgRider->GetLocalOrigin().z : 0.0f );
-		}
-	}
-
 	// Parse the vehicle animations. This is needed because they may have
 	// saved, and loaded during exit anim, which would clear the exit anim.
 	if ( !m_bParsedAnimations )
@@ -1922,27 +1720,9 @@ void CBaseServerVehicle::ItemPostFrame( CBasePlayer *player )
 	// the exit path.  Exit anims stay single-shot via CanExitVehicle.
 	if ( player->m_nButtons & IN_USE )
 	{
-		// HL2SB vehdbg (hl2sb_vehicle_anim_debug 1): one line per second while the
-		// driver holds +use inside the vehicle.
-		static float s_flNextELine = 0.0f;
-		extern ConVar hl2sb_vehicle_anim_debug;
-		if ( hl2sb_vehicle_anim_debug.GetBool() && gpGlobals->curtime >= s_flNextELine )
-		{
-			s_flNextELine = gpGlobals->curtime + 1.0f;
-			bool bCanExit = GetDrivableVehicle()->CanExitVehicle( player );
-			Msg( "[HL2SB vehdbg] E gate veh=%s canexit=%d\n",
-				m_pVehicle ? m_pVehicle->GetClassname() : "<none>",
-				bCanExit ? 1 : 0 );
-		}
 		if ( GetDrivableVehicle()->CanExitVehicle(player) )
 		{
 			bool bExitOk = HandlePassengerExit( player );
-			extern ConVar hl2sb_vehicle_anim_debug;
-			if ( hl2sb_vehicle_anim_debug.GetBool() )
-			{
-				Msg( "[HL2SB vehdbg] E exit veh=%s result=%d\n",
-					m_pVehicle ? m_pVehicle->GetClassname() : "<none>", bExitOk ? 1 : 0 );
-			}
 			if ( !bExitOk && ( player != NULL ) )
 			{
 				player->PlayUseDenySound();
