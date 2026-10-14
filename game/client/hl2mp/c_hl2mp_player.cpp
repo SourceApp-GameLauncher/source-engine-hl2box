@@ -723,6 +723,29 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 	// runs in both branches.
 	const bool bDriving = ( GetVehicle() != NULL );
 
+	// One anim-state step for this frame.  Unseated: the full Update (gait pose
+	// machinery; GM:UpdateAnimation is dispatched at the tail below, after it).
+	// Driving: only the seat ORIENTATION half of UpdateVehicleAnimation runs
+	// (bWriteSeatedPose=false) - the reference writes no pose while driving, but
+	// this fork's drawn body orientation is m_angRender and that layer is its
+	// single writer while seated; skipping the whole Update froze the body at
+	// the angle it had before entering (reported as "sits at the wrong angle").
+	// If the seat layer folds itself to NONE - m_hVehicle still set but the
+	// player already unparented and done with the seat pose (the dismount
+	// animation window) - the full Update runs instead, so the exit anim keeps
+	// the normal machinery exactly as it did before the vehicle branch existed.
+	auto AnimStep = [&]()
+	{
+		if ( !bDriving )
+		{
+			m_PlayerAnimState.Update();
+			return;
+		}
+		m_PlayerAnimState.UpdateVehicleAnimation( false );
+		if ( m_PlayerAnimState.GetVehicleAnimState() == CPlayerAnimState::VEHICLE_ANIM_NONE )
+			m_PlayerAnimState.Update();
+	};
+
 	float flCycleBefore = GetCycle();
 	float flInterval = 0.0f;
 
@@ -794,9 +817,8 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 		if ( bLocalPlayer )
 			m_angEyeAngles = EyeAngles();
 
-		// HL2SB: skipped while driving - see bDriving above (reference behaviour).
-		if ( !bDriving )
-			m_PlayerAnimState.Update();
+		// HL2SB: driving branch - see AnimStep above (reference behaviour).
+		AnimStep();
 
 		// latch old values
 		OnLatchInterpolatedVariables( LATCH_ANIMATION_VAR );
@@ -811,8 +833,7 @@ void C_HL2MP_Player::UpdateClientSideAnimation()
 	}
 	else
 	{
-		if ( !bDriving )
-			m_PlayerAnimState.Update();
+		AnimStep();
 	}
 
 	// HL2SB diagnostic: did the cycle move, and how big was the step? "before ==

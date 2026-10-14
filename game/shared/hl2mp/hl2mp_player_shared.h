@@ -153,7 +153,15 @@ public:
 		VEHICLE_ANIM_EXIT,
 	};
 
-	void				UpdateVehicleAnimation( void );
+	// bWriteSeatedPose=false runs only the state machine and the seat ORIENTATION
+	// half (seat datum -> m_angRender, and SetAbsAngles on the server) and skips
+	// every seated pose-parameter write.  The client's driving branch calls it
+	// that way: the reference runs no animstate at all while driving (no C++
+	// pose writes, so the rider's arms stay centred), but this fork's rendered
+	// orientation IS m_angRender (C_HL2MP_Player::GetRenderAngles returns it),
+	// so the seat-facing write has to keep running or the drawn body freezes at
+	// the angle it had before entering the vehicle.
+	void				UpdateVehicleAnimation( bool bWriteSeatedPose = true );
 	VehicleAnimState_t	GetVehicleAnimState( void ) const { return m_eHL2SBVehicleAnimState; }
 	int					GetVehicleRole( void ) const { return m_iHL2SBVehicleRole; }
 	float				GetVehicleSteering( void ) const { return m_flHL2SBVehicleSteering; }

@@ -651,7 +651,7 @@ static bool HL2SB_SetSeatedPoseParameter( CBaseAnimating *pAnim, const char *psz
 	return true;
 }
 
-void CPlayerAnimState::UpdateVehicleAnimation( void )
+void CPlayerAnimState::UpdateVehicleAnimation( bool bWriteSeatedPose )
 {
 	m_eHL2SBVehicleAnimState = VEHICLE_ANIM_NONE;
 	m_iHL2SBVehicleRole = 0;
@@ -936,30 +936,40 @@ void CPlayerAnimState::UpdateVehicleAnimation( void )
 		// One spelling per axis, never both: aim_* is the whole upper body (which the
 		// head bone follows), head_* is the head bone itself - writing both would turn
 		// the head twice as far.
-		const QAngle angView = pPlayer->EyeAngles();
-		const float flViewYawDelta = AngleNormalize( angView[YAW] - flSeatYaw );
-
-		if ( !HL2SB_SetSeatedPoseParameter( pPlayer, "aim_yaw", flViewYawDelta, 60.0f ) )
+		//
+		// HL2SB (2026-10-14): this whole pose block is skipped when the caller only
+		// asked for the seat orientation (bWriteSeatedPose=false) - that is the
+		// client's driving branch, mirroring the reference which runs no animstate
+		// at all while the player is in a vehicle.  The seat-facing write above
+		// (m_angRender / SetAbsAngles) always runs: it is this fork's body
+		// orientation, not a pose parameter.
+		if ( bWriteSeatedPose )
 		{
-			// Models without an aim chain (Valve's HL2MP anim models have neither
-			// aim_yaw nor the sit_* poses) keep a head-only turn.
-			HL2SB_SetSeatedPoseParameter( pPlayer, "head_yaw", flViewYawDelta, 60.0f );
-		}
+			const QAngle angView = pPlayer->EyeAngles();
+			const float flViewYawDelta = AngleNormalize( angView[YAW] - flSeatYaw );
 
-		if ( !HL2SB_SetSeatedPoseParameter( pPlayer, "aim_pitch", angView[PITCH], 60.0f ) )
-		{
-			HL2SB_SetSeatedPoseParameter( pPlayer, "head_pitch", angView[PITCH], 30.0f );
-		}
+			if ( !HL2SB_SetSeatedPoseParameter( pPlayer, "aim_yaw", flViewYawDelta, 60.0f ) )
+			{
+				// Models without an aim chain (Valve's HL2MP anim models have neither
+				// aim_yaw nor the sit_* poses) keep a head-only turn.
+				HL2SB_SetSeatedPoseParameter( pPlayer, "head_yaw", flViewYawDelta, 60.0f );
+			}
 
-		// body_yaw is a whole-body blender in some NPC models and absent from the anim
-		// models; "centred" is the middle of whatever range this model declares.
-		const int iBodyYaw = pPlayer->LookupPoseParameter( "body_yaw" );
-		if ( iBodyYaw >= 0 )
-		{
-			float flMin = 0.0f;
-			float flMax = 1.0f;
-			pPlayer->GetPoseParameterRange( iBodyYaw, flMin, flMax );
-			pPlayer->SetPoseParameter( iBodyYaw, ( flMin + flMax ) * 0.5f );
+			if ( !HL2SB_SetSeatedPoseParameter( pPlayer, "aim_pitch", angView[PITCH], 60.0f ) )
+			{
+				HL2SB_SetSeatedPoseParameter( pPlayer, "head_pitch", angView[PITCH], 30.0f );
+			}
+
+			// body_yaw is a whole-body blender in some NPC models and absent from the anim
+			// models; "centred" is the middle of whatever range this model declares.
+			const int iBodyYaw = pPlayer->LookupPoseParameter( "body_yaw" );
+			if ( iBodyYaw >= 0 )
+			{
+				float flMin = 0.0f;
+				float flMax = 1.0f;
+				pPlayer->GetPoseParameterRange( iBodyYaw, flMin, flMax );
+				pPlayer->SetPoseParameter( iBodyYaw, ( flMin + flMax ) * 0.5f );
+			}
 		}
 	}
 
