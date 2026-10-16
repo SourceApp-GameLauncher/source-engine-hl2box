@@ -795,6 +795,20 @@ static int lua_game_AddParticles (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-16): ShutDown-time fallback.  The ShutDown hook is raised
+// from luasrc_shutdown (luamanager.cpp), whose server call site is the tail of
+// CServerGameDLL::LevelShutdown (gameinterface.cpp) - by then the level is
+// already torn down and gpGlobals->mapname / engine->GetLevelName() answer an
+// empty string.  Sandbox persistence builds its save path as
+// game.GetMap() .. "_" .. page .. ".txt" right inside ShutDown
+// (gamemodes/sandbox/gamemode/persistence.lua:38), and PersistenceLoad looks
+// the same name up on the next map load.  Reference behavior: GMod raises
+// ShutDown while the map is still loaded, so the reference-side
+// game.GetMap() answers with the live map name there.  Cache the last
+// non-empty level name seen and fall back to it whenever the live source is
+// empty, so the name observed through Lua stays stable across the shutdown.
+static char s_szLuaLastMap[MAX_PATH] = "";
+
 static int lua_game_GetMap (lua_State *L) {
   // The realms disagree on where the map name lives: the client has
   // IVEngineClient::GetLevelName() (CGlobalVarsBase has no mapname), the server
@@ -823,6 +837,14 @@ static int lua_game_GetMap (lua_State *L) {
   pDot = Q_strrchr( szMap, '.' );
   if ( pDot ) {
     *pDot = '\0';
+  }
+
+  if ( szMap[0] != '\0' ) {
+    Q_strncpy( s_szLuaLastMap, szMap, sizeof( s_szLuaLastMap ) );
+  } else if ( s_szLuaLastMap[0] != '\0' ) {
+    // Level already gone (ShutDown / state teardown): answer with the last map
+    // this realm actually had loaded.
+    Q_strncpy( szMap, s_szLuaLastMap, sizeof( szMap ) );
   }
 
   lua_pushstring( L, szMap );
@@ -2916,6 +2938,103 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_pushinteger( L, STUDIO_DRAWTRANSLUCENTSUBMODELS ); lua_setglobal( L, "STUDIO_DRAWTRANSLUCENTSUBMODELS" );
   lua_pushinteger( L, STUDIO_SSAODEPTHTEXTURE );         lua_setglobal( L, "STUDIO_SSAODEPTHTEXTURE" );
   lua_pushinteger( L, STUDIO_SHADOWDEPTHTEXTURE );       lua_setglobal( L, "STUDIO_SHADOWDEPTHTEXTURE" );
+
+  //-----------------------------------------------------------------------------
+  // HL2SB (2026-10-16): GMod's BONE_* enum family.  GMod publishes the whole
+  // group as globals (client.dll .rdata carries the contiguous name block
+  // BONE_CALCULATE_MASK .. BONE_USED_BY_BONE_MERGE right before USE_* and
+  // TRANSMIT_*, the same enum tables this file already mirrors for the latter
+  // two), and the shipped bone-manipulation widget reads one of them on both
+  // realms: lua/entities/widget_bones.lua:154
+  //     if ( !ent:BoneHasFlag( k, BONE_USED_BY_VERTEX_LOD0 ) ) then continue end
+  // That widget's Setup runs from the bone_manipulate property's server
+  // Receive chain, so without the global the server-side receive raised
+  // "bad argument #3 to 'BoneHasFlag' (number expected, got nil)" and the
+  // widget was never built.  Values from public/studio.h:415-441 (same
+  // numbers GMod ships).  The #ifndef fallbacks follow the STUDIO block above:
+  // studio.h is not in this translation unit's include chain.
+  //-----------------------------------------------------------------------------
+#ifndef BONE_CALCULATE_MASK
+#define BONE_CALCULATE_MASK 0x1F
+#endif
+#ifndef BONE_PHYSICALLY_SIMULATED
+#define BONE_PHYSICALLY_SIMULATED 0x01
+#endif
+#ifndef BONE_PHYSICS_PROCEDURAL
+#define BONE_PHYSICS_PROCEDURAL 0x02
+#endif
+#ifndef BONE_ALWAYS_PROCEDURAL
+#define BONE_ALWAYS_PROCEDURAL 0x04
+#endif
+#ifndef BONE_SCREEN_ALIGN_SPHERE
+#define BONE_SCREEN_ALIGN_SPHERE 0x08
+#endif
+#ifndef BONE_SCREEN_ALIGN_CYLINDER
+#define BONE_SCREEN_ALIGN_CYLINDER 0x10
+#endif
+#ifndef BONE_USED_MASK
+#define BONE_USED_MASK 0x0007FF00
+#endif
+#ifndef BONE_USED_BY_ANYTHING
+#define BONE_USED_BY_ANYTHING 0x0007FF00
+#endif
+#ifndef BONE_USED_BY_HITBOX
+#define BONE_USED_BY_HITBOX 0x00000100
+#endif
+#ifndef BONE_USED_BY_ATTACHMENT
+#define BONE_USED_BY_ATTACHMENT 0x00000200
+#endif
+#ifndef BONE_USED_BY_VERTEX_MASK
+#define BONE_USED_BY_VERTEX_MASK 0x0003FC00
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD0
+#define BONE_USED_BY_VERTEX_LOD0 0x00000400
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD1
+#define BONE_USED_BY_VERTEX_LOD1 0x00000800
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD2
+#define BONE_USED_BY_VERTEX_LOD2 0x00001000
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD3
+#define BONE_USED_BY_VERTEX_LOD3 0x00002000
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD4
+#define BONE_USED_BY_VERTEX_LOD4 0x00004000
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD5
+#define BONE_USED_BY_VERTEX_LOD5 0x00008000
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD6
+#define BONE_USED_BY_VERTEX_LOD6 0x00010000
+#endif
+#ifndef BONE_USED_BY_VERTEX_LOD7
+#define BONE_USED_BY_VERTEX_LOD7 0x00020000
+#endif
+#ifndef BONE_USED_BY_BONE_MERGE
+#define BONE_USED_BY_BONE_MERGE 0x00040000
+#endif
+
+  lua_pushinteger( L, BONE_CALCULATE_MASK );         lua_setglobal( L, "BONE_CALCULATE_MASK" );
+  lua_pushinteger( L, BONE_PHYSICALLY_SIMULATED );   lua_setglobal( L, "BONE_PHYSICALLY_SIMULATED" );
+  lua_pushinteger( L, BONE_PHYSICS_PROCEDURAL );     lua_setglobal( L, "BONE_PHYSICS_PROCEDURAL" );
+  lua_pushinteger( L, BONE_ALWAYS_PROCEDURAL );      lua_setglobal( L, "BONE_ALWAYS_PROCEDURAL" );
+  lua_pushinteger( L, BONE_SCREEN_ALIGN_SPHERE );    lua_setglobal( L, "BONE_SCREEN_ALIGN_SPHERE" );
+  lua_pushinteger( L, BONE_SCREEN_ALIGN_CYLINDER );  lua_setglobal( L, "BONE_SCREEN_ALIGN_CYLINDER" );
+  lua_pushinteger( L, BONE_USED_MASK );              lua_setglobal( L, "BONE_USED_MASK" );
+  lua_pushinteger( L, BONE_USED_BY_ANYTHING );       lua_setglobal( L, "BONE_USED_BY_ANYTHING" );
+  lua_pushinteger( L, BONE_USED_BY_HITBOX );         lua_setglobal( L, "BONE_USED_BY_HITBOX" );
+  lua_pushinteger( L, BONE_USED_BY_ATTACHMENT );     lua_setglobal( L, "BONE_USED_BY_ATTACHMENT" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_MASK );    lua_setglobal( L, "BONE_USED_BY_VERTEX_MASK" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD0 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD0" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD1 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD1" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD2 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD2" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD3 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD3" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD4 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD4" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD5 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD5" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD6 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD6" );
+  lua_pushinteger( L, BONE_USED_BY_VERTEX_LOD7 );    lua_setglobal( L, "BONE_USED_BY_VERTEX_LOD7" );
+  lua_pushinteger( L, BONE_USED_BY_BONE_MERGE );     lua_setglobal( L, "BONE_USED_BY_BONE_MERGE" );
 
   // HL2SB (2026-10-08): GMod's Enums/TRANSMIT family, answered by
   // ENTITY:UpdateTransmitState (basescripted.cpp maps the script's return

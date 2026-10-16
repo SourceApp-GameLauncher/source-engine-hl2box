@@ -892,7 +892,11 @@ static int CBaseAnimating_ManipulateBoneScale (lua_State *L) {
   // Body's vehicle head-hiding (scale 0 on ONE bone shrank the entire body);
   // a uniform scale on EVERY bone is still visually SetModelScale, so the
   // minecraft held-block usage is unaffected.
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  // HL2SB (2026-10-16): non-animating self -> no-op (GMod client.dll
+  // 0x18011F310), see the family note at ManipulateBoneAngles.
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  if (pEntity == NULL)
+    return 0;
   int nBone = luaL_checkint(L, 2);
   Vector scale = luaL_checkvector(L, 3);
   bool bImmediate = lua_isnoneornil(L, 4) ? true : ( lua_toboolean(L, 4) != 0 );
@@ -1043,10 +1047,22 @@ static int CBaseAnimating_GetBodygroup (lua_State *L) {
 // HL2SB GMod compat (2026-10-03): Entity:GetBodygroups() - every bodygroup as
 // a 1-based array of { id, name, num } tables.  First Person Body copies the
 // player's bodygroups onto its body copies through this.
+//
+// HL2SB (2026-10-16) GMod compat: tolerant self, matching the capitalised
+// sibling in lua_bindings/lbaseanimating_shared.cpp (GMod client.dll
+// 0x180112D40 answers the EMPTY TABLE for a non-animating self and never
+// raises; the C menu reaches this family with worldspawn as self because the
+// Entity metatable chains to the CBaseAnimating metatable, installed by
+// lua/includes/extensions/gmod_globals.lua).  The lowercase spelling is not a
+// GMod name, but First Person Body calls it on every entity it draws, so it
+// follows the same contract instead of raising "CBaseAnimating expected".
 static int CBaseAnimating_GetBodygroups (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
   lua_newtable( L );
+  if ( pEntity == NULL )
+    return 1;
+
+  studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
   if ( pHdr == NULL )
     return 1;
 
@@ -1098,7 +1114,12 @@ static int CBaseAnimating_GetBonePosition (lua_State *L) {
   // bones answers the entity's abs transform, GMod's documented fallback
   // for a missing bone - and the only way to keep C_BaseAnimating::
   // GetBonePosition (unchecked array math) from reading past the bone array.
-  C_BaseAnimating *pAnimating = luaL_checkanimating(L, 1);
+  // HL2SB (2026-10-16) GMod compat: a non-animating self (worldspawn reaching
+  // this through the Entity metatable chain) answers no values, the reference
+  // client.dll 0x180113AB0 tail - it used to raise "CBaseAnimating expected".
+  C_BaseAnimating *pAnimating = lua_toanimating(L, 1);
+  if (pAnimating == NULL)
+    return 0;
   const int iBone = luaL_checkint(L, 2);
 
   Vector origin;
@@ -1301,8 +1322,12 @@ static int CBaseAnimating_GetPoseParameterName (lua_State *L) {
 // applied on every bone setup plus immediately by default (reference
 // behaviour: the optional 4th boolean defaults to true).  First
 // Person Body pushes the head bone to (0, 10000, 0) to hide it.
+// HL2SB (2026-10-16): non-animating self -> no-op (GMod client.dll
+// 0x18011F2E0), see the family note at ManipulateBoneAngles.
 static int CBaseAnimating_ManipulateBonePosition (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  if (pEntity == NULL)
+    return 0;
   int nBone = luaL_checkint(L, 2);
   const Vector &vecPos = luaL_checkvector(L, 3);
   bool bImmediate = lua_isnoneornil(L, 4) ? true : ( lua_toboolean(L, 4) != 0 );
@@ -1321,8 +1346,21 @@ static int CBaseAnimating_ManipulateBonePosition (lua_State *L) {
 // Same per-(entity, bone) storage as Position/Scale; the portalgun's viewmodel
 // bone-mod base writes angles, scales and offsets together every frame and
 // reads all three back through GetManipulateBone*.
+//
+// HL2SB (2026-10-16) GMod compat: tolerant self for the whole manipulation
+// family, proven against GMod win64 client.dll --
+//   ManipulateBoneAngles 0x18011EF50 / ManipulateBonePosition 0x18011F2E0 /
+//   ManipulateBoneScale 0x18011F310: non-animating self -> no-op, return 0;
+//   GetManipulateBoneAngles 0x180118410 -> zero angle;
+//   GetManipulateBoneScale 0x1801188C0 -> (1,1,1);
+//   GetManipulateBonePosition 0x180118730 -> zero vector.
+// These are reached through the Entity metatable chain (gmod_globals.lua
+// installs __index on the CBaseEntity metatable), so no raise may escape on a
+// non-animating self.
 static int CBaseAnimating_ManipulateBoneAngles (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  if (pEntity == NULL)
+    return 0;
   int nBone = luaL_checkint(L, 2);
   const QAngle &angAngles = luaL_checkangle(L, 3);
   bool bImmediate = lua_isnoneornil(L, 4) ? true : ( lua_toboolean(L, 4) != 0 );
@@ -1341,9 +1379,11 @@ static int CBaseAnimating_ManipulateBoneAngles (lua_State *L) {
 // Unmanipulated bones answer the identity (1 1 1 / 0 0 0 / 0 0 0) - the
 // viewmodel bone-mod base compares these against what it is about to write,
 // so the identity defaults are what keeps it from re-writing every frame.
+// HL2SB (2026-10-16): a non-animating self also answers the same identity
+// (GMod win64 0x1801188C0 / 0x180118410 / 0x180118730).
 static int CBaseAnimating_GetManipulateBoneScale (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false );
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  HL2SB_BoneManip_t *pManip = ( pEntity != NULL ) ? HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false ) : NULL;
   if ( pManip == NULL || !pManip->bHasScale )
   {
     lua_pushvector( L, Vector( 1.0f, 1.0f, 1.0f ) );
@@ -1354,8 +1394,8 @@ static int CBaseAnimating_GetManipulateBoneScale (lua_State *L) {
 }
 
 static int CBaseAnimating_GetManipulateBoneAngles (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false );
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  HL2SB_BoneManip_t *pManip = ( pEntity != NULL ) ? HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false ) : NULL;
   if ( pManip == NULL || !pManip->bHasAngles )
   {
     lua_pushangle( L, QAngle( 0.0f, 0.0f, 0.0f ) );
@@ -1366,8 +1406,8 @@ static int CBaseAnimating_GetManipulateBoneAngles (lua_State *L) {
 }
 
 static int CBaseAnimating_GetManipulateBonePosition (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false );
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  HL2SB_BoneManip_t *pManip = ( pEntity != NULL ) ? HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false ) : NULL;
   if ( pManip == NULL || !pManip->bHasPos )
   {
     lua_pushvector( L, Vector( 0.0f, 0.0f, 0.0f ) );
@@ -1377,21 +1417,10 @@ static int CBaseAnimating_GetManipulateBonePosition (lua_State *L) {
   return 1;
 }
 
-// Entity:GetBoneParent( bone ): the studio bone's parent index, -1 when the
-// bone has no parent or is out of range.  The portalgun's bone-mod base walks
-// parents to accumulate inherited scales.
-static int CBaseAnimating_GetBoneParent (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  int nBone = luaL_checkint(L, 2);
-  studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
-  if ( !pHdr || nBone < 0 || nBone >= pHdr->numbones )
-  {
-    lua_pushinteger( L, -1 );
-    return 1;
-  }
-  lua_pushinteger( L, pHdr->pBone( nBone )->parent );
-  return 1;
-}
+// Entity:GetBoneParent( bone ) moved to lua_bindings/lbaseanimating_shared.cpp
+// (2026-10-16): the bone-manipulation widget calls it from BOTH realms, so a
+// single shared registration now feeds both metatables (GMod client.dll
+// 0x1801138C0 and server.dll 0x18018DDC0 are the same binding there).
 
 // HL2SB GMod compat (2026-09-24): Entity:CreateShadow(radius) /
 // Entity:DestroyShadow() are accepted as safe NO-OPS.  GMod builds a
@@ -1615,13 +1644,22 @@ static int CBaseAnimating_IsBoneCacheValid (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-16) GMod compat: tolerant self for the two predicates the
+// property menu's filters call on every entity, including worldspawn (the
+// ignite filter's CanEntityBeSetOnFire reaches GetClass/IsNPC first, but the
+// extinguish filter and other consumers walk any hovered entity).  GMod win64
+// client.dll 0x18011DC50 IsOnFire / 0x18011DE80 IsRagdoll: non-animating self
+// -> push false, never raise (their bodies open with the 0x138 GetBaseAnimating
+// check and fall into a lua_pushboolean(false) tail).
 static int CBaseAnimating_IsOnFire (lua_State *L) {
-  lua_pushboolean(L, luaL_checkanimating(L, 1)->IsOnFire());
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  lua_pushboolean(L, pEntity != NULL && pEntity->IsOnFire());
   return 1;
 }
 
 static int CBaseAnimating_IsRagdoll (lua_State *L) {
-  lua_pushboolean(L, luaL_checkanimating(L, 1)->IsRagdoll());
+  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
+  lua_pushboolean(L, pEntity != NULL && pEntity->IsRagdoll());
   return 1;
 }
 
@@ -2301,7 +2339,8 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"CopyBoneMatrix", CBaseAnimating_CopyBoneMatrix},
   {"GetBoneName", CBaseAnimating_GetBoneName},
   {"GetBoneNames", CBaseAnimating_GetBoneNames},
-  {"GetBoneParent", CBaseAnimating_GetBoneParent},
+  // GetBoneParent now comes from lua_bindings/lbaseanimating_shared.cpp
+  // (2026-10-16) -- one shared registration feeds both metatables.
   {"GetManipulateBoneScale", CBaseAnimating_GetManipulateBoneScale},
   {"GetManipulateBoneAngles", CBaseAnimating_GetManipulateBoneAngles},
   {"GetManipulateBonePosition", CBaseAnimating_GetManipulateBonePosition},

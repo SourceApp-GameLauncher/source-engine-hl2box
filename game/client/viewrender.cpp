@@ -1065,23 +1065,26 @@ void CViewRender::DrawViewModels( const CViewSetup &view, bool drawViewmodel )
 	// (deathmatch cl_init) forwards to the SWEP method.  Literal true
 	// suppresses the viewmodel this frame, and per the wiki
 	// PostDrawViewModel/ViewModelDrawn are then NOT called either.
+	// HL2SB (2026-10-16): GMod dispatches this from the view model's own draw
+	// routine, gated on the viewmodel's weapon entity being resolvable and on
+	// a live local player, so the hook does not fire at all while no weapon
+	// is held and Lua never receives a nil weapon.  There is no
+	// draw-local-player gate on their side either (the hook fires whenever
+	// the viewmodel draw runs with STUDIO_RENDER), so ours is gone too.
 	bool bSuppressPostVMHooks = false;
 #if defined( LUA_SDK )
 	{
 		C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-		if ( bShouldDrawPlayerViewModel && pLocalPlayer != NULL && !C_BasePlayer::ShouldDrawLocalPlayer() )
+		if ( bShouldDrawPlayerViewModel && pLocalPlayer != NULL )
 		{
 			CBaseCombatWeapon *pWep = pLocalPlayer->GetActiveWeapon();
 			C_BaseViewModel *pVM = pLocalPlayer->GetViewModel( 0 );
-			if ( pVM != NULL )
+			if ( pVM != NULL && pWep != NULL )
 			{
 				BEGIN_LUA_CALL_HOOK( "PreDrawViewModel" );
 					lua_pushentity( L, pVM );
 					lua_pushplayer( L, pLocalPlayer );
-					if ( pWep != NULL )
-						lua_pushweapon( L, pWep );
-					else
-						lua_pushnil( L );
+					lua_pushweapon( L, pWep );
 					lua_pushinteger( L, STUDIO_RENDER );
 				END_LUA_CALL_HOOK( 4, 1 );
 
@@ -1200,6 +1203,10 @@ void CViewRender::DrawViewModels( const CViewSetup &view, bool drawViewmodel )
 	// ViewModelDrawn keeps both the hook and the direct SWEP call (GMod's
 	// SWEP:ViewModelDrawn( vm ) is documented and its base defines it).
 	// Neither runs when PreDrawViewModel suppressed the draw.
+	// HL2SB (2026-10-16): GMod gates the PostDrawViewModel dispatch itself on
+	// the viewmodel's weapon entity being resolvable, so the hook stays silent
+	// while no weapon is held instead of handing Lua a nil weapon (their base
+	// gamemode indexes wep unconditionally).
 #if defined( LUA_SDK )
 	if ( !bSuppressPostVMHooks )
 	{
@@ -1223,15 +1230,15 @@ void CViewRender::DrawViewModels( const CViewSetup &view, bool drawViewmodel )
 					END_LUA_CALL_WEAPON_HOOK( 2, 0 );
 				}
 
-				BEGIN_LUA_CALL_HOOK( "PostDrawViewModel" );
-					lua_pushentity( L, pVM );
-					lua_pushplayer( L, pLocalPlayer );
-					if ( pWep != NULL )
+				if ( pWep != NULL )
+				{
+					BEGIN_LUA_CALL_HOOK( "PostDrawViewModel" );
+						lua_pushentity( L, pVM );
+						lua_pushplayer( L, pLocalPlayer );
 						lua_pushweapon( L, pWep );
-					else
-						lua_pushnil( L );
-					lua_pushinteger( L, STUDIO_RENDER );
-				END_LUA_CALL_HOOK( 4, 0 );
+						lua_pushinteger( L, STUDIO_RENDER );
+					END_LUA_CALL_HOOK( 4, 0 );
+				}
 			}
 		}
 	}

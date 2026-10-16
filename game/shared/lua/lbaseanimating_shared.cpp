@@ -38,16 +38,47 @@
 #include "tier0/memdbgon.h"
 
 LUA_REGISTRATION_INIT( CBaseAnimating )
+
+// HL2SB (2026-10-16) GMod compat: the tolerant self-resolution used by the
+// bindings below.  GMod keeps ONE entity method table, so any of these methods
+// can be reached with a NON-animating self: a trace result (worldspawn, a
+// brush entity) resolves them through the metatable chain installed in
+// lua/includes/extensions/gmod_globals.lua (setmetatable on the CBaseEntity
+// metatable), and the reference bindings guard on GetBaseAnimating() instead
+// of raising.  Proven against GMod win64:
+//   client.dll 0x180112D40 GetBodyGroups  -> empty table when no animating
+//   client.dll 0x1801133A0 GetBoneCount   -> pushes 0
+//   client.dll 0x180128B60 SkinCount      -> returns no values
+//   server.dll 0x18018D2C0 GetBodyGroups  -> FUN_18018CFA0, empty table
+//   server.dll 0x18018D900 GetBoneCount   -> pushes 0
+//   server.dll 0x1801A34A0 SkinCount      -> pushes 0 / no values
+// The strict luaL_checkanimating raised "CBaseAnimating expected, got NULL
+// entity" for those valid-but-not-animating entities, and that raise is what
+// aborted the C menu's property build on worldspawn (the bodygroups filter).
+static lua_CBaseAnimating *HL2SB_AnimatingArg (lua_State *L, int narg) {
+    lua_CBaseEntity *pEntity = lua_toentity(L, narg);
+    return (pEntity != NULL) ? pEntity->GetBaseAnimating() : NULL;
+}
+
 LUA_BINDING_BEGIN( CBaseAnimating, GetBoneCount, "class", "Get the amount of bones this entity has in its model." )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    // GMod answer for a non-animating self or one without a studio model: 0,
+    // not an error and not nil -- scripts compare the result
+    // (properties/bone_manipulate.lua:14 `if ( bonecount <= 1 )`).
+    if ( pAnimating == NULL )
+    {
+        lua_pushinteger( L, 0 );
+        return 1;
+    }
 
     CStudioHdr *pstudiohdr = pAnimating->GetModelPtr();
 
     if ( !pstudiohdr )
     {
-        luasrc_LuaWarnMsgF( "CBaseAnimating::GetBoneCount failed: no model\n" );
-        return 0;
+        lua_pushinteger( L, 0 );
+        return 1;
     }
 
     lua_pushinteger( L, pstudiohdr->numbones() );
@@ -75,11 +106,14 @@ LUA_BINDING_BEGIN( CBaseAnimating, GetModelName, "class", "Get the model path of
 }
 LUA_BINDING_END( "string", "The model name" )
 
+// HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+// GMod's GetNumBodyGroups (client.dll 0x1801199B0, server.dll 0x180193E90)
+// pushes 0 when the self is not an animating entity; it never raises.
 LUA_BINDING_BEGIN( CBaseAnimating, GetBodyGroupsCount, "class", "Get the number of bodygroups" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
 
-    lua_pushinteger( L, pAnimating->GetNumBodyGroups() );
+    lua_pushinteger( L, ( pAnimating != NULL ) ? pAnimating->GetNumBodyGroups() : 0 );
 
     return 1;
 }
@@ -131,7 +165,15 @@ LUA_BINDING_END()
 
 LUA_BINDING_BEGIN( CBaseAnimating, SetBodygroup, "class", "Sets one bodygroup's value on the entity's model. GMod Entity:SetBodygroup( bodygroup, value )." )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    // HL2SB (2026-10-16) GMod compat: tolerant self.  GMod's SetBodygroup
+    // (client.dll 0x180122B40) returns with no effect for a non-animating
+    // self; the property receiver (lua/autorun/properties/bodygroups.lua:124)
+    // writes through this method after its Filter passed, so an entity that
+    // lost its animating class between open and click must not raise.
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
 
     pAnimating->SetBodygroup( LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bodyGroup" ),
                               LUA_BINDING_ARGUMENT( luaL_checkint, 3, "value" ) );
@@ -172,18 +214,35 @@ LUA_BINDING_BEGIN( CBaseAnimating, GetBodyGroupsAsString, "class", "Get the body
 }
 LUA_BINDING_END( "string", "The bodygroup values as a string of hexadecimal values" )
 
+// HL2SB (2026-10-16) GMod compat: the tolerant variant of the GMod contract,
+// proven against the reference binaries: when the self is not an animating
+// entity or its studio model is not loaded, GetBodyGroups answers an EMPTY
+// TABLE (client.dll 0x180112D40 and server.dll 0x18018D2C0/FUN_18018CFA0 both
+// build the empty table on that path), never an error and never nil.  The C
+// menu's bodygroups filter (lua/autorun/properties/bodygroups.lua:19) runs on
+// worldspawn whenever the player right-clicks the map, and duplicator.lua:187
+// relies on the same contract: with the old strict luaL_checkanimating the
+// whole property menu build aborted here with "calling 'GetBodyGroups' on bad
+// self (CBaseAnimating expected, got NULL entity)".
 LUA_BINDING_BEGIN( CBaseAnimating, GetBodyGroups, "class", "Get the bodygroup values as a table" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
 
-    int nMaxGroups = pAnimating->GetNumBodyGroups();
+    if ( pAnimating == NULL )
+    {
+        lua_newtable( L );
+        return 1;
+    }
+
     CStudioHdr *pstudiohdr = pAnimating->GetModelPtr();
 
     if ( !pstudiohdr )
     {
-        luasrc_LuaWarnMsgF( "CBaseAnimating::GetBodyGroups failed: no model\n" );
-        return 0;
+        lua_newtable( L );
+        return 1;
     }
+
+    int nMaxGroups = pAnimating->GetNumBodyGroups();
 
     lua_newtable( L );
 
@@ -237,16 +296,22 @@ LUA_BINDING_END()
 // HL2SB: GMod's Entity:SkinCount (https://wiki.facepunch.com/gmod/Entity:SkinCount).
 // The skin slider of the player model editor builds itself from it
 // (garrysmod/gamemodes/sandbox/gamemode/editor_player.lua:205: mdl.Entity:SkinCount()),
-// and this fork had no way to ask for it - only SetSkin/GetSkin existed.
-// A studio model's skin count is its number of skin families
-// (public/studio.h: CStudioHdr::numskinfamilies(), "numskinfamilies" in the header).
-// Entities without a studio model answer 1, so "<= 1 skins" reads as "no skin slider".
+// HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+// GMod's SkinCount (client.dll 0x180128B60) returns NO values when the self is
+// not an animating entity (the reference's lua/usermessages consumers read
+// that as nil), and pushes 0 when the animating entity has no usable studio
+// model (the 0x180128CAF exit is lua_pushnumber(0)); "model usable" is what
+// the reference tests before reading numskinfamilies at studiohdr+0xE0.
 LUA_BINDING_BEGIN( CBaseAnimating, SkinCount, "class", "Returns the amount of skins the entity has" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
+
     CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
 
-    lua_pushinteger( L, ( pStudioHdr != NULL ) ? pStudioHdr->numskinfamilies() : 1 );
+    lua_pushinteger( L, ( pStudioHdr != NULL ) ? pStudioHdr->numskinfamilies() : 0 );
 
     return 1;
 }
@@ -261,7 +326,15 @@ LUA_BINDING_END( "number", "The amount of skins the entity's model has" )
 // the registration feeds both metatables.
 LUA_BINDING_BEGIN( CBaseAnimating, GetBodygroup, "class", "Get the entity's bodygroup value for the given bodygroup id" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    // HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+    // GMod's GetBodygroup (client.dll 0x180112FA0, server.dll 0x18018D520)
+    // returns NO values for a non-animating self; the engine call itself is
+    // null-model safe (game/shared/animation.cpp: GetBodygroup returns 0).
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
+
     int iGroup = LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bodygroup" );
 
     lua_pushinteger( L, pAnimating->GetBodygroup( iGroup ) );
@@ -270,19 +343,32 @@ LUA_BINDING_BEGIN( CBaseAnimating, GetBodygroup, "class", "Get the entity's body
 }
 LUA_BINDING_END( "integer", "The bodygroup value" )
 
+// HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+// GMod's GetNumBodyGroups (client.dll 0x1801199B0, server.dll 0x180193E90)
+// pushes 0 for a non-animating self.
 LUA_BINDING_BEGIN( CBaseAnimating, GetNumBodyGroups, "class", "Returns the number of bodygroups on the entity's model" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
 
-    lua_pushinteger( L, pAnimating->GetNumBodyGroups() );
+    lua_pushinteger( L, ( pAnimating != NULL ) ? pAnimating->GetNumBodyGroups() : 0 );
 
     return 1;
 }
 LUA_BINDING_END( "integer", "The number of bodygroups" )
 
+// HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+// GMod's GetBodygroupCount (client.dll 0x180112D70) pushes 0 for a
+// non-animating self.
 LUA_BINDING_BEGIN( CBaseAnimating, GetBodygroupCount, "class", "Returns how many values the given bodygroup of the entity's model has" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+    {
+        lua_pushinteger( L, 0 );
+        return 1;
+    }
+
     int iGroup = LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bodygroup" );
 
     lua_pushinteger( L, pAnimating->GetBodygroupCount( iGroup ) );
@@ -291,9 +377,17 @@ LUA_BINDING_BEGIN( CBaseAnimating, GetBodygroupCount, "class", "Returns how many
 }
 LUA_BINDING_END( "integer", "The number of values the bodygroup has" )
 
+// HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+// GMod's GetBodygroupName (client.dll 0x180112E90) returns NO values for a
+// non-animating self; an animating entity without a model answers "" (the
+// engine's ::GetBodygroupName null path).
 LUA_BINDING_BEGIN( CBaseAnimating, GetBodygroupName, "class", "Returns the name of the given bodygroup of the entity's model" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
+
     int iGroup = LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bodygroup" );
 
     lua_pushstring( L, pAnimating->GetBodygroupName( iGroup ) );
@@ -302,9 +396,17 @@ LUA_BINDING_BEGIN( CBaseAnimating, GetBodygroupName, "class", "Returns the name 
 }
 LUA_BINDING_END( "string", "The name of the bodygroup" )
 
+// HL2SB (2026-10-16) GMod compat: tolerant self, like the family above.
+// GMod's FindBodygroupByName (client.dll 0x180111520) returns NO values for a
+// non-animating self; an animating entity without a model answers -1 (the
+// engine's ::FindBodygroupByName null path).
 LUA_BINDING_BEGIN( CBaseAnimating, FindBodygroupByName, "class", "Returns the bodygroup id with the given name on the entity's model" )
 {
-    lua_CBaseAnimating *pAnimating = LUA_BINDING_ARGUMENT( luaL_checkanimating, 1, "entity" );
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
+
     const char *pName = LUA_BINDING_ARGUMENT( luaL_checkstring, 2, "name" );
 
     lua_pushinteger( L, pAnimating->FindBodygroupByName( pName ) );
@@ -312,6 +414,116 @@ LUA_BINDING_BEGIN( CBaseAnimating, FindBodygroupByName, "class", "Returns the bo
     return 1;
 }
 LUA_BINDING_END( "integer", "The bodygroup id" )
+
+// HL2SB (2026-10-16) GMod compat: Entity:GetBoneParent( bone ) -- the studio
+// bone's parent index, -1 when there is no parent or the bone is out of
+// range.  The bone-manipulation widget walks parents to accumulate inherited
+// scales and drags from this value
+// (lua/autorun/properties/bone_manipulate.lua:166/242/226); those widget
+// methods run in BOTH realms, and the property menu's server Receive chain
+// re-runs the same file, so the method must exist on both metatables.
+// Reference behavior (GMod win64): client.dll 0x1801138C0 and server.dll
+// 0x18018DDC0 are the same shape -- a non-animating self or an out-of-range
+// bone answers -1, never an error.  This used to live client-side only.
+LUA_BINDING_BEGIN( CBaseAnimating, GetBoneParent, "class", "Get the parent bone index of the given bone" )
+{
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+    {
+        lua_pushinteger( L, -1 );
+        return 1;
+    }
+
+    int nBone = LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bone" );
+
+    CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+
+    if ( pStudioHdr == NULL || nBone < 0 || nBone >= pStudioHdr->numbones() )
+    {
+        lua_pushinteger( L, -1 );
+        return 1;
+    }
+
+    lua_pushinteger( L, pStudioHdr->pBone( nBone )->parent );
+
+    return 1;
+}
+LUA_BINDING_END( "integer", "The parent bone index, -1 for a root bone" )
+
+// HL2SB (2026-10-16) GMod compat: Entity:BoneHasFlag( bone, flag ) -- whether
+// the studio bone carries the given BONE_USED_BY_* flag.  The bone-manipulation
+// widget filters the drawable bones with it
+// (lua/entities/widget_bones.lua:154 `if ( !ent:BoneHasFlag( k,
+// BONE_USED_BY_VERTEX_LOD0 ) ) then continue end`), and that widget's Setup
+// runs from the property's server Receive chain, so the method must exist on
+// both metatables.
+// Reference behavior (GMod win64 client.dll 0x18010FD20 / server.dll
+// 0x18018A200): a non-animating self or an out-of-range bone returns NO values;
+// otherwise it pushes (boneflags[ bone ] & flag) != 0.
+LUA_BINDING_BEGIN( CBaseAnimating, BoneHasFlag, "class", "Returns whether the given bone has the given flag set" )
+{
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
+
+    int nBone = LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bone" );
+
+    CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+
+    if ( pStudioHdr == NULL || nBone < 0 || nBone >= pStudioHdr->numbones() )
+        return 0;
+
+    int nFlag = LUA_BINDING_ARGUMENT( luaL_checkint, 3, "flag" );
+
+    lua_pushboolean( L, ( pStudioHdr->boneFlags( nBone ) & nFlag ) != 0 );
+
+    return 1;
+}
+LUA_BINDING_END( "boolean", "Whether the bone has the flag" )
+
+// HL2SB (2026-10-16) GMod compat: Entity:BoneLength( bone ) -- the distance
+// between the bone and its parent bone.  The bone-manipulation widget sizes
+// every bone button from it (lua/entities/widget_bones.lua:100/166), same
+// widget chain as above.
+// Reference behavior (GMod win64 client.dll 0x1801100E0 / server.dll
+// 0x18018A5D0): a non-animating self or an out-of-range bone returns NO
+// values; a bone with no parent (parent < 1) answers 0; otherwise the
+// distance between the two bone positions, computed through the same
+// GetBonePosition the GetBonePosition binding uses.
+LUA_BINDING_BEGIN( CBaseAnimating, BoneLength, "class", "Returns the length of the bone (distance between the bone and its parent)" )
+{
+    lua_CBaseAnimating *pAnimating = HL2SB_AnimatingArg( L, 1 );
+
+    if ( pAnimating == NULL )
+        return 0;
+
+    int nBone = LUA_BINDING_ARGUMENT( luaL_checkint, 2, "bone" );
+
+    CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+
+    if ( pStudioHdr == NULL || nBone < 0 || nBone >= pStudioHdr->numbones() )
+        return 0;
+
+    const int nParent = pStudioHdr->pBone( nBone )->parent;
+
+    if ( nParent < 1 )
+    {
+        lua_pushinteger( L, 0 );
+        return 1;
+    }
+
+    Vector vecBonePos, vecParentPos;
+    QAngle angDummy;
+    pAnimating->GetBonePosition( nBone, vecBonePos, angDummy );
+    pAnimating->GetBonePosition( nParent, vecParentPos, angDummy );
+
+    lua_pushnumber( L, ( vecParentPos - vecBonePos ).Length() );
+
+    return 1;
+}
+LUA_BINDING_END( "number", "The length of the bone" )
 
 LUA_BINDING_BEGIN( CBaseAnimating, GetFlexBounds, "class", "Returns the min and max values for the target flex controller" )
 {

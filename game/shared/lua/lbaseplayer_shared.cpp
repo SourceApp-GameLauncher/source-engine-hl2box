@@ -160,6 +160,18 @@ static int CBasePlayer_CmdKeyDown (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-16) GMod compat: CUserCmd:GetMouseWheel().
+//
+// Reference behavior (GMod win64): both realms answer the command's
+// signed mouse-wheel step.  The drive camera zoom reads it every frame
+// (lua/drive/drive_sandbox.lua:61 `cmd:GetMouseWheel() * -0.5`).  This engine's
+// CUserCmd carries m_mouseWheel (usercmd.h:159, a short), which the packet
+// already ships; the table snapshot just publishes the field here.
+static int CBasePlayer_CmdGetMouseWheel (lua_State *L) {
+  lua_getfield(L, 1, "mousewheel");
+  return 1;
+}
+
 static int CBasePlayer_CmdGetMouseX (lua_State *L) { lua_getfield(L, 1, "mousedx"); return 1; }
 static int CBasePlayer_CmdGetMouseY (lua_State *L) { lua_getfield(L, 1, "mousedy"); return 1; }
 static int CBasePlayer_CmdGetButtons (lua_State *L) { lua_getfield(L, 1, "buttons"); return 1; }
@@ -230,6 +242,7 @@ void HL2SB_PushUserCmdTable (lua_State *L, const CUserCmd *pCmd) {
   lua_pushinteger(L, pCmd->weaponselect);   lua_setfield(L, -2, "weaponselect");
   lua_pushinteger(L, pCmd->mousedx);        lua_setfield(L, -2, "mousedx");
   lua_pushinteger(L, pCmd->mousedy);        lua_setfield(L, -2, "mousedy");
+  lua_pushinteger(L, pCmd->m_mouseWheel);   lua_setfield(L, -2, "mousewheel");
   lua_pushnumber(L, pCmd->forwardmove);     lua_setfield(L, -2, "forwardmove");
   lua_pushnumber(L, pCmd->sidemove);        lua_setfield(L, -2, "sidemove");
   lua_pushnumber(L, pCmd->upmove);          lua_setfield(L, -2, "upmove");
@@ -238,6 +251,7 @@ void HL2SB_PushUserCmdTable (lua_State *L, const CUserCmd *pCmd) {
   lua_pushcfunction(L, CBasePlayer_CmdKeyDown);        lua_setfield(L, -2, "KeyDown");
   lua_pushcfunction(L, CBasePlayer_CmdGetMouseX);      lua_setfield(L, -2, "GetMouseX");
   lua_pushcfunction(L, CBasePlayer_CmdGetMouseY);      lua_setfield(L, -2, "GetMouseY");
+  lua_pushcfunction(L, CBasePlayer_CmdGetMouseWheel);  lua_setfield(L, -2, "GetMouseWheel");
   lua_pushcfunction(L, CBasePlayer_CmdGetButtons);     lua_setfield(L, -2, "GetButtons");
   lua_pushcfunction(L, CBasePlayer_CmdGetImpulse);     lua_setfield(L, -2, "GetImpulse");
   lua_pushcfunction(L, CBasePlayer_CmdGetViewAngles);  lua_setfield(L, -2, "GetViewAngles");
@@ -621,6 +635,33 @@ static int CBasePlayer_GetNextAttack (lua_State *L) {
 static int CBasePlayer_GetObserverMode (lua_State *L) {
   lua_pushinteger(L, luaL_checkplayer(L, 1)->GetObserverMode());
   return 1;
+}
+
+// HL2SB (2026-10-16) GMod compat: Player:SetObserverMode( mode ).
+//
+// Reference behavior (GMod win64): the binding clamps
+// the argument to the engine's OBS_MODE range (negative / >= 7 is dropped,
+// the write happens behind the clamp) and stores it on the player.  The drive
+// system saves the pre-drive observer mode and restores it afterwards
+// (lua/includes/modules/drive.lua:190/294, driven from GM:StartEntityDriving /
+// GM:EndEntityDriving), and lua/drive/drive_sandbox.lua sets OBS_MODE_CHASE
+// while its move hooks run; the fork's player meta only carried the getter, so
+// every drive entry died on the missing method.
+//
+// The fork routes through the engine's own SetObserverMode (server:
+// player.cpp:2448, client: c_baseplayer.cpp:609).  Documented deviation: the
+// SERVER version additionally applies the mp_forcecamera game-rules
+// restriction for modes past OBS_MODE_FIXED on a team, whereas the reference
+// writes the raw member -- kept because the fork must not write a protected
+// engine member (and the restricted mode is still a valid spectator mode).
+static int CBasePlayer_SetObserverMode (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  const int nMode = luaL_checkint(L, 2);
+
+  if (nMode >= OBS_MODE_NONE && nMode < NUM_OBSERVER_MODES) {
+    pPlayer->SetObserverMode(nMode);
+  }
+  return 0;
 }
 
 static int CBasePlayer_GetObserverTarget (lua_State *L) {
@@ -2629,6 +2670,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"GetLastKnownPlaceName", CBasePlayer_GetLastKnownPlaceName},
   {"GetNextAttack", CBasePlayer_GetNextAttack},
   {"GetObserverMode", CBasePlayer_GetObserverMode},
+  {"SetObserverMode", CBasePlayer_SetObserverMode},
   {"GetObserverTarget", CBasePlayer_GetObserverTarget},
   {"GetVehicleEntity", CBasePlayer_GetVehicleEntity},
   {"GetOffset_m_Local", CBasePlayer_GetOffset_m_Local},
@@ -2925,6 +2967,34 @@ static int MoveData_KeyDown (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-16) GMod compat: CMoveData:KeyReleased / SetMoveAngles /
+// SetUpSpeed.
+//
+// Reference behavior (GMod win64): KeyReleased answers
+// `(buttons & b) == 0 && (oldButtons & b) != 0`; SetMoveAngles writes the
+// angle argument into the move-angles triplet (this engine keeps m_vecAngles
+// there); SetUpSpeed writes the up wish-speed field.
+// This CMoveData predates GMod's extra m_flUpSpeed member and stores the up
+// wish speed in m_flUpMove, which is the slot that actually feeds movement,
+// so SetUpSpeed maps onto it (the same field GetUpSpeed already answers).
+// The drive system consumes all three from its move hooks
+// (lua/drive/drive_sandbox.lua: mv:KeyReleased at :82/:99, mv:SetMoveAngles
+// at :91, mv:SetUpSpeed at :138).
+static int MoveData_KeyReleased (lua_State *L) {
+  CMoveData *pMove = HL2SB_CheckMoveData(L, 1);
+  const int nBit = luaL_checkint(L, 2);
+  lua_pushboolean(L, (pMove->m_nButtons & nBit) == 0 && (pMove->m_nOldButtons & nBit) != 0);
+  return 1;
+}
+static int MoveData_SetMoveAngles (lua_State *L) {
+  HL2SB_CheckMoveData(L, 1)->m_vecAngles = luaL_checkangle(L, 2);
+  return 0;
+}
+static int MoveData_SetUpSpeed (lua_State *L) {
+  HL2SB_CheckMoveData(L, 1)->m_flUpMove = luaL_checknumber(L, 2);
+  return 0;
+}
+
 static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"GetButtons",          MoveData_GetButtons},
   {"SetButtons",          MoveData_SetButtons},
@@ -2954,7 +3024,10 @@ static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"GetSideSpeed",        MoveData_GetSideSpeed},
   {"GetUpSpeed",          MoveData_GetUpSpeed},
   {"GetMoveAngles",       MoveData_GetMoveAngles},
+  {"SetMoveAngles",       MoveData_SetMoveAngles},
+  {"SetUpSpeed",          MoveData_SetUpSpeed},
   {"KeyDown",             MoveData_KeyDown},
+  {"KeyReleased",         MoveData_KeyReleased},
   {NULL, NULL}
 };
 

@@ -288,8 +288,16 @@ static int luasrc_ConCommand (lua_State *L) {
 
     // Complain about duplicately defined ConCommand names...
     lookup = m_GameUIConCommandDatabase.Find( pName );
-    if ( lookup != m_GameUIConCommandDatabase.InvalidIndex() || cvar->FindCommand(pName) )
+    if ( lookup != m_GameUIConCommandDatabase.InvalidIndex() )
     {
+      // A previous Lua registration owns this name; re-adding just replaces
+      // the Lua-side callback, the ConCommand object stays.
+      lua_pushconcommand(L, cvar->FindCommand(pName));
+      return 1;
+    }
+    if ( cvar->FindCommand(pName) )
+    {
+      Warning( "concommand.Add( \"%s\" ) - an engine command already owns this name; the Lua callback will never be executed\n", pName );
       lua_pushconcommand(L, cvar->FindCommand(pName));
       return 1;
     }
@@ -297,8 +305,20 @@ static int luasrc_ConCommand (lua_State *L) {
 #endif
     // Complain about duplicately defined ConCommand names...
     unsigned short lookup = m_ConCommandDatabase.Find( pName );
-    if ( lookup != m_ConCommandDatabase.InvalidIndex() || cvar->FindCommand(pName) )
+    if ( lookup != m_ConCommandDatabase.InvalidIndex() )
     {
+      // A previous Lua registration owns this name; re-adding just replaces
+      // the Lua-side callback, the ConCommand object stays.
+      lua_pushconcommand(L, cvar->FindCommand(pName));
+      return 1;
+    }
+    // HL2SB: an ENGINE command owns this name.  Console execution runs the
+    // engine callback and never reaches the Lua concommand dispatcher, so
+    // the Lua callback registered here is dead on arrival - say so instead
+    // of failing silently.
+    if ( cvar->FindCommand(pName) )
+    {
+      Warning( "concommand.Add( \"%s\" ) - an engine command already owns this name; the Lua callback will never be executed\n", pName );
       lua_pushconcommand(L, cvar->FindCommand(pName));
       return 1;
     }

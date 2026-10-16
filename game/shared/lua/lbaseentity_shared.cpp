@@ -2315,6 +2315,63 @@ static int CBaseEntity_SetAbsOrigin (lua_State *L) {
   return 0;
 }
 
+/*
+** HL2SB (2026-10-16) GMod compat: Entity:GetNetworkOrigin() /
+** Entity:SetNetworkOrigin( pos ).
+**
+** Reference behavior (GMod win64):
+**   the server getter pushes the entity's abs-origin vector;
+**   the server setter reads the position argument and calls the same setter
+**     body SetAbsOrigin uses (the "SetAbsOrigin( %f %f %f ): Ignoring
+**     unreasonable position" function);
+**   the client getter/setter read and write the entity's networked-origin
+**     vector, i.e. the real m_vecNetworkOrigin-style field.
+**
+** This engine carries the same split: the server CBaseEntity has no separate
+** network origin (its networked origin IS the abs origin), while the client
+** C_BaseEntity has m_vecNetworkOrigin with the inline accessors
+** (c_baseentity.h:1647/1817).  The drive system reads
+** Entity:GetNetworkOrigin() every StartMove and writes SetNetworkOrigin from
+** FinishMove (lua/drive/drive_sandbox.lua:89/195, drive_noclip.lua:29/108) --
+** without the pair every drive-mode move died on the missing method.
+*/
+static int CBaseEntity_GetNetworkOrigin (lua_State *L) {
+#ifdef CLIENT_DLL
+  lua_pushvector(L, luaL_checkentity(L, 1)->GetNetworkOrigin());
+#else
+  lua_pushvector(L, luaL_checkentity(L, 1)->GetAbsOrigin());
+#endif
+  return 1;
+}
+
+static int CBaseEntity_SetNetworkOrigin (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const Vector &vecOrigin = luaL_checkvector(L, 2);
+#ifdef CLIENT_DLL
+  pEntity->SetNetworkOrigin(vecOrigin);
+#else
+  pEntity->SetAbsOrigin(vecOrigin);
+#endif
+  return 0;
+}
+
+/*
+** HL2SB (2026-10-16) GMod compat: Entity:GetParentAttachment().
+**
+** Reference behavior: the GMod server binding answers the entity's
+** m_iParentAttachment byte.  This engine has the same
+** field with the same inline accessor on both realms
+** (baseentity.h:1983 / c_baseentity.h:2115) and already exposes
+** Entity:SetParent( parent, attachment ) with the -1 "keep current" default
+** (lbaseentity_shared.cpp, GMod parity pass).  The GMod bone-manipulation
+** widget axis script reads the attachment back off its parent
+** (widget_bonemanip_*'s CalcAbsolutePosition / OnArrowDragged).
+*/
+static int CBaseEntity_GetParentAttachment (lua_State *L) {
+  lua_pushinteger(L, luaL_checkentity(L, 1)->GetParentAttachment());
+  return 1;
+}
+
 // HL2SB (2026-09-21): GMod's Entity:SetPos moves the entity's PHYSICS OBJECT
 // with it (wiki: everything except ragdolls).  This was a bare SetAbsOrigin,
 // which leaves the vphysics object at the old position -- and for a
@@ -4734,29 +4791,42 @@ static int CBaseEntity_IsConstraint (lua_State *L) {
 // GMod runs the string on that player's client.  The transport is the same
 // one GMod's own trio (SendLua / BroadcastLua / lua_run_cl) shares: the code
 // is stuffed to the client as a lua_run_cl console command, and the client's
-// own lua_run_cl handler runs it against its local state.  Same limitation
-// as GMod: the code must be a single console line (no raw newlines).  A
-// code-less or non-player target is ignored.
+// own lua_run_cl handler runs it against its local state.  The single-line
+// and console-size limits are ours (the stufftext pipe); the reference
+// carries the code in a binary message, so multi-line and larger payloads
+// are fine there.  A non-player target errors, like the reference, and any
+// code containing the reference's anti-freeze substring is dropped unsent.
 //-----------------------------------------------------------------------------
 static int CBaseEntity_SendLua (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  const char *pszCode = luaL_checkstring(L, 2);
 
 #ifndef CLIENT_DLL
-  if (pEntity != NULL && pEntity->IsPlayer() && pszCode != NULL && engine != NULL)
+  if (pEntity == NULL || !pEntity->IsPlayer())
+    return luaL_error(L, "Player entity is NULL or not a player (!?)");
+
+  const char *pszCode = luaL_checkstring(L, 2);
+
+  // Reference anti-freeze: code containing this substring never gets sent.
+  if (strstr( pszCode, "while true do end" ) != NULL)
+    return 0;
+
+  if (engine != NULL)
     engine->ClientCommand(pEntity->edict(), "lua_run_cl %s", pszCode);
 #endif
 
   return 0;
 }
 
-#ifndef CLIENT_DLL
 //-----------------------------------------------------------------------------
-// HL2SB GMod compat: BroadcastLua( code ) (server realm).
+// HL2SB GMod compat: BroadcastLua( code ).
 //
-// SendLua to every connected player, the same transport as above.
+// Server realm sends to every connected player, the same transport as
+// SendLua above.  Client realm keeps the name as a no-op - the reference
+// registers the binding on both realms and the client half does nothing,
+// so plugins that call it there keep working instead of dying on a nil.
 //-----------------------------------------------------------------------------
 static int luasrc_BroadcastLua (lua_State *L) {
+#ifndef CLIENT_DLL
   const char *pszCode = luaL_checkstring(L, 1);
   if (pszCode == NULL || engine == NULL)
     return 0;
@@ -4766,9 +4836,9 @@ static int luasrc_BroadcastLua (lua_State *L) {
     if (pPlayer != NULL)
       engine->ClientCommand(pPlayer->edict(), "lua_run_cl %s", pszCode);
   }
+#endif
   return 0;
 }
-#endif
 
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: Entity:GetSaveTable(), Entity:GetInternalVariable( name )
@@ -5632,6 +5702,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetAbsAngles", CBaseEntity_GetAbsAngles},
   {"GetAbsOrigin", CBaseEntity_GetAbsOrigin},
   {"GetAbsVelocity", CBaseEntity_GetAbsVelocity},
+  {"GetNetworkOrigin", CBaseEntity_GetNetworkOrigin},
+  {"SetNetworkOrigin", CBaseEntity_SetNetworkOrigin},
+  {"GetParentAttachment", CBaseEntity_GetParentAttachment},
   // HL2SB GMod compat: Entity:GetVelocity() is the spelling GMod scripts and
   // the wiki use (Entity:GetAbsVelocity is the rarer twin).  ent_nyan_bomb's
   // ENT:Draw opens with self:GetVelocity() -- without this the draw died on
@@ -6152,11 +6225,10 @@ static const luaL_Reg ents_funcs[] = {
 static const luaL_Reg CBaseEntity_funcs[] = {
   {"CreateEntityByName", luasrc_CreateEntityByName},
   {"EyePos", luasrc_EyePos},
-#ifndef CLIENT_DLL
-  // HL2SB: GMod's BroadcastLua( code ) (server realm) -- SendLua to every
-  // connected player through the same lua_run_cl transport.
+  // HL2SB: GMod's BroadcastLua( code ) -- server realm broadcasts to every
+  // connected player through the same lua_run_cl transport; client realm
+  // is a no-op (see the function above).
   {"BroadcastLua", luasrc_BroadcastLua},
-#endif
   /* SetEyeTarget used to be here.  It is an Entity METHOD in GMod
   ** (https://wiki.facepunch.com/gmod/Entity:SetEyeTarget), not a global, and as a global
   ** it could never answer `ent:SetEyeTarget( pos )` - it now lives in CBaseEntitymeta

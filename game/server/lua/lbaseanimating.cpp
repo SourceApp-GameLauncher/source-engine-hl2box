@@ -146,9 +146,28 @@ static int CBaseAnimating_GetBodygroupName (lua_State *L) {
 }
 
 static int CBaseAnimating_GetBonePosition (lua_State *L) {
+  // HL2SB (2026-10-16) GMod compat: tolerant self, like the predicate pair
+  // below.  GMod win64 server.dll 0x18018DF90 pushes nothing (falls through to
+  // `return 0`) for a non-animating self and for a bone index outside the
+  // model; the strict luaL_checkanimating here raised "CBaseAnimating
+  // expected, got NULL entity" for worldspawn, which the bone-manipulation
+  // widget reaches through the Entity metatable chain
+  // (lua/includes/extensions/gmod_globals.lua installs it).  The engine
+  // function itself leaves the out-vectors uninitialized on a bad bone, so the
+  // range check also keeps that garbage from being pushed.
+  CBaseAnimating *pEntity = lua_toanimating(L, 1);
+  if ( pEntity == NULL )
+    return 0;
+
+  const int iBone = luaL_checkinteger(L, 2);
+
+  CStudioHdr *pHdr = pEntity->GetModelPtr();
+  if ( pHdr == NULL || iBone < 0 || iBone >= pHdr->numbones() )
+    return 0;
+
   Vector origin;
   QAngle angles;
-  luaL_checkanimating(L, 1)->GetBonePosition(luaL_checkinteger(L, 2), origin, angles);
+  pEntity->GetBonePosition(iBone, origin, angles);
   lua_pushvector(L, origin);
   lua_pushangle(L, angles);
   return 2;
@@ -323,13 +342,21 @@ static int CBaseAnimating_IsActivityFinished (lua_State *L) {
   return 1;
 }
 
+// HL2SB (2026-10-16) GMod compat: tolerant self for the two predicates the
+// property menu's server-side Receive chain runs (ignite/extinguish call their
+// Filter again with the entity a client sent).  GMod win64 server.dll
+// 0x1801982D0 IsOnFire / 0x180198500 IsRagdoll: non-animating self -> push
+// false, never raise (both bodies open with the GetBaseAnimating check and
+// fall into a lua_pushboolean(0) tail).
 static int CBaseAnimating_IsOnFire (lua_State *L) {
-  lua_pushboolean(L, luaL_checkanimating(L, 1)->IsOnFire());
+  CBaseAnimating *pEntity = lua_toanimating(L, 1);
+  lua_pushboolean(L, pEntity != NULL && pEntity->IsOnFire());
   return 1;
 }
 
 static int CBaseAnimating_IsRagdoll (lua_State *L) {
-  lua_pushboolean(L, luaL_checkanimating(L, 1)->IsRagdoll());
+  CBaseAnimating *pEntity = lua_toanimating(L, 1);
+  lua_pushboolean(L, pEntity != NULL && pEntity->IsRagdoll());
   return 1;
 }
 
@@ -881,10 +908,26 @@ static int CBaseAnimating_Ignite (lua_State *L) {
   return 0;
 }
 
+// HL2SB (2026-10-16) GMod compat: Entity:Extinguish() -- put out the fire.  The
+// reference's shipped extinguish property calls it straight from its server
+// Receive (lua/autorun/properties/ignite.lua, the "extinguish" entry).  This
+// goes through the stock CBaseAnimating::Extinguish (baseanimating.h), which
+// clears FL_ONFIRE; the attached EntityFlame notices the flag dropping on its
+// next think and removes itself, ending the burn - the same chain the reference
+// inherits from Source.
+static int CBaseAnimating_Extinguish (lua_State *L) {
+  CBaseAnimating *pAnim = luaL_checkanimating( L, 1 );
+  if ( pAnim == NULL )
+    return 0;
+  pAnim->Extinguish();
+  return 0;
+}
+
 static const luaL_Reg CBaseAnimatingmeta[] = {
   {"CalculateIKLocks", CBaseAnimating_CalculateIKLocks},
   {"RestartGesture", CBaseAnimating_RestartGesture},
   {"Ignite", CBaseAnimating_Ignite},
+  {"Extinguish", CBaseAnimating_Extinguish},
   {"ComputeEntitySpaceHitboxSurroundingBox", CBaseAnimating_ComputeEntitySpaceHitboxSurroundingBox},
   {"ComputeHitboxSurroundingBox", CBaseAnimating_ComputeHitboxSurroundingBox},
   {"DoMuzzleFlash", CBaseAnimating_DoMuzzleFlash},
