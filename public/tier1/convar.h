@@ -120,6 +120,8 @@ public:
 	virtual bool				IsFlagSet( int flag ) const;
 	// Set flag
 	virtual void				AddFlags( int flags );
+	virtual void				RemoveFlags( int flags );
+	virtual int					GetFlags( void ) const;
 
 	// Return name of cvar
 	virtual const char			*GetName( void ) const;
@@ -136,9 +138,9 @@ public:
 	// Returns the DLL identifier
 	virtual CVarDLLIdentifier_t	GetDLLIdentifier() const;
 
-protected:
-	virtual void				CreateBase( const char *pName, const char *pHelpString = 0, 
+	virtual void				Create( const char *pName, const char *pHelpString = 0, 
 									int flags = 0 );
+	virtual void				CreateBase( const char *pName, const char *pHelpString = 0, int flags = 0 );
 
 	// Used internally by OneTimeInit to initialize/shutdown
 	virtual void				Init();
@@ -343,30 +345,35 @@ public:
 
 	virtual						~ConVar( void );
 
-	virtual bool				IsFlagSet( int flag ) const;
-	virtual const char*			GetHelpText( void ) const;
-	virtual bool				IsRegistered( void ) const;
-	virtual const char			*GetName( void ) const;
-	virtual void				AddFlags( int flags );
 	virtual	bool				IsCommand( void ) const;
+	virtual bool				IsFlagSet( int flag ) const;
+	virtual void				AddFlags( int flags );
+	virtual void				RemoveFlags( int flags );
+	virtual int					GetFlags( void ) const;
+	virtual const char			*GetName( void ) const;
+	virtual const char			*GetHelpText( void ) const;
+	virtual bool				IsRegistered( void ) const;
+	virtual void				Init();
 
-	// Install a change callback (there shouldn't already be one....)
-	void InstallChangeCallback( FnChangeCallback_t callback );
-
-	// Retrieve value
-	FORCEINLINE_CVAR float			GetFloat( void ) const;
-	FORCEINLINE_CVAR int			GetInt( void ) const;
-	FORCEINLINE_CVAR bool			GetBool() const {  return !!GetInt(); }
-	FORCEINLINE_CVAR char const	   *GetString( void ) const;
-
-	// Any function that allocates/frees memory needs to be virtual or else you'll have crashes
-	//  from alloc/free across dll/exe boundaries.
-	
-	// These just call into the IConCommandBaseAccessor to check flags and set the var (which ends up calling InternalSetValue).
+	// ConVar virtuals in exact GMod 64-bit order:
+	virtual float				GetFloat( void ) const;
+	virtual int					GetInt( void ) const;
 	virtual void				SetValue( const char *value );
 	virtual void				SetValue( float value );
 	virtual void				SetValue( int value );
-		
+	virtual void				SetValue( Color value );
+	virtual bool				ClampValue( float& value );
+	virtual void				ChangeStringValue( const char *tempVal, float flOldValue );
+	virtual void				Create( const char *pName, const char *pDefaultValue, int flags = 0,
+									const char *pHelpString = 0, bool bMin = false, float fMin = 0.0,
+									bool bMax = false, float fMax = false, FnChangeCallback_t callback = 0 );
+
+	// Install a change callback
+	void InstallChangeCallback( FnChangeCallback_t callback );
+
+	FORCEINLINE_CVAR bool			GetBool() const {  return !!GetInt(); }
+	FORCEINLINE_CVAR char const	   *GetString( void ) const;
+
 	// Reset to default value
 	void						Revert( void );
 
@@ -389,21 +396,7 @@ private:
 	// For CVARs marked FCVAR_NEVER_AS_STRING
 	virtual void				InternalSetFloatValue( float fNewValue, bool bForce = false );
 	virtual void				InternalSetIntValue( int nValue );
-
-	virtual bool				ClampValue( float& value );
-	virtual void				ChangeStringValue( const char *tempVal, float flOldValue );
-
-	void						Create( const char *pName, const char *pDefaultValue, int flags = 0,
-									const char *pHelpString = 0, bool bMin = false, float fMin = 0.0,
-									bool bMax = false, float fMax = 0.0, 
-									bool bCompMin = false, float fCompMin = 0.0, 
-									bool bCompMax = false, float fCompMax = 0.0,
-									FnChangeCallback_t callback = 0 );
-
-
-	// Used internally by OneTimeInit to initialize.
-	virtual void				Init();
-	int GetFlags() { return m_pParent->m_nFlags; }
+	virtual void				InternalSetColorValue( Color value );
 private:
 
 	// This either points to "this" or it points to the original declaration of a ConVar.
@@ -417,49 +410,23 @@ private:
 	// Value
 	// Dynamically allocated
 	char						*m_pszString;
-	int							m_StringLength;
+		int							m_StringLength;
 
-	// Values
-	float						m_fValue;
-	int							m_nValue;
+		// Values
+		float						m_fValue;
+		int							m_nValue;
 
-	// Min/Max values
-	bool						m_bHasMin;
-	float						m_fMinVal;
-	bool						m_bHasMax;
-	float						m_fMaxVal;
+		int							m_bPaddingGMod;
 
-	// Min/Max values for competitive.
-	bool						m_bHasCompMin;
-	float						m_fCompMinVal;
-	bool						m_bHasCompMax;
-	float						m_fCompMaxVal;
-
-	bool						m_bCompetitiveRestrictions;
-
+		// Min/Max values
+		bool						m_bHasMin;
+		float						m_fMinVal;
+		bool						m_bHasMax;
+		float						m_fMaxVal;
 	
-	// Call this function when ConVar changes
-	FnChangeCallback_t			m_fnChangeCallback;
-};
-
-
-//-----------------------------------------------------------------------------
-// Purpose: Return ConVar value as a float
-// Output : float
-//-----------------------------------------------------------------------------
-FORCEINLINE_CVAR float ConVar::GetFloat( void ) const
-{
-	return m_pParent->m_fValue;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Return ConVar value as an int
-// Output : int
-//-----------------------------------------------------------------------------
-FORCEINLINE_CVAR int ConVar::GetInt( void ) const 
-{
-	return m_pParent->m_nValue;
-}
+		// Call this function when ConVar changes
+		CUtlVector<FnChangeCallback_t> m_fnChangeCallbacks;
+	};
 
 
 //-----------------------------------------------------------------------------
@@ -480,13 +447,7 @@ FORCEINLINE_CVAR const char *ConVar::GetString( void ) const
 //-----------------------------------------------------------------------------
 FORCEINLINE_CVAR bool ConVar::IsCompetitiveRestricted() const
 {
-	const int nFlags = m_pParent->m_nFlags;
-
-	const bool bHasCompSettings = m_pParent->m_bHasCompMin || m_pParent->m_bHasCompMax;
-	const bool bClientCanAdjust = ( nFlags & ( FCVAR_ARCHIVE | FCVAR_ALLOWED_IN_COMPETITIVE ) ) != 0;
-	const bool bInternalUseOnly = ( nFlags & ( FCVAR_HIDDEN | FCVAR_DEVELOPMENTONLY | FCVAR_INTERNAL_USE | FCVAR_GAMEDLL | FCVAR_REPLICATED | FCVAR_CHEAT ) ) != 0;
-
-	return bHasCompSettings || !( bClientCanAdjust || bInternalUseOnly );
+	return false;
 }
 
 

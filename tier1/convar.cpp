@@ -187,6 +187,11 @@ void ConCommandBase::CreateBase( const char *pName, const char *pHelpString /*= 
 	}
 }
 
+void ConCommandBase::Create( const char *pName, const char *pHelpString /*= 0*/, int flags /*= 0*/ )
+{
+	CreateBase( pName, pHelpString, flags );
+}
+
 
 //-----------------------------------------------------------------------------
 // Purpose: Used internally by OneTimeInit to initialize.
@@ -239,6 +244,16 @@ void ConCommandBase::AddFlags( int flags )
 #ifdef ALLOW_DEVELOPMENT_CVARS
 	m_nFlags &= ~FCVAR_DEVELOPMENTONLY;
 #endif
+}
+
+void ConCommandBase::RemoveFlags( int flags )
+{
+	m_nFlags &= ~flags;
+}
+
+int ConCommandBase::GetFlags( void ) const
+{
+	return m_nFlags;
 }
 
 
@@ -644,7 +659,7 @@ bool ConCommand::CanAutoComplete( void )
 //-----------------------------------------------------------------------------
 ConVar::ConVar( const char *pName, const char *pDefaultValue, int flags /* = 0 */ )
 {
-	Create( pName, pDefaultValue, flags );
+	Create( pName, pDefaultValue, flags, (const char *)NULL );
 }
 
 ConVar::ConVar( const char *pName, const char *pDefaultValue, int flags, const char *pHelpString )
@@ -659,17 +674,18 @@ ConVar::ConVar( const char *pName, const char *pDefaultValue, int flags, const c
 
 ConVar::ConVar( const char *pName, const char *pDefaultValue, int flags, const char *pHelpString, FnChangeCallback_t callback )
 {
-	Create( pName, pDefaultValue, flags, pHelpString, false, 0.0, false, 0.0, false, 0.0, false, 0.0, callback );
+	Create( pName, pDefaultValue, flags, pHelpString, false, 0.0f, false, 0.0f, callback );
 }
 
 ConVar::ConVar( const char *pName, const char *pDefaultValue, int flags, const char *pHelpString, bool bMin, float fMin, bool bMax, float fMax, FnChangeCallback_t callback )
 {
-	Create( pName, pDefaultValue, flags, pHelpString, bMin, fMin, bMax, fMax, false, 0.0, false, 0.0, callback );
+	Create( pName, pDefaultValue, flags, pHelpString, bMin, fMin, bMax, fMax, callback );
 }
 
 ConVar::ConVar( const char *pName, const char *pDefaultValue, int flags, const char *pHelpString, bool bMin, float fMin, bool bMax, float fMax, bool bCompMin, float fCompMin, bool bCompMax, float fCompMax, FnChangeCallback_t callback )
 {
-	Create( pName, pDefaultValue, flags, pHelpString, bMin, fMin, bMax, fMax, bCompMin, fCompMin, bCompMax, fCompMax, callback );
+	(void)bCompMin; (void)fCompMin; (void)bCompMax; (void)fCompMax;
+	Create( pName, pDefaultValue, flags, pHelpString, bMin, fMin, bMax, fMax, callback );
 }
 
 
@@ -691,14 +707,11 @@ ConVar::~ConVar( void )
 //-----------------------------------------------------------------------------
 void ConVar::InstallChangeCallback( FnChangeCallback_t callback )
 {
-	Assert( !m_pParent->m_fnChangeCallback || !callback );
-	m_pParent->m_fnChangeCallback = callback;
+	Assert( callback );
+	m_pParent->m_fnChangeCallbacks.AddToTail( callback );
 
-	if ( m_pParent->m_fnChangeCallback )
-	{
-		// Call it immediately to set the initial value...
-		m_pParent->m_fnChangeCallback( this, m_pszString, m_fValue );
-	}
+	// Call it immediately to set the initial value...
+	callback( this, m_pszString, m_fValue );
 }
 
 bool ConVar::IsFlagSet( int flag ) const
@@ -718,6 +731,36 @@ void ConVar::AddFlags( int flags )
 #ifdef ALLOW_DEVELOPMENT_CVARS
 	m_pParent->m_nFlags &= ~FCVAR_DEVELOPMENTONLY;
 #endif
+}
+
+void ConVar::RemoveFlags( int flags )
+{
+	m_pParent->m_nFlags &= ~flags;
+}
+
+int ConVar::GetFlags( void ) const
+{
+	return m_pParent->m_nFlags;
+}
+
+float ConVar::GetFloat( void ) const
+{
+	return m_pParent->m_fValue;
+}
+
+int ConVar::GetInt( void ) const
+{
+	return m_pParent->m_nValue;
+}
+
+void ConVar::SetValue( Color value )
+{
+	(void)value;
+}
+
+void ConVar::InternalSetColorValue( Color value )
+{
+	(void)value;
 }
 
 bool ConVar::IsRegistered( void ) const
@@ -830,61 +873,35 @@ void ConVar::ChangeStringValue( const char *tempVal, float flOldValue )
 	if (V_strcmp(pszOldValue, m_pszString) != 0)
 	{
 		// Invoke any necessary callback function
-		if ( m_fnChangeCallback )
-		{
-			m_fnChangeCallback( this, pszOldValue, flOldValue );
-		}
-
-		g_pCVar->CallGlobalChangeCallbacks( this, pszOldValue, flOldValue );
-	}
-
-	stackfree( pszOldValue );
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Check whether to clamp and then perform clamp
-// Input  : value - 
-// Output : Returns true if value changed
-//-----------------------------------------------------------------------------
-bool ConVar::ClampValue( float& value )
-{
-	// Competitive /should/ be more restrictive, so do it first.
-	if ( m_bCompetitiveRestrictions )
-	{
-		if ( m_bHasCompMin && ( value < m_fCompMinVal ) )
-		{
-			value = m_fCompMinVal;
-			return true;
-		}
-
-		if ( m_bHasCompMax && ( value > m_fCompMaxVal ) )
-		{
-			value = m_fCompMaxVal;
-			return true;
-		}
-
-		if ( !m_bHasCompMin && !m_bHasCompMax )
-		{
-			float fDefaultAsFloat = V_atof( m_pszDefaultValue );
-			if ( fabs( value - fDefaultAsFloat ) > 0.0001f )
+			for ( int i = 0; i < m_fnChangeCallbacks.Count(); ++i )
 			{
-				value = fDefaultAsFloat;
-				return true;
+				m_fnChangeCallbacks[i]( this, pszOldValue, flOldValue );
 			}
+
+			g_pCVar->CallGlobalChangeCallbacks( this, pszOldValue, flOldValue );
 		}
+
+		stackfree( pszOldValue );
 	}
 
-	if ( m_bHasMin && ( value < m_fMinVal ) )
+	//-----------------------------------------------------------------------------
+	// Purpose: Check whether to clamp and then perform clamp
+	// Input  : value - 
+	// Output : Returns true if value changed
+	//-----------------------------------------------------------------------------
+	bool ConVar::ClampValue( float& value )
 	{
-		value = m_fMinVal;
-		return true;
-	}
+		if ( m_bHasMin && ( value < m_fMinVal ) )
+		{
+			value = m_fMinVal;
+			return true;
+		}
 
-	if ( m_bHasMax && ( value > m_fMaxVal ) )
-	{
-		value = m_fMaxVal;
-		return true;
-	}
+		if ( m_bHasMax && ( value > m_fMaxVal ) )
+		{
+			value = m_fMaxVal;
+			return true;
+		}
 
 	return false;
 }
@@ -922,10 +939,6 @@ void ConVar::InternalSetFloatValue( float fNewValue, bool bForce /*= false */ )
 		char tempVal[ 32 ];
 		Q_snprintf( tempVal, sizeof( tempVal), "%f", m_fValue );
 		ChangeStringValue( tempVal, flOldValue );
-	}
-	else
-	{
-		Assert( !m_fnChangeCallback );
 	}
 }
 
@@ -966,10 +979,6 @@ void ConVar::InternalSetIntValue( int nValue )
 		Q_snprintf( tempVal, sizeof( tempVal ), "%d", m_nValue );
 		ChangeStringValue( tempVal, flOldValue );
 	}
-	else
-	{
-		Assert( !m_fnChangeCallback );
-	}
 }
 
 //-----------------------------------------------------------------------------
@@ -977,8 +986,7 @@ void ConVar::InternalSetIntValue( int nValue )
 //-----------------------------------------------------------------------------
 void ConVar::Create( const char *pName, const char *pDefaultValue, int flags /*= 0*/,
 	const char *pHelpString /*= NULL*/, bool bMin /*= false*/, float fMin /*= 0.0*/,
-	bool bMax /*= false*/, float fMax /*= false*/, bool bCompMin /*= false */, 
-	float fCompMin /*= 0.0*/, bool bCompMax /*= false*/, float fCompMax /*= 0.0*/,
+	bool bMax /*= false*/, float fMax /*= false*/,
 	FnChangeCallback_t callback /*= NULL*/ )
 {
 	m_pParent = this;
@@ -990,22 +998,19 @@ void ConVar::Create( const char *pName, const char *pDefaultValue, int flags /*=
 	m_pszString = new char[m_StringLength];
 	memcpy( m_pszString, m_pszDefaultValue, m_StringLength );
 	
-	m_bHasMin = bMin;
-	m_fMinVal = fMin;
-	m_bHasMax = bMax;
-	m_fMaxVal = fMax;
+		m_bPaddingGMod = 0;
+		m_bHasMin = bMin;
+		m_fMinVal = fMin;
+		m_bHasMax = bMax;
+		m_fMaxVal = fMax;
 
-	m_bHasCompMin = bCompMin;
-	m_fCompMinVal = fCompMin;
-	m_bHasCompMax = bCompMax;
-	m_fCompMaxVal = fCompMax;
+		if ( callback )
+		{
+			m_fnChangeCallbacks.AddToTail( callback );
+		}
 
-	m_bCompetitiveRestrictions = false;
-	
-	m_fnChangeCallback = callback;
-
-	m_fValue = ( float )atof( m_pszString );
-	m_nValue = atoi( m_pszString ); // dont convert from float to int and lose bits
+		m_fValue = ( float )atof( m_pszString );
+		m_nValue = atoi( m_pszString ); // dont convert from float to int and lose bits
 
 	// Bounds Check, should never happen, if it does, no big deal
 	Assert( !m_bHasMin || m_fValue >= m_fMinVal );
@@ -1082,8 +1087,8 @@ bool ConVar::GetMax( float& maxVal ) const
 //-----------------------------------------------------------------------------
 bool ConVar::GetCompMin( float& minVal ) const
 {
-	minVal = m_pParent->m_fCompMinVal;
-	return m_pParent->m_bHasCompMin;
+	minVal = 0.0f;
+	return false;
 }
 
 //-----------------------------------------------------------------------------
@@ -1092,8 +1097,8 @@ bool ConVar::GetCompMin( float& minVal ) const
 //-----------------------------------------------------------------------------
 bool ConVar::GetCompMax( float& maxVal ) const
 {
-	maxVal = m_pParent->m_fCompMaxVal;
-	return m_pParent->m_bHasCompMax;
+	maxVal = 0.0f;
+	return false;
 }
 
 //-----------------------------------------------------------------------------
@@ -1104,33 +1109,8 @@ bool ConVar::GetCompMax( float& maxVal ) const
 //-----------------------------------------------------------------------------
 bool ConVar::SetCompetitiveMode( bool bCompetitive )
 {
-	// Should only do this for competitive restricted things.
-	Assert( IsCompetitiveRestricted() );
-
-	ConVar* var = m_pParent;
-
-	var->m_bCompetitiveRestrictions = true;
-	float fDefaultAsFloat = 0.0f;
-
-	bool bRequiresClamp = ( var->m_bHasCompMin && var->m_fCompMinVal > var->m_fValue )
-					   || ( var->m_bHasCompMax && var->m_fCompMaxVal < var->m_fValue );
-	bool bForceToDefault = !var->m_bHasCompMin && !var->m_bHasCompMax 
-		               && ( fabs( var->m_fValue - ( fDefaultAsFloat = V_atof( var->m_pszDefaultValue ) ) ) > 0.00001f );
-
-	if ( bRequiresClamp )
-		var->InternalSetFloatValue( var->m_fValue, true );
-	else if ( bForceToDefault )
-	{
-		STAGING_ONLY_EXEC( Msg( "Changing Convar: %s ( cur: %.2f ) to %.2f -> ", GetName(), var->m_fValue, fDefaultAsFloat ) );
-		var->InternalSetFloatValue( fDefaultAsFloat, true );
-		STAGING_ONLY_EXEC( Msg( "%.2f\n", var->m_fValue ) );
-	}
-
-	// The clamping should've worked, so if it didn't--need to understand why.
-	Assert( !bRequiresClamp || IsFlagSet( FCVAR_MATERIAL_THREAD_MASK ) || ( ( !var->m_bHasCompMin || var->m_fCompMinVal <= var->m_fValue ) 
-							  && ( !var->m_bHasCompMax || var->m_fCompMaxVal >= var->m_fValue ) ) );
-	Assert( !bForceToDefault || IsFlagSet( FCVAR_MATERIAL_THREAD_MASK ) || ( var->m_fValue == fDefaultAsFloat ) );
-	return true;
+	(void)bCompetitive;
+	return false;
 }
 
 
