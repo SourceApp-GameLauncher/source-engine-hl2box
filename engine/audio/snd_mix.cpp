@@ -14,9 +14,9 @@
 #include "video/ivideoservices.h"
 #include "engine/IEngineSound.h"
 // HL2SB (2026-10-04): ThreadInterlockedExchangePointer for the S_FreeChannel
-// mixer ownership claim, and CTSList for the deferred-mixer-delete graveyard.
+// mixer ownership claim, and the fast mutex that guards the deferred-delete
+// list.
 #include "tier0/threadtools.h"
-#include "tier0/tslist.h"
 
 #if defined( REPLAY_ENABLED )
 #include "demo.h"
@@ -426,26 +426,47 @@ CHANNEL MIXING
 // Works for static, dynamic, sentence and stream sounds
 
 // HL2SB (2026-10-04): mixers freed by S_FreeChannel are parked here and only
-// destroyed at the next MIX_PaintChannels entry - on the mixing thread,
-// between frames, where no channel walk can observe the object half-dead.
-// The lock-free list makes the claiming thread's push safe from any realm.
-static CTSList< CAudioMixer * > s_MixerGraveyard;
+// destroyed at the next MIX_PaintChannels entry - between frames, where no
+// channel walk can observe the object half-dead.
+//
+// HL2SB (2026-10-19): the park list refuses a pointer it already holds.  "One
+// atomic claim per channel" is not the same thing as "parked once": a channel
+// can be torn down twice in one frame through two walks (a steal taking the
+// slot while a stop pass is still iterating this frame's snapshot), and the
+// second teardown used to park the same object again.  The drain then ran a
+// deleting destructor over a mixer whose IWaveData the first destroy had
+// already freed - AV READ 0x8 at `call [rax+8]` inside the wave mixer's
+// deleting destructor at map entry (gm_construct, 2026-10-18 23:41).  The
+// membership test makes the destroy idempotent however the channel bookkeeping
+// got there; the mutex keeps the park safe from the (console) mix thread.
+static CThreadFastMutex s_MixerGraveyardMutex;
+static CUtlVector< CAudioMixer * > s_MixerGraveyard;
 
 void HL2SB_DeferMixerDelete( CAudioMixer *pMixer )
 {
 	if ( pMixer == NULL )
 		return;
-	s_MixerGraveyard.Push( new CTSList< CAudioMixer * >::Node_t( pMixer ) );
+
+	AUTO_LOCK( s_MixerGraveyardMutex );
+	if ( s_MixerGraveyard.Find( pMixer ) != s_MixerGraveyard.InvalidIndex() )
+		return;
+	s_MixerGraveyard.AddToTail( pMixer );
 }
 
 void HL2SB_DrainMixerGraveyard( void )
 {
-	CTSList< CAudioMixer * >::Node_t *pNode;
-	while ( ( pNode = s_MixerGraveyard.Pop() ) != NULL )
+	// Detach the batch under the lock, destroy outside it: a mixer destructor
+	// runs source code (ReferenceRemove -> CacheUnload) that must never be able
+	// to re-enter this list.
+	CUtlVector< CAudioMixer * > pending;
 	{
-		CAudioMixer *pMixer = pNode->elem;
-		delete pNode;
-		delete pMixer;
+		AUTO_LOCK( s_MixerGraveyardMutex );
+		pending.Swap( s_MixerGraveyard );
+	}
+
+	for ( int i = 0; i < pending.Count(); ++i )
+	{
+		delete pending[i];
 	}
 }
 
