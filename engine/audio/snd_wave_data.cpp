@@ -2029,6 +2029,12 @@ CWaveDataStreamAsync::CWaveDataStreamAsync
 //-----------------------------------------------------------------------------
 CWaveDataStreamAsync::~CWaveDataStreamAsync( void ) 
 {
+	// HL2SB (2026-10-20): deregister from the live-wave-data registry in
+	// snd_mix.cpp (local extern on purpose - waf has no header dependency
+	// propagation).
+	extern void HL2SB_WaveDataDestroyed( IWaveData *pData );
+	HL2SB_WaveDataDestroyed( this );
+
 	if ( IsPC() && m_source.IsPlayOnce() && m_source.CanDelete() )
 	{
 		m_source.SetPlayOnce( false ); // in case it gets used again
@@ -2293,7 +2299,11 @@ class CWaveDataMemoryAsync : public IWaveData
 {
 public:
 	CWaveDataMemoryAsync( CAudioSource &source );
-	~CWaveDataMemoryAsync( void ) {}
+	~CWaveDataMemoryAsync( void )
+	{
+		extern void HL2SB_WaveDataDestroyed( IWaveData *pData );
+		HL2SB_WaveDataDestroyed( this );
+	}
 	CAudioSource &Source( void ) { return m_source; }
 	
 	virtual int ReadSourceData( void **pData, int sampleIndex, int sampleCount, char copyBuf[AUDIOSOURCE_COPYBUF_SIZE] );
@@ -2373,7 +2383,9 @@ bool CWaveDataMemoryAsync::IsReadyToMix()
 //-----------------------------------------------------------------------------
 IWaveData *CreateWaveDataStream( CAudioSource &source, IWaveStreamSource *pStreamSource, const char *pFileName, int dataStart, int dataSize, CSfxTable *pSfx, int startOffset )
 {
+	extern void HL2SB_WaveDataConstructed( IWaveData *pData );
 	CWaveDataStreamAsync *pStream = new CWaveDataStreamAsync( source, pStreamSource, pFileName, dataStart, dataSize, pSfx, startOffset );
+	HL2SB_WaveDataConstructed( pStream );
 	if ( !pStream || !pStream->IsValid() )
 	{
 		delete pStream;
@@ -2389,6 +2401,8 @@ IWaveData *CreateWaveDataStream( CAudioSource &source, IWaveStreamSource *pStrea
 //-----------------------------------------------------------------------------
 IWaveData *CreateWaveDataMemory( CAudioSource &source )
 {
+	extern void HL2SB_WaveDataConstructed( IWaveData *pData );
 	CWaveDataMemoryAsync *mem = new CWaveDataMemoryAsync( source );
+	HL2SB_WaveDataConstructed( mem );
 	return mem;
 }

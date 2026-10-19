@@ -139,8 +139,9 @@ CAudioMixer *CreateWaveMixer( IWaveData *data, int format, int nChannels, int bi
 // Purpose: Init the base WAVE mixer.
 // Input  : *data - data access object
 //-----------------------------------------------------------------------------
-// HL2SB (2026-10-19): the live-mixer registry lives in snd_mix.cpp; local
+// HL2SB (2026-10-20): the live-wave-data registry lives in snd_mix.cpp; local
 // extern on purpose (waf has no header dependency propagation).
+extern bool HL2SB_IsWaveDataLive( IWaveData *pData );
 extern void HL2SB_MixerConstructed( CAudioMixer *pMixer );
 extern void HL2SB_MixerDestroyed( CAudioMixer *pMixer );
 
@@ -168,9 +169,15 @@ CAudioMixerWave::CAudioMixerWave( IWaveData *data ) : m_pData(data)
 //-----------------------------------------------------------------------------
 CAudioMixerWave::~CAudioMixerWave( void )
 {
-	// Deregister first: the registry is what tells S_FreeChannel whether this
-	// object may still be destroyed at all.
 	HL2SB_MixerDestroyed( this );
+
+	if ( !HL2SB_IsWaveDataLive( m_pData ) )
+	{
+		// The data object is gone, so there is no source to unregister from
+		// and nothing to free: calling GetSource() here would read the
+		// reused block's first qword as a vtable.
+		return;
+	}
 
 	CAudioSource *pSource = GetSource();
 	if ( pSource )
@@ -182,6 +189,10 @@ CAudioMixerWave::~CAudioMixerWave( void )
 
 bool CAudioMixerWave::IsReadyToMix()
 {
+	if ( !HL2SB_IsWaveDataLive( m_pData ) )
+	{
+		return false;
+	}
 	return m_pData->IsReadyToMix();
 }
 
@@ -589,6 +600,10 @@ int CAudioMixerWave::GetSampleLoadRequest( double rate, int sampleCountOut, bool
 
 int CAudioMixerWave::MixDataToDevice( IAudioDevice *pDevice, channel_t *pChannel, int sampleCount, int outputRate, int outputOffset )
 {
+	if ( !HL2SB_IsWaveDataLive( m_pData ) )
+	{
+		return 0;
+	}
 	return MixDataToDevice_(pDevice, pChannel, sampleCount, outputRate, outputOffset, false );
 }
 
@@ -784,6 +799,12 @@ int CAudioMixerWave::MixDataToDevice_( IAudioDevice *pDevice, channel_t *pChanne
 
 bool CAudioMixerWave::ShouldContinueMixing( void )
 {
+	// A mixer whose data object is gone can never produce another sample; let
+	// the mix pass collect the channel instead of retrying forever.
+	if ( !HL2SB_IsWaveDataLive( m_pData ) )
+	{
+		return false;
+	}
 	return !m_finished;
 }
 

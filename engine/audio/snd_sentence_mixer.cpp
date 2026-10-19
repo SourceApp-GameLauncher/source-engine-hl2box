@@ -71,7 +71,7 @@ CAudioMixer *CreateSentenceMixer( voxword_t *pWords )
 
 CSentenceMixer::CSentenceMixer( voxword_t *pWords )
 {
-	// HL2SB (2026-10-19): register with the live-mixer registry in snd_mix.cpp
+	// HL2SB (2026-10-20): register with the live-mixer registry in snd_mix.cpp
 	// (local extern on purpose - waf has no header dependency propagation).
 	extern void HL2SB_MixerConstructed( CAudioMixer *pMixer );
 	HL2SB_MixerConstructed( this );
@@ -118,8 +118,8 @@ CSentenceMixer::CSentenceMixer( voxword_t *pWords )
 
 CSentenceMixer::~CSentenceMixer( void )
 {
-	// HL2SB (2026-10-19): deregister first, then free the words (see the
-	// note in the constructor).
+	// HL2SB (2026-10-20): deregister first, then free the words (which are
+	// mixers of their own and deregister themselves).
 	extern void HL2SB_MixerDestroyed( CAudioMixer *pMixer );
 	HL2SB_MixerDestroyed( this );
 

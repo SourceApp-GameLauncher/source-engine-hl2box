@@ -425,23 +425,18 @@ CHANNEL MIXING
 // word in a sentence, release the sentence.
 // Works for static, dynamic, sentence and stream sounds
 
-// HL2SB (2026-10-19): a registry of the mixers that currently exist.
+// HL2SB (2026-10-20): a registry of the mixers that currently exist, filled by
+// the mixer constructors and emptied by their destructors.
 //
-// A mixer's destructor dereferences its IWaveData before it can free anything
-// (CAudioMixerWave asks the data object for its source in order to unregister
-// from it), so once a channel is seen holding a mixer pointer that is not a
-// live mixer, running that destructor is exactly the crash we keep getting at
-// cold map entry: the data object's first qword is already zero and the call
-// through its vtable lands on address 0.  The registry is filled by the mixer
-// constructors themselves, so it distinguishes a genuinely dead pointer from
-// a new mixer that merely reused a freed address - which the pointer prints
-// could not.
-//
-// Every mixer family has to register: the wave family (which covers the mp3,
-// adpcm and voice mixers, all built through CAudioMixerWave) and the sentence
-// mixer.  A family that forgets to register is not crashed into - it is
-// refused and reported, so the cost of an omission is one leaked mixer with a
-// named warning, never a silent double free.
+// The mix thread decides whether a channel is playable by calling into the
+// channel's mixer, and a channel is just a plain struct with no owner link: if
+// anything ever destroys a mixer while a channel still points at it, that call
+// goes through the reused block's first qword and lands wherever it points
+// (2026-10-20 04:11: channel 1's pMixer held an address inside a later
+// allocation, its first qword pointed 0xAA0 before itself, and the slot at
+// +0x60 of that was 0x76005c67 - an execute fault on an unmapped page).  The
+// teardown path can only guard itself; the walk has to be able to ask whether
+// the object it is about to call into still exists.  That is what this is for.
 static CThreadFastMutex s_LiveMixerMutex;
 static CUtlVector< CAudioMixer * > s_LiveMixers;
 
@@ -460,10 +455,7 @@ void HL2SB_MixerDestroyed( CAudioMixer *pMixer )
 	AUTO_LOCK( s_LiveMixerMutex );
 	int i = s_LiveMixers.Find( pMixer );
 	if ( i == s_LiveMixers.InvalidIndex() )
-	{
-		Warning( "[HL2SB] audio: mixer %p was destroyed while not registered as live\n", pMixer );
 		return;
-	}
 	s_LiveMixers.Remove( i );
 }
 
@@ -473,6 +465,126 @@ bool HL2SB_IsMixerLive( CAudioMixer *pMixer )
 		return false;
 	AUTO_LOCK( s_LiveMixerMutex );
 	return s_LiveMixers.Find( pMixer ) != s_LiveMixers.InvalidIndex();
+}
+
+// HL2SB (2026-10-20): the same idea for the IWaveData objects a wave mixer
+// owns.
+//
+// The 2026-10-20 04:49 dump is a live, registered CAudioMixerWave whose
+// IsReadyToMix was entered normally, whose m_pData (offset 0x18) pointed at a
+// block that now held the sixteen-byte string "skybox/clouds" - the mixer's
+// data wrapper had been freed underneath it and that exact small allocation
+// was reused by the skybox material name.  Nothing in the mixer knows; the
+// wrapper has to say whether it still exists, or the mixer cannot decide
+// anything about its own state.
+static CThreadFastMutex s_LiveWaveDataMutex;
+static CUtlVector< IWaveData * > s_LiveWaveData;
+
+void HL2SB_WaveDataConstructed( IWaveData *pData )
+{
+	if ( pData == NULL )
+		return;
+	AUTO_LOCK( s_LiveWaveDataMutex );
+	// A fresh object can land on the address of one that never deregistered;
+	// keep the set free of duplicates so destruction removes exactly one.
+	int i = s_LiveWaveData.Find( pData );
+	if ( i != s_LiveWaveData.InvalidIndex() )
+		s_LiveWaveData.Remove( i );
+	s_LiveWaveData.AddToTail( pData );
+}
+
+void HL2SB_WaveDataDestroyed( IWaveData *pData )
+{
+	if ( pData == NULL )
+		return;
+	AUTO_LOCK( s_LiveWaveDataMutex );
+	int i = s_LiveWaveData.Find( pData );
+	if ( i == s_LiveWaveData.InvalidIndex() )
+		return;
+	s_LiveWaveData.Remove( i );
+}
+
+// HL2SB (2026-10-20): registration alone is not enough.
+//
+// The 2026-10-20 05:04 dump is a live mixer whose m_pData points at a block
+// holding the string "skybox/clouds", and the registry still listed that
+// address as a live wrapper - i.e. the wrapper's memory was released without
+// its destructor ever running, so nothing deregistered it.  Bookkeeping cannot
+// see that, but the object itself can: a real IWaveData starts with a code
+// pointer, and a reused allocation starts with whatever the new owner put
+// there.  So every "is it live" answer is re-checked against that, and a
+// wrapper that fails is dropped from the registry on the spot.
+static bool HL2SB_ReadFirstQword( void *pAddress, uintp &value )
+{
+#if defined( PLATFORM_WINDOWS )
+	MEMORY_BASIC_INFORMATION mbi;
+	if ( VirtualQuery( pAddress, &mbi, sizeof( mbi ) ) == 0 )
+		return false;
+	if ( mbi.State != MEM_COMMIT || ( mbi.Protect & ( PAGE_NOACCESS | PAGE_GUARD ) ) )
+		return false;
+	value = *(uintp *)pAddress;
+	return true;
+#else
+	value = *(uintp *)pAddress;
+	return true;
+#endif
+}
+
+// A virtual table lives in the module's read-only data, NOT in executable
+// memory - the first version of this test demanded PAGE_EXECUTE and therefore
+// rejected every real IWaveData, which silenced the whole game.  What matters
+// is only that the first qword is a pointer to a mapped, readable page: a
+// reused allocation holds a string or a raw value, and neither of those is a
+// live address.
+static bool HL2SB_IsMappedAddress( uintp value )
+{
+#if defined( PLATFORM_WINDOWS )
+	if ( value < 0x10000 )
+		return false;
+	MEMORY_BASIC_INFORMATION mbi;
+	if ( VirtualQuery( (const void *)value, &mbi, sizeof( mbi ) ) == 0 )
+		return false;
+	if ( mbi.State != MEM_COMMIT )
+		return false;
+	if ( mbi.Protect & ( PAGE_NOACCESS | PAGE_GUARD ) )
+		return false;
+	return true;
+#else
+	return value > 0x10000;
+#endif
+}
+
+bool HL2SB_IsWaveDataLive( IWaveData *pData )
+{
+	if ( pData == NULL )
+		return false;
+
+	{
+		AUTO_LOCK( s_LiveWaveDataMutex );
+		if ( s_LiveWaveData.Find( pData ) == s_LiveWaveData.InvalidIndex() )
+			return false;
+	}
+
+	uintp vtable = 0;
+	if ( HL2SB_ReadFirstQword( pData, vtable ) && HL2SB_IsMappedAddress( vtable ) )
+		return true;
+
+	AUTO_LOCK( s_LiveWaveDataMutex );
+	int i = s_LiveWaveData.Find( pData );
+	if ( i != s_LiveWaveData.InvalidIndex() )
+		s_LiveWaveData.Remove( i );
+	return false;
+}
+
+// A channel that points at a mixer which no longer exists cannot be played or
+// stopped - there is nothing left to call.  Put the slot back to its initial
+// state so it is reusable, and drop it from the active list first so no other
+// pass can pick it up in the meantime.
+static void HL2SB_DropDeadChannel( channel_t *ch, int nChannel )
+{
+	(void)nChannel;
+	g_ActiveChannels.Remove( ch );
+	Q_memset( ch, 0, sizeof( channel_t ) );
 }
 
 // HL2SB (2026-10-19): the deferred-deletion experiment is over.
@@ -536,20 +648,16 @@ void S_FreeChannel(channel_t *ch)
 	if ( sfx )
 		g_pSoundServices->OnSoundStopped( ch->guid, ch->soundsource, ch->entchannel, sfx->getname() );
 
-	// Destroy the mixer while the source it references is still loaded, and
-	// only if it is still a live mixer: a channel can be left pointing at one
-	// that is already gone (see HL2SB_IsMixerLive), and its destructor would
-	// walk freed memory before it freed anything.
+	// Destroy the mixer while the source it references is still loaded.  The
+	// destructor runs ReferenceRemove -> CacheUnload on its CAudioSource, so
+	// it is only safe between the channel letting go and the sound table
+	// being torn down - which is exactly here.  A mixer that no longer exists
+	// is not touched: its destructor would walk an IWaveData that is gone.
 	if ( pMixer != NULL )
 	{
 		if ( HL2SB_IsMixerLive( pMixer ) )
 		{
 			delete pMixer;
-		}
-		else
-		{
-			Warning( "[HL2SB] audio: channel %d held a stale mixer %p (sfx %s) - not destroyed\n",
-				(int)( ch - channels ), pMixer, sfx ? sfx->getname() : "<none>" );
 		}
 	}
 
@@ -667,6 +775,16 @@ void MIX_MixChannelsToPaintbuffer( CChannelList &list, int endtime, int flags, i
 		CAudioMixer *pSnapshotMixer = ch->pMixer;
 		if ( !pSnapshotMixer )
 		{
+			list.RemoveChannelFromList(i);
+			continue;
+		}
+		// HL2SB (2026-10-20): the very same check as in MIX_BuildChannelList
+		// - this pass calls SkipSamples/MixDataToDevice/ShouldContinueMixing
+		// on the same pointer, so a channel whose mixer is gone must be
+		// dropped here too rather than called into.
+		if ( !HL2SB_IsMixerLive( pSnapshotMixer ) )
+		{
+			HL2SB_DropDeadChannel( ch, list.GetChannelIndex(i) );
 			list.RemoveChannelFromList(i);
 			continue;
 		}
@@ -2116,7 +2234,13 @@ void CChannelCullList::Initialize( CChannelList &list )
 	{
 		channel_t *ch = list.GetChannel(i);
 		m_channelInfo[i].m_channelNum = i; 
-		if ( ch && ch->pMixer->IsReadyToMix() )
+		// HL2SB (2026-10-20): this pre-pass runs BEFORE the per-channel walk
+		// that has the liveness check, and it used to call straight through
+		// ch->pMixer with no null test at all - so a channel whose mixer is
+		// gone died here first, which is why the guards added to the walk
+		// below never saw it.  (snd_cull_duplicates defaults to non-zero, so
+		// this path is always taken.)
+		if ( ch && ch->pMixer && HL2SB_IsMixerLive( ch->pMixer ) && ch->pMixer->IsReadyToMix() )
 		{
 			m_channelInfo[i].m_vol = ChannelLoudestCurVolume(ch);
 			AssertMsg(m_channelInfo[i].m_vol >= 0, "Sound channel has a negative volume?");
@@ -2215,6 +2339,17 @@ void MIX_BuildChannelList( CChannelList &list )
 		CSfxTable *pSnapshotSfx = ch->sfx;
 		if ( !pSnapshotMixer || !pSnapshotSfx )
 		{
+			list.RemoveChannelFromList(i);
+			continue;
+		}
+		// HL2SB (2026-10-20): the mixer this channel names may already have
+		// been destroyed by a path that did not go through the channel (a
+		// stale slot is how this walk dies: the first virtual call on the
+		// reused block lands wherever its first qword points).  Ask the
+		// registry before calling into it.
+		if ( !HL2SB_IsMixerLive( pSnapshotMixer ) )
+		{
+			HL2SB_DropDeadChannel( ch, list.GetChannelIndex(i) );
 			list.RemoveChannelFromList(i);
 			continue;
 		}
@@ -2338,7 +2473,10 @@ void MIX_BuildChannelList( CChannelList &list )
 		}
 
 		// get playback pitch
-		ch->pitch = ch->pMixer->ModifyPitch( ch->basePitch * 0.01f );
+		if ( ch->pMixer && HL2SB_IsMixerLive( ch->pMixer ) )
+		{
+			ch->pitch = ch->pMixer->ModifyPitch( ch->basePitch * 0.01f );
+		}
 	}
 	// DevMsg( "%d channels quashed.\n", numQuashed );
 
@@ -2671,7 +2809,7 @@ bool MIX_ScaleChannelVolume( paintbuffer_t *ppaint, channel_t *pChannel, int vol
 #endif
 	if( duckScale < 256 )
 	{
-		if( pChannel->pMixer )
+		if( pChannel->pMixer && HL2SB_IsMixerLive( pChannel->pMixer ) )
 		{
 			CAudioSource *pSource = pChannel->pMixer->GetSource();
 			if( !pSource->IsVoiceSource() )
@@ -4166,6 +4304,12 @@ void SND_CloseMouth(channel_t *pChannel)
 //#include "snd_wave_source.h"
 void SND_MoveMouth8( channel_t *ch, CAudioSource *pSource, int count ) 
 {
+	// HL2SB (2026-10-20): this runs on the mix thread and reads the channel's
+	// mixer without a liveness test further down; bail out before touching it
+	// when the mixer is gone or was replaced.
+	if ( ch == NULL || !ch->pMixer || !HL2SB_IsMixerLive( ch->pMixer ) )
+		return;
+
 	int 	data;
 	char	*pdata = NULL;
 	int		i;
