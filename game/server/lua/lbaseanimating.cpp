@@ -198,6 +198,44 @@ static int CBaseAnimating_GetBoneMatrix (lua_State *L) {
   return 1;
 }
 
+static int CBaseAnimating_GetBoneCount (lua_State *L) {
+  CBaseAnimating *pEntity = lua_toanimating(L, 1);
+  if ( pEntity == NULL )
+    return 0;
+  CStudioHdr *pHdr = pEntity->GetModelPtr();
+  lua_pushinteger(L, pHdr ? pHdr->numbones() : 0);
+  return 1;
+}
+
+static int CBaseAnimating_GetBoneName (lua_State *L) {
+  CBaseAnimating *pEntity = lua_toanimating(L, 1);
+  if ( pEntity == NULL )
+    return 0;
+  int nBone = luaL_checkint(L, 2);
+  CStudioHdr *pHdr = pEntity->GetModelPtr();
+  if ( !pHdr || nBone < 0 || nBone >= pHdr->numbones() )
+  {
+    lua_pushstring( L, "__INVALIDBONE__" );
+    return 1;
+  }
+  lua_pushstring( L, pHdr->pBone( nBone )->pszName() );
+  return 1;
+}
+
+static int CBaseAnimating_GetModelRenderBounds (lua_State *L) {
+  CBaseAnimating *pEntity = lua_toanimating(L, 1);
+  Vector mins( 0, 0, 0 ), maxs( 0, 0, 0 );
+  if ( pEntity != NULL )
+  {
+    const model_t *pModel = pEntity->GetModel();
+    if ( pModel != NULL && modelinfo != NULL )
+      modelinfo->GetModelRenderBounds( pModel, mins, maxs );
+  }
+  lua_pushvector(L, mins);
+  lua_pushvector(L, maxs);
+  return 2;
+}
+
 // HL2SB GMod compat: Entity:SetBoneMatrix - the reference registers this name
 // serverside as an empty stub (the server never rewrites bones; the wiki says
 // "Despite existing serverside, it does nothing").  Without the binding a
@@ -381,7 +419,10 @@ static int CBaseAnimating_LookupAttachment (lua_State *L) {
 }
 
 static int CBaseAnimating_LookupBone (lua_State *L) {
-  lua_pushinteger(L, luaL_checkanimating(L, 1)->LookupBone(luaL_checkstring(L, 2)));
+  int iBone = luaL_checkanimating(L, 1)->LookupBone(luaL_checkstring(L, 2));
+  if ( iBone == -1 )
+    return 0;
+  lua_pushinteger(L, iBone);
   return 1;
 }
 
@@ -940,8 +981,11 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetBodygroup", CBaseAnimating_GetBodygroup},
   {"GetBodygroupCount", CBaseAnimating_GetBodygroupCount},
   {"GetBodygroupName", CBaseAnimating_GetBodygroupName},
+  {"GetBoneCount", CBaseAnimating_GetBoneCount},
+  {"GetBoneName", CBaseAnimating_GetBoneName},
   {"GetBonePosition", CBaseAnimating_GetBonePosition},
   {"GetBoneMatrix", CBaseAnimating_GetBoneMatrix},
+  {"GetModelRenderBounds", CBaseAnimating_GetModelRenderBounds},
   {"SetBoneMatrix", CBaseAnimating_SetBoneMatrix},
   {"CopyBoneMatrix", CBaseAnimating_CopyBoneMatrix},
   {"GetCycle", CBaseAnimating_GetCycle},

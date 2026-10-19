@@ -654,35 +654,20 @@ static int CBaseAnimating_GetBoneMatrix (lua_State *L) {
   C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
   int nBone = luaL_checkint(L, 2);
 
-  // HL2SB (2026-09-24): read the LIVE bone matrices (what the renderer
-  // consumes) instead of a private SetupBones() stack copy, so a matrix
-  // observed inside a "BuildBonePositions" callback reflects what
-  // SetBoneMatrix wrote and what will be drawn this frame.  SetupBones(NULL)
-  // hits the per-frame cache on re-entry, so calling this from inside the
-  // callback does not rebuild bones recursively.
   studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
   const int nBoneTotal = pHdr ? pHdr->numbones : 0;
-  if ( !pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime ) )
-  {
-    lua_pushnil( L );
-    return 1;
-  }
   if ( nBone < 0 || nBone >= nBoneTotal )
   {
     lua_pushnil( L );
     return 1;
   }
-  // HL2SB (2026-09-25): the accessor already holds WORLD-space bone matrices
-  // (BuildTransformations concatenates the entity transform into every bone;
-  // wiki for GetBoneMatrix: "the transformation used to position the bone in
-  // the world").  Return it as-is - no conversion of any kind.
   VMatrix vm;
   vm.CopyFrom3x4( pEntity->GetBone( nBone ) );
   lua_pushvmatrix(L, vm);
   return 1;
 }
 
-// HL2SB GMod compat (2026-10-10): Entity:CopyBoneMatrix( bone, matrix ) -
+// HL2SB GMod compat: Entity:CopyBoneMatrix( bone, matrix ) -
 // the same read as Entity:GetBoneMatrix, but the world-space 3x4 is copied
 // INTO the VMatrix the caller already owns instead of allocating a fresh one
 // (reference: "measurably faster when accessing bone matrices a lot").
@@ -696,11 +681,7 @@ static int CBaseAnimating_CopyBoneMatrix (lua_State *L) {
   VMatrix &vm = luaL_checkvmatrix(L, 3);
 
   studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
-  if ( !pHdr )
-    return 0;
-  if ( !pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime ) )
-    return 0;
-  if ( nBone >= pHdr->numbones )
+  if ( !pHdr || nBone >= pHdr->numbones )
     return 0;
 
   vm.CopyFrom3x4( pEntity->GetBone( nBone ) );
@@ -1298,7 +1279,7 @@ static int CBaseAnimating_SetupBones (lua_State *L) {
   // a cache hit on the render pass the restore was never rebuilt, and the
   // seated model vibrated between the two poses every frame.
   pEntity->InvalidateBoneCache();
-  lua_pushboolean(L, pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime ));
+  lua_pushboolean(L, pEntity->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, gpGlobals->curtime ));
   return 1;
 }
 
@@ -1694,7 +1675,10 @@ static int CBaseAnimating_LookupAttachment (lua_State *L) {
 }
 
 static int CBaseAnimating_LookupBone (lua_State *L) {
-  lua_pushinteger(L, luaL_checkanimating(L, 1)->LookupBone(luaL_checkstring(L, 2)));
+  int iBone = luaL_checkanimating(L, 1)->LookupBone(luaL_checkstring(L, 2));
+  if ( iBone == -1 )
+    return 0;
+  lua_pushinteger(L, iBone);
   return 1;
 }
 
