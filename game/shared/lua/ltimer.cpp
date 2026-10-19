@@ -67,7 +67,7 @@ void HL2SB_CollectLuaError( const char *pszError, const char *pszTraceback );
 
 struct HL2SB_LuaTimer_t
 {
-	int			m_iFuncRef;		// luaL_ref into LUA_REGISTRYINDEX
+	int			m_iFuncRef;		// callback id in the library-private table (see below)
 	float		m_flDelay;		// seconds between fires
 	int			m_iReps;		// fires left; INFINITE (-1) when created with 0
 	double		m_flNext;		// absolute fire time; = REMAINING while paused; 0 while stopped
@@ -79,7 +79,7 @@ struct HL2SB_LuaTimer_t
 
 struct HL2SB_LuaSimpleTimer_t
 {
-	int			m_iFuncRef;
+	int			m_iFuncRef;		// callback id in the library-private table (see below)
 	double		m_flFireTime;
 	CUtlString	m_sLocation;
 };
@@ -90,15 +90,142 @@ typedef CUtlHashtable<CUtlString, HL2SB_LuaTimer_t> HL2SB_LuaTimerMap;
 static HL2SB_LuaTimerMap g_LuaTimers;
 static CUtlVector<HL2SB_LuaSimpleTimer_t> g_LuaSimpleTimers;
 
+// HL2SB (2026-10-19): the lua_State the records above were created against.
+// Every m_iFuncRef is an index into THAT state's registry, so a record may only
+// be interpreted while this still names the current state.  GMod never needs
+// this bookkeeping because it keeps one state for the whole process; this fork
+// builds a fresh one on every level load.
+static lua_State *s_pTimerState = NULL;
+
+// A record whose state is not the current one must be dropped WITHOUT touching
+// its reference: the index belongs to a registry that is gone, and
+// dereferencing or unreferencing it against the new registry would resolve to
+// an unrelated object (or corrupt the free list).
+static void HL2SB_TimerDropForeignRecords( const char *pszWhy )
+{
+	if ( g_LuaTimers.Count() == 0 && g_LuaSimpleTimers.Count() == 0 )
+		return;
+
+	luasrc_LuaErrorMsgF( "Timer registry reset (%s): dropped %d named / %d simple timer(s) created against Lua state %p, current state is %p\n",
+		pszWhy, g_LuaTimers.Count(), g_LuaSimpleTimers.Count(),
+		(void *)s_pTimerState, (void *)L );
+	g_LuaTimers.Purge();
+	g_LuaSimpleTimers.Purge();
+}
+
+// Adopt the current state, purging whatever belonged to another one.
+static void HL2SB_TimerClaimState( const char *pszWhy )
+{
+	if ( s_pTimerState == L )
+		return;
+	HL2SB_TimerDropForeignRecords( pszWhy );
+	s_pTimerState = L;
+}
+
 static double HL2SB_TimerNow( void )
 {
 	return gpGlobals->curtime;
 }
 
-static void HL2SB_TimerUnref( int iRef )
+
+//-----------------------------------------------------------------------------
+// HL2SB (2026-10-19): callbacks are NOT luaL_ref() registry indices any more.
+//
+// The registry index space is shared with every other subsystem in the process
+// (net receivers, hooks, panels, scripted entities, ...), so any stray double
+// unreference anywhere recycles an index that a live timer still holds.  That is
+// exactly what happened: a firing one-shot found a TABLE in its slot, because
+// the same integer had been handed out twice.  Timers only need to find their
+// own callback again, so they use their own key space instead: a table stored in
+// the registry under the ADDRESS of a static (an unforgeable key unique to this
+// library), indexed by a monotonically increasing integer.  Nothing outside this
+// file can recycle those keys.
+//-----------------------------------------------------------------------------
+static int s_TimerCallbackKey;			// its address is the registry key
+static int s_nNextCallbackId = 1;
+
+static void HL2SB_TimerCallbackTable( lua_State *pL, bool bCreate )
 {
-	if ( L != NULL && iRef != LUA_NOREF )
-		luaL_unref( L, LUA_REGISTRYINDEX, iRef );
+	lua_pushlightuserdata( pL, &s_TimerCallbackKey );
+	lua_rawget( pL, LUA_REGISTRYINDEX );
+	if ( lua_istable( pL, -1 ) )
+		return;
+
+	lua_pop( pL, 1 );
+	if ( !bCreate )
+	{
+		lua_pushnil( pL );
+		return;
+	}
+
+	lua_newtable( pL );
+	lua_pushlightuserdata( pL, &s_TimerCallbackKey );
+	lua_pushvalue( pL, -2 );
+	lua_rawset( pL, LUA_REGISTRYINDEX );
+}
+
+// Stores the function at stack index nArg; returns its id, or 0 on failure.
+static int HL2SB_TimerStoreCallback( lua_State *pL, int nArg )
+{
+	if ( pL == NULL || !lua_isfunction( pL, nArg ) )
+		return 0;
+
+	HL2SB_TimerCallbackTable( pL, true );		// [tbl]
+	const int nId = s_nNextCallbackId++;
+	lua_pushinteger( pL, nId );
+	lua_pushvalue( pL, nArg );
+	lua_rawset( pL, -3 );
+	lua_pop( pL, 1 );
+	return nId;
+}
+
+// Pushes the callback for nId (exactly one value) when it is a function.
+static bool HL2SB_TimerPushCallback( lua_State *pL, int nId )
+{
+	if ( pL == NULL || nId <= 0 )
+		return false;
+
+	HL2SB_TimerCallbackTable( pL, false );		// [tbl|nil]
+	if ( !lua_istable( pL, -1 ) )
+	{
+		lua_pop( pL, 1 );
+		return false;
+	}
+
+	lua_pushinteger( pL, nId );
+	lua_rawget( pL, -2 );						// [tbl][fn|nil]
+	lua_remove( pL, -2 );						// [fn|nil]
+	if ( !lua_isfunction( pL, -1 ) )
+	{
+		lua_pop( pL, 1 );
+		return false;
+	}
+	return true;
+}
+
+// Drops the callback for nId (a no-op when it is already gone).
+static void HL2SB_TimerClearCallback( lua_State *pL, int nId )
+{
+	if ( pL == NULL || nId <= 0 )
+		return;
+
+	HL2SB_TimerCallbackTable( pL, false );
+	if ( !lua_istable( pL, -1 ) )
+	{
+		lua_pop( pL, 1 );
+		return;
+	}
+
+	lua_pushinteger( pL, nId );
+	lua_pushnil( pL );
+	lua_rawset( pL, -3 );
+	lua_pop( pL, 1 );
+}
+
+// Clears a callback on the current state (every caller here runs inside it).
+static void HL2SB_TimerDropCallback( int nId )
+{
+	HL2SB_TimerClearCallback( L, nId );
 }
 
 static CUtlString HL2SB_TimerKey( lua_State *L, int nArg )
@@ -131,6 +258,7 @@ static int HL2SB_TimerRepsArg( lua_State *L, int nArg )
 
 // timer.Create( identifier, delay, repetitions, func )
 static int timer_Create (lua_State *L) {
+	HL2SB_TimerClaimState( "timer.Create from a new state" );
 	CUtlString sKey = HL2SB_TimerKey( L, 1 );
 	float flDelay = (float)luaL_checknumber( L, 2 );
 	int iReps = HL2SB_TimerRepsArg( L, 3 );
@@ -138,7 +266,7 @@ static int timer_Create (lua_State *L) {
 	CUtlString sLoc = HL2SB_TimerLocation( L, 1 );
 
 	HL2SB_LuaTimer_t t;
-	t.m_iFuncRef = LUA_NOREF;
+	t.m_iFuncRef = 0;
 	t.m_flDelay = flDelay;
 	t.m_iReps = iReps;
 	t.m_flNext = HL2SB_TimerNow() + flDelay;
@@ -151,10 +279,9 @@ static int timer_Create (lua_State *L) {
 	// the old callback for the GC).
 	UtlHashHandle_t h = g_LuaTimers.Find( sKey );
 	if ( h != g_LuaTimers.InvalidHandle() )
-		HL2SB_TimerUnref( g_LuaTimers[ h ].m_iFuncRef );
+		HL2SB_TimerDropCallback( g_LuaTimers[ h ].m_iFuncRef );
 
-	lua_pushvalue( L, 4 );
-	t.m_iFuncRef = luaL_ref( L, LUA_REGISTRYINDEX );
+	t.m_iFuncRef = HL2SB_TimerStoreCallback( L, 4 );
 
 	g_LuaTimers.Insert( sKey, t );
 	return 0;
@@ -162,13 +289,13 @@ static int timer_Create (lua_State *L) {
 
 // timer.Simple( delay, func ) -- anonymous one-shot.
 static int timer_Simple (lua_State *L) {
+	HL2SB_TimerClaimState( "timer.Simple from a new state" );
 	float flDelay = (float)luaL_checknumber( L, 1 );
 	luaL_checktype( L, 2, LUA_TFUNCTION );
 	CUtlString sLoc = HL2SB_TimerLocation( L, 1 );
 
 	HL2SB_LuaSimpleTimer_t s;
-	lua_pushvalue( L, 2 );
-	s.m_iFuncRef = luaL_ref( L, LUA_REGISTRYINDEX );
+	s.m_iFuncRef = HL2SB_TimerStoreCallback( L, 2 );
 	s.m_flFireTime = HL2SB_TimerNow() + flDelay;
 	s.m_sLocation = sLoc;
 
@@ -182,7 +309,7 @@ static int timer_Remove (lua_State *L) {
 	UtlHashHandle_t h = g_LuaTimers.Find( sKey );
 	if ( h != g_LuaTimers.InvalidHandle() )
 	{
-		HL2SB_TimerUnref( g_LuaTimers[ h ].m_iFuncRef );
+		HL2SB_TimerDropCallback( g_LuaTimers[ h ].m_iFuncRef );
 		g_LuaTimers.Remove( sKey );
 	}
 	return 0;
@@ -304,9 +431,8 @@ static int timer_Adjust (lua_State *L) {
 	if ( !lua_isnoneornil( L, 4 ) )
 	{
 		luaL_checktype( L, 4, LUA_TFUNCTION );
-		HL2SB_TimerUnref( t.m_iFuncRef );
-		lua_pushvalue( L, 4 );
-		t.m_iFuncRef = luaL_ref( L, LUA_REGISTRYINDEX );
+		HL2SB_TimerDropCallback( t.m_iFuncRef );
+		t.m_iFuncRef = HL2SB_TimerStoreCallback( L, 4 );
 	}
 
 	// Adjust restarts the countdown with the new delay.  On a paused timer
@@ -410,6 +536,10 @@ LUA_API void HL2SB_TimerTick ( void )
 	if ( L == NULL )
 		return;
 
+	// HL2SB (2026-10-19): never interpret a reference against a registry it was
+	// not created in.  See s_pTimerState.
+	HL2SB_TimerClaimState( "timer pump on a new state" );
+
 	double flNow = HL2SB_TimerNow();
 
 	// --- one-shot simple timers ---
@@ -423,8 +553,16 @@ LUA_API void HL2SB_TimerTick ( void )
 		CUtlString sLoc = s.m_sLocation;
 		g_LuaSimpleTimers.Remove( i );
 
-		lua_rawgeti( L, LUA_REGISTRYINDEX, iRef );
-		luaL_unref( L, LUA_REGISTRYINDEX, iRef );
+		// HL2SB (2026-10-19): the callback lives in this library's own keyed
+		// table, so a missing entry means the timer was retired or its state is
+		// gone -- never "some other subsystem recycled our slot".
+		if ( !HL2SB_TimerPushCallback( L, iRef ) )
+		{
+			luasrc_LuaErrorMsgF( "Timer dropped [Simple][%s]: callback id %d is gone\n",
+				sLoc.Get(), iRef );
+			continue;
+		}
+		HL2SB_TimerClearCallback( L, iRef );
 		if ( lua_pcall( L, 0, 0, 0 ) != 0 )
 		{
 			const char *pszErr = lua_tostring( L, -1 );
@@ -473,8 +611,16 @@ LUA_API void HL2SB_TimerTick ( void )
 		CUtlString sKey = due[ i ];
 
 		bool bFailed = false;
-		lua_rawgeti( L, LUA_REGISTRYINDEX, iRef );
-		if ( lua_pcall( L, 0, 0, 0 ) != 0 )
+		// HL2SB (2026-10-19): the callback lives in this library's own keyed
+		// table; a missing entry means the timer was retired (or belongs to a
+		// state that no longer exists), never a recycled registry slot.
+		if ( !HL2SB_TimerPushCallback( L, iRef ) )
+		{
+			luasrc_LuaErrorMsgF( "Timer dropped [%s][%s]: callback id %d is gone\n",
+				sKey.Get(), sLoc.Get(), iRef );
+			bFailed = true;
+		}
+		else if ( lua_pcall( L, 0, 0, 0 ) != 0 )
 		{
 			bFailed = true;
 			const char *pszErr = lua_tostring( L, -1 );
@@ -506,23 +652,46 @@ LUA_API void HL2SB_TimerTick ( void )
 
 		if ( iRepsAfter == 0 || bFailed )
 		{
-			HL2SB_TimerUnref( t2.m_iFuncRef );
+			HL2SB_TimerDropCallback( t2.m_iFuncRef );
 			g_LuaTimers.Remove( sKey );
 		}
 	}
 }
 
 //-----------------------------------------------------------------------------
-// HL2SB: the registry holds luaL_ref() indices into THIS state; drop them
-// before the state closes (same reasoning as luasrc_net_reset).
+// HL2SB: drop the records (and their callbacks) before the state closes.
+// A callback id only exists in the state that created it, so clearing against a
+// different state is a harmless no-op -- no registry index bookkeeping is shared
+// with anything else any more.
 //-----------------------------------------------------------------------------
 LUA_API void HL2SB_TimerShutdown ( void )
 {
 	FOR_EACH_HASHTABLE( g_LuaTimers, hIter )
-		HL2SB_TimerUnref( g_LuaTimers[ hIter ].m_iFuncRef );
+		HL2SB_TimerDropCallback( g_LuaTimers[ hIter ].m_iFuncRef );
 	g_LuaTimers.Purge();
 
 	FOR_EACH_VEC( g_LuaSimpleTimers, i )
-		HL2SB_TimerUnref( g_LuaSimpleTimers[ i ].m_iFuncRef );
+		HL2SB_TimerDropCallback( g_LuaSimpleTimers[ i ].m_iFuncRef );
 	g_LuaSimpleTimers.Purge();
+
+	s_pTimerState = NULL;
+}
+
+//-----------------------------------------------------------------------------
+// HL2SB (2026-10-19): called from luasrc_init() the moment a new state exists.
+//
+// This fork builds a fresh Lua state on every level load (luasrc_init does
+// L = lua_open()), while GMod -- whose timer is the only implementation (a GMod
+// install has no lua/includes/modules/timer.lua; timer lives in the game DLLs
+// and is pumped once per frame) -- keeps one state for the whole process.
+//
+// A record that outlives its state can never be run again: its callback id only
+// exists in the dead state's private table.  Take ownership of the new state and
+// drop the leftovers, so the pump cannot even try.
+//-----------------------------------------------------------------------------
+LUA_API void HL2SB_TimerResetForNewState ( lua_State *pL )
+{
+	g_LuaTimers.Purge();
+	g_LuaSimpleTimers.Purge();
+	s_pTimerState = pL;
 }

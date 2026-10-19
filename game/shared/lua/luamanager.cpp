@@ -79,6 +79,7 @@ static bool luasrc_PathInDisabledAddon (const char *fullpath);
 // HL2SB (2026-09-21): engine timer registry shutdown (game/shared/lua/ltimer.cpp).
 // Local prototype on purpose -- luasrclib.h touch would force a full rebuild.
 LUA_API void HL2SB_TimerShutdown( void );
+LUA_API void HL2SB_TimerResetForNewState( lua_State *pL );
 
 // HL2SB (2026-09-21): the process-wide Lua error collector feeding the main-menu
 // error viewer (lua/gameui/luaerrorsdialog.lua).  Local prototypes on purpose --
@@ -1256,6 +1257,14 @@ void luasrc_init (void) {
   }
 
   L = lua_open();
+
+  // HL2SB (2026-10-19): timer records keep luaL_ref() indices into the registry
+  // of the state that created them, and this fork rebuilds the state on every
+  // level load.  Anything left over from the previous state would resolve to an
+  // unrelated object here (the "attempt to call a table value" under
+  // "Timer Failed! [Simple][...]" on map changes).  Must run AFTER L exists and
+  // BEFORE any script can register a new timer; it does not touch L.
+  HL2SB_TimerResetForNewState( L );
 
   // HL2SB: without this, any unprotected Lua error kills the process via
   // __fastfail before any of our crash handling can run.  See above.
