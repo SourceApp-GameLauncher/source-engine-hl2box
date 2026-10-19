@@ -1,4 +1,4 @@
-//===== Copyright © 1996-2005, Valve Corporation, All rights reserved. ======//
+﻿//===== Copyright © 1996-2005, Valve Corporation, All rights reserved. ======//
 //
 // Purpose: Contains the implementation of Lua for scripting.
 //
@@ -934,6 +934,26 @@ LUA_API void luasrc_LuaErrorMsg (const char *pszText)
 		Q_strncpy( s_szLastErr, pszText, sizeof( s_szLastErr ) );
 		s_nRepeats = 1;
 	}
+
+	// GMod's error spam guard: at most five reported errors per second.  The
+	// reference stops the flood rather than paying for a traceback and a log
+	// line for every failure of a broken effect/hook, and a new window starts
+	// when the wall clock crosses the next second.
+	static double s_flSpamWindow = 0.0;
+	static int    s_nSpamCount = 0;
+	double flSpamNow = Plat_FloatTime();
+	if ( s_flSpamWindow <= 0.0 || ( flSpamNow - s_flSpamWindow ) >= 1.0 )
+	{
+		s_flSpamWindow = flSpamNow;
+		s_nSpamCount = 0;
+	}
+	if ( ++s_nSpamCount > 5 )
+	{
+		if ( s_nSpamCount == 6 )
+			luasrc_LuaLogToFile( "[HL2SB] Lua error spam guard: more than 5 errors in one second, suppressing the rest of the window\n", 'E' );
+		return;
+	}
+
 
 	// HL2SB (sbrust): GMod 的 lua_showerrors_cl/sv 开关 -- 置 0 只静音控制台，
 	// hl2sb_lua.log 照常落盘（本分叉的诊断主通道不随 GMod 开关消失）。

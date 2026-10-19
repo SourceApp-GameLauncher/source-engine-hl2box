@@ -2877,6 +2877,17 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   {
     lua_pop( L, 1 );
     lua_newtable( L );
+    // GMod global GetHostName(): "Returns the name of the current server.
+    // GetHostName returns information from ConVar hostname" (wiki, Global.GetHostName).
+    // Missing entirely in this tree, so gamemodes/base/gamemode/init.lua:92 raised
+    // "attempt to call global 'GetHostName' (a nil value)" once per level.
+    lua_pushcfunction( L, []( lua_State *pL ) -> int {
+        ConVarRef hostname( "hostname" );
+        lua_pushstring( pL, hostname.IsValid() ? hostname.GetString() : "" );
+        return 1;
+    } );
+    lua_setglobal( L, "GetHostName" );
+
     lua_setglobal( L, "game" );
   }
   else
