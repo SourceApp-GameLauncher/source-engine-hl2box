@@ -425,80 +425,54 @@ CHANNEL MIXING
 // word in a sentence, release the sentence.
 // Works for static, dynamic, sentence and stream sounds
 
-// HL2SB (2026-10-04): mixers freed by S_FreeChannel are parked here and only
-// destroyed at the next MIX_PaintChannels entry - between frames, where no
-// channel walk can observe the object half-dead.
+// HL2SB (2026-10-19): the deferred-deletion experiment is over.
 //
-// HL2SB (2026-10-19): the park list refuses a pointer it already holds.  "One
-// atomic claim per channel" is not the same thing as "parked once": a channel
-// can be torn down twice in one frame through two walks (a steal taking the
-// slot while a stop pass is still iterating this frame's snapshot), and the
-// second teardown used to park the same object again.  The drain then ran a
-// deleting destructor over a mixer whose IWaveData the first destroy had
-// already freed - AV READ 0x8 at `call [rax+8]` inside the wave mixer's
-// deleting destructor at map entry (gm_construct, 2026-10-18 23:41).  The
-// membership test makes the destroy idempotent however the channel bookkeeping
-// got there; the mutex keeps the park safe from the (console) mix thread.
-static CThreadFastMutex s_MixerGraveyardMutex;
-static CUtlVector< CAudioMixer * > s_MixerGraveyard;
-
-void HL2SB_DeferMixerDelete( CAudioMixer *pMixer )
-{
-	if ( pMixer == NULL )
-		return;
-
-	AUTO_LOCK( s_MixerGraveyardMutex );
-	if ( s_MixerGraveyard.Find( pMixer ) != s_MixerGraveyard.InvalidIndex() )
-		return;
-	s_MixerGraveyard.AddToTail( pMixer );
-}
-
-void HL2SB_DrainMixerGraveyard( void )
-{
-	// Detach the batch under the lock, destroy outside it: a mixer destructor
-	// runs source code (ReferenceRemove -> CacheUnload) that must never be able
-	// to re-enter this list.
-	CUtlVector< CAudioMixer * > pending;
-	{
-		AUTO_LOCK( s_MixerGraveyardMutex );
-		pending.Swap( s_MixerGraveyard );
-	}
-
-	for ( int i = 0; i < pending.Count(); ++i )
-	{
-		delete pending[i];
-	}
-}
-
+// Between 2026-10-04 and 2026-10-19 freed mixers were parked here and destroyed
+// at the next MIX_PaintChannels entry, on the theory that a mix-thread walk
+// could still hold the pointer after the channel let go of it.  It cannot:
+// every path that frees a channel - S_StartDynamicSound, S_StartStaticSound,
+// S_StopSound, S_StopSoundByGuid, S_StopAllSounds, S_AlterChannel and the mix
+// thread's own paint - runs under g_SndMutex, and S_Update_Guts takes the same
+// mutex around the whole of MIX_PaintChannels.  What the parking DID do was
+// move each mixer's destruction away from the only moment when the objects its
+// destructor walks (its IWaveData, its CAudioSource, the CSfxTable that owns
+// it) are certainly alive.  Map entry then destroyed mixers parked while
+// leaving the previous level, after the sound table had been torn down: three
+// of the four dumps from 2026-10-18/19 die inside the drain, one of them on a
+// deleting destructor that had already run once.  The mixer is therefore
+// destroyed synchronously again, right where the channel is torn down.
 void S_FreeChannel(channel_t *ch)
 {
 	// Don't reenter in here (can happen inside voice code).
 	if ( ch->flags.m_bIsFreeingChannel )
 		return;
+
+	// Nothing to release and - importantly - no stopped callback to run, so
+	// leave the channel immediately reusable.  This check has to happen
+	// BEFORE the re-entrancy flag is raised: raising it and returning left
+	// the flag set for the rest of the level, after which every later
+	// S_FreeChannel on this channel was a no-op and the channel stayed
+	// enlisted in g_ActiveChannels for every sound it played next (the
+	// active list then grew without bound, which is the sort of bookkeeping
+	// corruption that ends in an index into channels[] that was never a
+	// channel).
+	if ( ch->pMixer == NULL && ch->sfx == NULL )
+		return;
+
 	ch->flags.m_bIsFreeingChannel = true;
 
-	// HL2SB (2026-10-04): the mixer teardown must have exactly ONE owner.
-	// The audio mix thread frees finished channels (MIX_MixChannelsToPaint-
-	// buffer) while the main thread steals channels for arriving sounds under
-	// g_SndMutex - a lock this function is not held under on the mix path.
-	// Both threads used to read the same ch->pMixer and delete it twice
-	// (the 2026-10-04 dumps: the deleting destructor read NULL+8 once and a
-	// garbage vtable pointer the second time).  Swap the pointer to NULL
-	// atomically - whoever receives the non-NULL mixer owns the teardown,
-	// and a re-entrant call from the stopped callback below loses the swap.
+	// Exactly one owner tears the mixer down.  The audio mix thread frees
+	// finished channels while the main thread steals channels for arriving
+	// sounds; a re-entrant call from the stopped callback below loses this
+	// swap and leaves the mixer to whoever won it.
 	CAudioMixer *pMixer = (CAudioMixer *)ThreadInterlockedExchangePointer(
 		(void * volatile *)&ch->pMixer, NULL );
-	// The sfx companion check keeps the legitimate "never had a mixer"
-	// teardown (a vox sentence with zero words) on its old path.
-	if ( pMixer == NULL && ch->sfx == NULL )
-		return;
 
 	SND_CloseMouth(ch);
 
 	// Detach the sfx before the stopped callback: the callback runs game
 	// code (captions, sound hooks) which may start sounds and steal channels
-	// - it must observe an already emptied channel, or the steal deletes the
-	// same mixer a second time.
+	// - it must observe an already emptied channel.
 	CSfxTable *sfx = ch->sfx;
 	ch->sfx = NULL;
 	ch->flags.isSentence = false;
@@ -506,22 +480,17 @@ void S_FreeChannel(channel_t *ch)
 	// Leave the active list BEFORE the callback and the delete: both can run
 	// arbitrary game/loader code for a long time, and a channel that is
 	// enlisted with a nulled mixer is exactly what the mix thread's snapshot
-	// crashed on at map load (IsReadyToMix on NULL, 2026-10-04 03:00 dump).
+	// crashed on at map load.
 	g_ActiveChannels.Remove( ch );
 
 	if ( sfx )
 		g_pSoundServices->OnSoundStopped( ch->guid, ch->soundsource, ch->entchannel, sfx->getname() );
 
-	// HL2SB (2026-10-04 04:26/04:31 dumps): the mixer OBJECT must not die on
-	// the claiming thread.  The atomic claim above serialises the pointer
-	// swap, but a mix-thread walk that read the non-NULL slot before the
-	// claim still holds a stale local across the claim-callback-delete
-	// sequence - IsReadyToMix on freed memory (read of member 0x30 then
-	// deref 0x48) and a double delete (vptr already NULL) were both caught
-	// live.  Defer the delete to the mix frame: the graveyard is drained at
-	// MIX_PaintChannels entry, between frames, on the thread that walks the
-	// channels - no delete can ever overlap a walk again.
-	HL2SB_DeferMixerDelete( pMixer );
+	// Destroy the mixer while the source it references is still loaded.  The
+	// destructor runs ReferenceRemove -> CacheUnload on its CAudioSource, so
+	// it is only safe between the channel letting go and the sound table
+	// being torn down - which is exactly here.
+	delete pMixer;
 
 	// zero all data in channel
 	Q_memset(ch, 0, sizeof(channel_t));
@@ -2374,12 +2343,6 @@ void MIX_PaintChannels( int endtime, bool bIsUnderwater )
 {
 	VPROF("MIX_PaintChannels");
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
-
-	// HL2SB (2026-10-04): destroy the mixers S_FreeChannel parked since the
-	// last frame.  This runs on the mixing thread between frames - no channel
-	// walk is in flight, so the objects die where nothing can observe them
-	// half-dead (the 04:26/04:31 use-after-free pair).
-	HL2SB_DrainMixerGraveyard();
 
 	int 	end;
 	int		count;
