@@ -18,6 +18,9 @@
 #include <vgui/IPanel.h>
 #include <Color.h>
 #include <vgui/Cursor.h>
+#include <vgui_controls/Label.h>
+#include <vgui_controls/TextEntry.h>
+#include <vgui_controls/Frame.h>
 #include "panelmetaclassmgr.h"
 #include <vgui_controls/PHandle.h>
 #include "luamanager.h"
@@ -1838,7 +1841,186 @@ static int Panel_GetBGColor (lua_State *L) {
 }
 
 
+/*
+** ===========================================================================
+** HL2SB: the text family on the shared Panel metatable.
+**
+** GMod keeps ONE method table for every panel object, built from every panel
+** class's bindings (a plain Panel answers Panel:SetText, Panel:GetContentSize,
+** ... exactly like a Label does).  This fork gives each class its own
+** metatable, so a Derma control - whose engine base is "Panel" - could not
+** reach anything the text controls bind.
+**
+** These methods therefore live on "Panel" and dispatch to the concrete vgui
+** control, doing nothing when the panel has no text of that kind.  That is
+** what a script observes on GMod: the call always succeeds, and only panels
+** that actually own text show an effect.
+** ===========================================================================
+*/
+static int Panel_SetText (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  const char *pszText = luaL_checkstring(L, 2);
+
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->SetText(pszText);
+  else if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->SetText(pszText);
+  return 0;
+}
+
+static int Panel_GetText (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  char szText[1024];
+  szText[0] = '\0';
+
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->GetText(szText, sizeof(szText));
+  else if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->GetText(szText, sizeof(szText));
+
+  lua_pushstring(L, szText);
+  return 1;
+}
+
+static int Panel_GetContentSize (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int wide = 0, tall = 0;
+
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->GetContentSize(wide, tall);
+
+  lua_pushinteger(L, wide);
+  lua_pushinteger(L, tall);
+  return 2;
+}
+
+static int Panel_SetContentAlignment (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int alignment = luaL_checkint(L, 2);
+
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->SetContentAlignment((Label::Alignment)alignment);
+  return 0;
+}
+
+static int Panel_SetTextInset (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int xInset = luaL_checkint(L, 2);
+  int yInset = luaL_checkint(L, 3);
+
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->SetTextInset(xInset, yInset);
+  return 0;
+}
+
+static int Panel_GetTextInset (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int xInset = 0, yInset = 0;
+
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->GetTextInset(&xInset, &yInset);
+
+  lua_pushinteger(L, xInset);
+  lua_pushinteger(L, yInset);
+  return 2;
+}
+
+
+static int Panel_HasParent (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  // "self is a descendant of the argument" - the engine method of the same
+  // name, and the direction GMod's own IsOurChild() relies on
+  // (child:HasParent( self )).
+  lua_pushboolean(L, pPanel->HasParent(luaL_checkvpanel(L, 2)));
+  return 1;
+}
+
+static int Panel_SelectAllText (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+
+  if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->SelectAllText(true);
+  return 0;
+}
+
+static int Panel_SetAllowNonAsciiCharacters (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  bool bAllow = luaL_checkboolean(L, 2) != 0;
+
+  if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->SetAllowNonAsciiCharacters(bAllow);
+  return 0;
+}
+
+static int Panel_SetMultiline (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  bool bMultiline = luaL_checkboolean(L, 2) != 0;
+
+  if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->SetMultiline(bMultiline);
+  return 0;
+}
+
+static int Panel_IsMultiline (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  bool bMultiline = false;
+
+  if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    bMultiline = pEntry->IsMultiline();
+
+  lua_pushboolean(L, bMultiline);
+  return 1;
+}
+
+
+static int Panel_SetCaretPos (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int cursorPos = luaL_checkint(L, 2);
+
+  if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->SetCaretPos(cursorPos);
+  return 0;
+}
+
+static int Panel_GetCaretPos (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int cursorPos = 0;
+
+  if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    cursorPos = pEntry->GetCaretPos();
+
+  lua_pushinteger(L, cursorPos);
+  return 1;
+}
+
+static int Panel_DoModal (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+
+  // Derma_Message / Derma_Query / Derma_StringRequest all end with
+  // Window:DoModal(), and the window is a scripted Frame.
+  if (Frame *pFrame = dynamic_cast<Frame *>(pPanel))
+    pFrame->DoModal();
+  return 0;
+}
+
+
 static const luaL_Reg Panelmeta[] = {
+  // HL2SB: text family on the shared table (see the block above).
+  {"GetContentSize", Panel_GetContentSize},
+  {"GetText", Panel_GetText},
+  {"GetTextInset", Panel_GetTextInset},
+  {"GetValue", Panel_GetText},
+  {"DoModal", Panel_DoModal},
+  {"GetCaretPos", Panel_GetCaretPos},
+  {"SetCaretPos", Panel_SetCaretPos},
+  {"HasParent", Panel_HasParent},
+  {"IsMultiline", Panel_IsMultiline},
+  {"SelectAllText", Panel_SelectAllText},
+  {"SetAllowNonAsciiCharacters", Panel_SetAllowNonAsciiCharacters},
+  {"SetMultiline", Panel_SetMultiline},
+  {"SetContentAlignment", Panel_SetContentAlignment},
+  {"SetText", Panel_SetText},
+  {"SetTextInset", Panel_SetTextInset},
   // HL2SB (2026-09-27): GMod's shared-panel-meta names this engine lacked --
   // aliases onto existing bindings plus the new implementations above.
   {"ChildCount", Panel_GetChildCount},
@@ -2069,6 +2251,8 @@ static const luaL_Reg Panelmeta[] = {
   {"MouseCapture", Panel_MouseCapture},
   {"Remove", Panel_Remove},
   {"IsValid", Panel_IsValid},
+  // HL2SB: the same function under GMod's second spelling.
+  {"Valid", Panel_IsValid},
   {"CenterVertical", Panel_CenterVertical},
   {"CenterHorizontal", Panel_CenterHorizontal},
   {"ShouldHandleInputMessage", Panel_ShouldHandleInputMessage},

@@ -3832,6 +3832,29 @@ void TextEntry::SelectNoText()
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: HL2SB - move the text caret to a byte index, the way GMod scripts
+// use it after replacing the entry's contents.  The selection is cleared so
+// the caret is a plain insertion point, and the value is clamped to the text.
+//-----------------------------------------------------------------------------
+void TextEntry::SetCaretPos( int cursorPos )
+{
+	const int nLength = GetTextLength();
+	if ( cursorPos < 0 )
+		cursorPos = 0;
+	if ( cursorPos > nLength )
+		cursorPos = nLength;
+
+	SelectNoText();
+	_cursorPos = cursorPos;
+	_cursorIsAtEnd = ( cursorPos >= nLength );
+	_putCursorAtEnd = false;
+
+	ResetCursorBlink();
+	InvalidateLayout( false, false );
+	Repaint();
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Sets the width of the text entry window so all text will fit inside
 //-----------------------------------------------------------------------------
 void TextEntry::SetToFullWidth()

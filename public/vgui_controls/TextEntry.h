@@ -203,6 +203,13 @@ public:
 	// Selects all the text in the text entry.
 	void SelectAllText(bool bResetCursorPos);
 	void SelectNoText();
+
+	// HL2SB: the text caret as an index into the entry's text.  GMod exposes
+	// these on every panel and its DTextEntry positions the caret after
+	// replacing the text (self:SetText( x ); self:SetCaretPos( #x )).  Neither
+	// is virtual, so the class layout is unchanged.
+	void SetCaretPos(int cursorPos);
+	int GetCaretPos() const { return _cursorPos; }
 	void SelectAllOnFirstFocus( bool status );
 	void SetDrawWidth(int width); // width from right side of window we have to draw in
 	int GetDrawWidth();
