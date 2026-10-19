@@ -29,7 +29,16 @@ using namespace vgui;
 //================================================================
 CScriptedClientLuaPanel::CScriptedClientLuaPanel() : vgui::EditablePanel( NULL, "CScriptedClientLuaPanel")
 {
-	SetKeyBoardInputEnabled( false );
+	// HL2SB (2026-10-19): keyboard input must stay ENABLED on this panel too.
+	//
+	// This is the root of EVERY Lua panel, so a disabled keyboard here silently
+	// turned off text entry for the whole Derma tree: a DTextEntry could be
+	// clicked and its caret drawn, but no keystroke ever reached it (the
+	// Minecraft sign's text dialog was the visible case).  Mouse keeps its
+	// "disable for this panel only" treatment below, which is about hit testing;
+	// keyboard enablement is what makes children focusable and lets the focused
+	// child receive key events.
+	SetKeyBoardInputEnabled( true );
 
 	// HL2SB: MOUSE input has to stay enabled on this panel.
 	//

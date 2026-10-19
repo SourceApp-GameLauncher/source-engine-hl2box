@@ -56,6 +56,12 @@ struct CLuaParticleX : public SimpleParticle
 	bool m_bVelocityDecay;
 	float m_flStartLength;
 	float m_flEndLength;
+	// HL2SB (2026-10-19): the reference implementation stores the Lua particle's
+	// sizes as FLOATS (its SetStartSize writes a float), while SimpleParticle
+	// only carries bytes.  Keep the exact value here and let the renderer prefer
+	// it; the byte fields stay as the fallback for engine-created particles.
+	float m_flStartSize;
+	float m_flEndSize;
 	int m_nThinkRef;         // LUA_REFNIL when none
 	float m_flNextThink;
 	// HL2SB (2026-09-21, particle gap audit): the rest of the GMod surface.
@@ -230,8 +236,8 @@ public:
 			if ( pParticle->m_flDieTime > 0.001f )
 				flT = clamp( pParticle->m_flLifetime / pParticle->m_flDieTime, 0.0f, 1.0f );
 
-			float flSize = pParticle->m_uchStartSize +
-				( (int)pParticle->m_uchEndSize - (int)pParticle->m_uchStartSize ) * flT;
+			float flSize = pParticle->m_flStartSize +
+				( pParticle->m_flEndSize - pParticle->m_flStartSize ) * flT;
 			float flAlpha = ( (int)pParticle->m_uchStartAlpha +
 				( (int)pParticle->m_uchEndAlpha - (int)pParticle->m_uchStartAlpha ) * flT ) / 255.0f;
 			Vector vColor( pParticle->m_uchColor[0] / 255.0f,
@@ -542,6 +548,8 @@ LUA_BINDING_BEGIN( CSEmitterReg, Add, "method", "Creates a new CLuaParticle with
 	pParticle->m_uchEndAlpha = 0;
 	pParticle->m_uchStartSize = 1;
 	pParticle->m_uchEndSize = 1;
+	pParticle->m_flStartSize = 1.0f;
+	pParticle->m_flEndSize = 1.0f;
 	pParticle->m_iFlags = 0;
 	pParticle->m_vecGravity.Init();
 	pParticle->m_flAirResistance = 0.0f;
@@ -728,11 +736,11 @@ LUA_PARTICLE_SETTER_BEGIN( SetVelocity )
 LUA_PARTICLE_SETTER_END( 0 )
 
 LUA_PARTICLE_SETTER_BEGIN( SetStartSize )
-	pParticle->m_uchStartSize = (unsigned char)clamp( (int)luaL_checknumber( L, 2 ), 0, 255 );
+	pParticle->m_flStartSize = MAX( 0.0f, (float)luaL_checknumber( L, 2 ) );
 LUA_PARTICLE_SETTER_END( 0 )
 
 LUA_PARTICLE_SETTER_BEGIN( SetEndSize )
-	pParticle->m_uchEndSize = (unsigned char)clamp( (int)luaL_checknumber( L, 2 ), 0, 255 );
+	pParticle->m_flEndSize = MAX( 0.0f, (float)luaL_checknumber( L, 2 ) );
 LUA_PARTICLE_SETTER_END( 0 )
 
 LUA_PARTICLE_SETTER_BEGIN( SetDieTime )
@@ -785,7 +793,7 @@ LUA_PARTICLE_SETTER_BEGIN( GetEndLength )
 LUA_PARTICLE_SETTER_END( 1 )
 
 LUA_PARTICLE_SETTER_BEGIN( GetEndSize )
-	lua_pushnumber( L, pParticle->m_uchEndSize );
+	lua_pushnumber( L, pParticle->m_flEndSize );
 LUA_PARTICLE_SETTER_END( 1 )
 
 LUA_PARTICLE_SETTER_BEGIN( GetGravity )
@@ -818,7 +826,7 @@ LUA_PARTICLE_SETTER_BEGIN( GetStartLength )
 LUA_PARTICLE_SETTER_END( 1 )
 
 LUA_PARTICLE_SETTER_BEGIN( GetStartSize )
-	lua_pushnumber( L, pParticle->m_uchStartSize );
+	lua_pushnumber( L, pParticle->m_flStartSize );
 LUA_PARTICLE_SETTER_END( 1 )
 
 LUA_PARTICLE_SETTER_BEGIN( GetVelocity )

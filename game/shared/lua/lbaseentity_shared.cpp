@@ -1300,7 +1300,13 @@ static int CBaseEntity_GetMoveType (lua_State *L) {
 }
 
 static int CBaseEntity_GetOwnerEntity (lua_State *L) {
-  lua_pushentity(L, luaL_checkentity(L, 1)->GetOwnerEntity());
+  // HL2SB (2026-10-19): same contract as GetOwner() above -- nil when there is
+  // no owner, never the NULL sentinel.
+  CBaseEntity *pOwner = luaL_checkentity( L, 1 )->GetOwnerEntity();
+  if ( pOwner == NULL )
+    lua_pushnil( L );
+  else
+    lua_pushentity( L, pOwner );
   return 1;
 }
 
@@ -4471,7 +4477,17 @@ static int CBaseEntity_TakeDamageInfo (lua_State *L) {
 // C++ accessor for the same field is GetOwnerEntity().
 //-----------------------------------------------------------------------------
 static int CBaseEntity_GetOwner (lua_State *L) {
-  lua_pushentity( L, luaL_checkentity( L, 1 )->GetOwnerEntity() );
+  // HL2SB (2026-10-19): answer nil for a missing owner, as the reference does.
+  // Pushing the NULL sentinel made "if ( self:GetOwner() ~= nil )" guards pass,
+  // and a method called on the sentinel answers false for every name -- so
+  // scripts ended up doing arithmetic on a boolean.  A TNT entity hit exactly
+  // that after its owner went away: the bookkeeping line raised before its own
+  // self:Remove(), so it never despawned and kept exploding.
+  CBaseEntity *pOwner = luaL_checkentity( L, 1 )->GetOwnerEntity();
+  if ( pOwner == NULL )
+    lua_pushnil( L );
+  else
+    lua_pushentity( L, pOwner );
   return 1;
 }
 
