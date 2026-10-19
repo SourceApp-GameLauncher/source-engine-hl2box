@@ -2004,6 +2004,46 @@ static int Panel_DoModal (lua_State *L) {
 }
 
 
+static int Panel_HasHierarchicalFocus (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  bool bFocused = false;
+
+  if (vgui::input() && vgui::ipanel()) {
+    VPANEL hFocused = vgui::input()->GetFocus();
+    const VPANEL hSelf = pPanel->GetVPanel();
+
+    while (hFocused != 0) {
+      if (hFocused == hSelf) { bFocused = true; break; }
+      hFocused = vgui::ipanel()->GetParent(hFocused);
+    }
+  }
+
+  lua_pushboolean(L, bFocused);
+  return 1;
+}
+
+static int Panel_PaintAt (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  int x = luaL_checkint(L, 2);
+  int y = luaL_checkint(L, 3);
+
+  // Paint the panel as if it sat at ( x, y ), then put it back.  GMod paints
+  // panels off-position for the context menu's preview swatches.
+  int oldX = 0, oldY = 0;
+  pPanel->GetPos(oldX, oldY);
+  pPanel->SetPos(x, y);
+  if (vgui::ipanel())
+    vgui::ipanel()->PaintTraverse(pPanel->GetVPanel(), false, true);
+  pPanel->SetPos(oldX, oldY);
+  return 0;
+}
+
+static int Panel_FocusPrevious (lua_State *L) {
+  luaL_checkpanel(L, 1)->RequestFocusPrev();
+  return 0;
+}
+
+
 static const luaL_Reg Panelmeta[] = {
   // HL2SB: text family on the shared table (see the block above).
   {"GetContentSize", Panel_GetContentSize},
@@ -2014,6 +2054,9 @@ static const luaL_Reg Panelmeta[] = {
   {"GetCaretPos", Panel_GetCaretPos},
   {"SetCaretPos", Panel_SetCaretPos},
   {"HasParent", Panel_HasParent},
+  {"HasHierarchicalFocus", Panel_HasHierarchicalFocus},
+  {"PaintAt", Panel_PaintAt},
+  {"FocusPrevious", Panel_FocusPrevious},
   {"IsMultiline", Panel_IsMultiline},
   {"SelectAllText", Panel_SelectAllText},
   {"SetAllowNonAsciiCharacters", Panel_SetAllowNonAsciiCharacters},
