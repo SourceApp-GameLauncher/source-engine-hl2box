@@ -12352,20 +12352,36 @@ void CShaderAPIDx8::ReadPixels( int x, int y, int width, int height, unsigned ch
 //-----------------------------------------------------------------------------
 // Binds a particular material to render with
 //-----------------------------------------------------------------------------
+// HL2SB (2026-10-19): whether the cached material lives in a material page is
+// recorded when the material becomes current, never read back through the
+// object.
+//
+// m_pMaterial is a bare cache, and the material system deletes materials
+// without the shader API being re-bound: CMaterial::~CMaterial only rebinds
+// the error material when the hardware render context still considers the
+// dying material current, which is false whenever another render context
+// bound after it.  The old code asked the cached material about its page on
+// the next Bind - an indirect call through the vtable of a freed object.
+// Nine captured crashes all jump to address 0 from `call [rax+0x38]` here,
+// with the cached slot holding a reused heap block whose first qword is that
+// block's own address minus 0x120 (allocator bookkeeping).  The pointer is
+// now only ever compared, so a stale cache costs one spurious rebind.
+static bool s_bBoundMaterialInPage = false;
+
 void CShaderAPIDx8::Bind( IMaterial* pMaterial )
 {
 	LOCK_SHADERAPI();
 	IMaterialInternal* pMatInt = static_cast<IMaterialInternal*>( pMaterial );
 
-	bool bMaterialChanged;
-	if ( m_pMaterial && pMatInt && m_pMaterial->InMaterialPage() && pMatInt->InMaterialPage() )
-	{
-		bMaterialChanged = ( m_pMaterial->GetMaterialPage() != pMatInt->GetMaterialPage() );
-	}
-	else
-	{
-		bMaterialChanged = ( m_pMaterial != pMatInt ) || ( m_pMaterial && m_pMaterial->InMaterialPage() ) || ( pMatInt && pMatInt->InMaterialPage() );
-	}
+	// pMatInt is the incoming material and is alive by contract; the cached
+	// one is only ever compared by address.  Comparing material pages as an
+	// optimisation is deliberately gone: when two subrects of one page are
+	// interchangeable the cache kept the earlier one, which is precisely how
+	// a destroyed material stayed reachable through m_pMaterial.
+	const bool bNewInPage = pMatInt && pMatInt->InMaterialPage();
+
+	const bool bMaterialChanged = ( m_pMaterial != pMatInt ) ||
+	                              s_bBoundMaterialInPage || bNewInPage;
 
 	if ( bMaterialChanged )
 	{
@@ -12383,6 +12399,7 @@ void CShaderAPIDx8::Bind( IMaterial* pMaterial )
 		}
 #endif
 		m_pMaterial = pMatInt;
+		s_bBoundMaterialInPage = bNewInPage;
 
 #if ( defined( PIX_INSTRUMENTATION ) || defined( NVPERFHUD ) )
 		PIXifyName( s_pPIXMaterialName, sizeof( s_pPIXMaterialName ), m_pMaterial->GetName() );
