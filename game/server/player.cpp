@@ -4005,14 +4005,8 @@ void CBasePlayer::PreThink(void)
 	// skipped rather than handed a stale command.
 	if ( m_pCurrentCommand != NULL )
 	{
-		// Local extern on purpose: waf has no header dependency propagation
-		// (same pattern as the move hooks in gamemovement.cpp).
-		extern void HL2SB_PushUserCmdTable( lua_State *L, const CUserCmd *pCmd );
-
-		BEGIN_LUA_CALL_HOOK( "StartCommand" );
-			lua_pushplayer( L, this );
-			HL2SB_PushUserCmdTable( L, m_pCurrentCommand );
-			END_LUA_CALL_HOOK( 2, 0 );
+		extern void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd );
+		HL2SB_LuaStartCommand( this, m_pCurrentCommand );
 	}
 #endif
 

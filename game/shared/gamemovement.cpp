@@ -30,6 +30,10 @@
 
 extern IFileSystem *filesystem;
 
+// HL2SB: shared per-player hull / desired-view-offset state (baseplayer_shared.cpp).
+extern void HL2SB_GetPlayerHullBounds( CBasePlayer *pPlayer, bool bDucked, Vector &mins, Vector &maxs );
+extern void HL2SB_GetPlayerViewOffsetDesired( CBasePlayer *pPlayer, bool bDucked, Vector &offset );
+
 #ifndef CLIENT_DLL
 	#include "env_player_surface_trigger.h"
 	static ConVar dispcoll_drawplane( "dispcoll_drawplane", "0" );
@@ -712,7 +716,9 @@ bool CGameMovement::CheckInterval( IntervalType_t type )
 //-----------------------------------------------------------------------------
 Vector CGameMovement::GetPlayerMins( bool ducked ) const
 {
-	return ducked ? VEC_DUCK_HULL_MIN_SCALED( player ) : VEC_HULL_MIN_SCALED( player );
+    Vector mins, maxs;
+    HL2SB_GetPlayerHullBounds( player, ducked, mins, maxs );
+    return mins;
 }
 
 //-----------------------------------------------------------------------------
@@ -721,8 +727,10 @@ Vector CGameMovement::GetPlayerMins( bool ducked ) const
 // Output : const Vector
 //-----------------------------------------------------------------------------
 Vector CGameMovement::GetPlayerMaxs( bool ducked ) const
-{	
-	return ducked ? VEC_DUCK_HULL_MAX_SCALED( player ) : VEC_HULL_MAX_SCALED( player );
+{
+    Vector mins, maxs;
+    HL2SB_GetPlayerHullBounds( player, ducked, mins, maxs );
+    return maxs;
 }
 
 //-----------------------------------------------------------------------------
@@ -732,14 +740,12 @@ Vector CGameMovement::GetPlayerMaxs( bool ducked ) const
 //-----------------------------------------------------------------------------
 Vector CGameMovement::GetPlayerMins( void ) const
 {
-	if ( player->IsObserver() )
-	{
-		return VEC_OBS_HULL_MIN_SCALED( player );	
-	}
-	else
-	{
-		return player->m_Local.m_bDucked  ? VEC_DUCK_HULL_MIN_SCALED( player ) : VEC_HULL_MIN_SCALED( player );
-	}
+    if ( player->IsObserver() )
+        return VEC_OBS_HULL_MIN_SCALED( player );
+
+    Vector mins, maxs;
+    HL2SB_GetPlayerHullBounds( player, player->m_Local.m_bDucked, mins, maxs );
+    return mins;
 }
 
 //-----------------------------------------------------------------------------
@@ -748,15 +754,13 @@ Vector CGameMovement::GetPlayerMins( void ) const
 // Output : const Vector
 //-----------------------------------------------------------------------------
 Vector CGameMovement::GetPlayerMaxs( void ) const
-{	
-	if ( player->IsObserver() )
-	{
-		return VEC_OBS_HULL_MAX_SCALED( player );	
-	}
-	else
-	{
-		return player->m_Local.m_bDucked  ? VEC_DUCK_HULL_MAX_SCALED( player ) : VEC_HULL_MAX_SCALED( player );
-	}
+{
+    if ( player->IsObserver() )
+        return VEC_OBS_HULL_MAX_SCALED( player );
+
+    Vector mins, maxs;
+    HL2SB_GetPlayerHullBounds( player, player->m_Local.m_bDucked, mins, maxs );
+    return maxs;
 }
 
 //-----------------------------------------------------------------------------
@@ -766,7 +770,9 @@ Vector CGameMovement::GetPlayerMaxs( void ) const
 //-----------------------------------------------------------------------------
 Vector CGameMovement::GetPlayerViewOffset( bool ducked ) const
 {
-	return ducked ? VEC_DUCK_VIEW_SCALED( player ) : VEC_VIEW_SCALED( player );
+    Vector offset;
+    HL2SB_GetPlayerViewOffsetDesired( player, ducked, offset );
+    return offset;
 }
 
 #if 0

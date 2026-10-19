@@ -359,7 +359,8 @@ static const LuaMetatableAlias_t s_LuaMetatableAliases[] = {
   { "ModelPanel",        "ModelPanel" },
   { "ProjectedTexture",  "ProjectedTexture" },  // TODO(port): lc_projected_texture
   { "AudioChannel",      "AudioChannel" },      // TODO(port): needs BASS
-  { "MoveData",          "MoveData" },          // TODO(port): lmovedata
+  { "MoveData",          "MoveData" },          // HL2SB: native CMoveData metatable
+  { "CMoveData",         "MoveData" },          // GMod spelling used by FindMetaTable
   // GMod's name for the user command metatable, confirmed by dumping its registry:
   // "CUserCmd", with MetaID 19 (TYPE_USERCMD).
   { "CUserCmd",          "CUserCmd" },          // TODO(port): lusercmd

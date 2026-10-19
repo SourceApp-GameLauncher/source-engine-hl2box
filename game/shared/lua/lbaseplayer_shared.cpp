@@ -77,6 +77,15 @@ LUA_API lua_CBasePlayer *lua_toplayer (lua_State *L, int idx) {
   return dynamic_cast<lua_CBasePlayer *>(phPlayer->Get());
 }
 
+// HL2SB: per-player hull / desired view-offset state lives in baseplayer_shared.cpp.
+extern void HL2SB_GetPlayerHullBounds( CBasePlayer *pPlayer, bool bDucked, Vector &mins, Vector &maxs );
+extern void HL2SB_SetPlayerHullBounds( CBasePlayer *pPlayer, bool bDucked, const Vector &mins, const Vector &maxs );
+extern void HL2SB_ResetPlayerHullBounds( CBasePlayer *pPlayer );
+extern void HL2SB_GetPlayerViewOffsetDesired( CBasePlayer *pPlayer, bool bDucked, Vector &offset );
+extern void HL2SB_SetPlayerViewOffsetDesired( CBasePlayer *pPlayer, bool bDucked, const Vector &offset );
+extern void HL2SB_ResetPlayerViewOffsets( CBasePlayer *pPlayer );
+static void HL2SB_EnsureMoveDataMeta( lua_State *L );
+
 
 
 /*
@@ -226,6 +235,58 @@ static int CBasePlayer_CmdSetUpMove (lua_State *L) {
   return 0;
 }
 
+static int CBasePlayer_CmdAddKey (lua_State *L) {
+  lua_getfield(L, 1, "buttons");
+  const int nButtons = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  lua_pushinteger(L, nButtons | luaL_checkint(L, 2));
+  lua_setfield(L, 1, "buttons");
+  return 0;
+}
+
+static int CBasePlayer_CmdCommandNumber (lua_State *L) {
+  lua_getfield(L, 1, "command_number");
+  return 1;
+}
+
+static const luaL_Reg HL2SB_UserCmdMeta[] = {
+  {"AddKey",             CBasePlayer_CmdAddKey},
+  {"CommandNumber",      CBasePlayer_CmdCommandNumber},
+  {"KeyDown",            CBasePlayer_CmdKeyDown},
+  {"GetMouseX",          CBasePlayer_CmdGetMouseX},
+  {"GetMouseY",          CBasePlayer_CmdGetMouseY},
+  {"GetMouseWheel",      CBasePlayer_CmdGetMouseWheel},
+  {"GetButtons",         CBasePlayer_CmdGetButtons},
+  {"GetImpulse",         CBasePlayer_CmdGetImpulse},
+  {"GetViewAngles",      CBasePlayer_CmdGetViewAngles},
+  {"SetViewAngles",      CBasePlayer_CmdSetViewAngles},
+  {"GetForwardMove",     CBasePlayer_CmdGetForwardMove},
+  {"GetSideMove",        CBasePlayer_CmdGetSideMove},
+  {"GetUpMove",          CBasePlayer_CmdGetUpMove},
+  {"ClearButtons",       CBasePlayer_CmdClearButtons},
+  {"ClearMovement",      CBasePlayer_CmdClearMovement},
+  {"SetButtons",         CBasePlayer_CmdSetButtons},
+  {"SetImpulse",         CBasePlayer_CmdSetImpulse},
+  {"SetForwardMove",     CBasePlayer_CmdSetForwardMove},
+  {"SetSideMove",        CBasePlayer_CmdSetSideMove},
+  {"SetUpMove",          CBasePlayer_CmdSetUpMove},
+  {NULL, NULL}
+};
+
+static void HL2SB_EnsureUserCmdMeta (lua_State *L) {
+  luaL_getmetatable(L, "CUserCmd");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    luaL_newmetatable(L, "CUserCmd");
+    luaL_register(L, NULL, HL2SB_UserCmdMeta);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    lua_pushstring(L, "usercmd");
+    lua_setfield(L, -2, "__type");
+  }
+  /* leave the metatable on top: lua_setmetatable() consumes it */
+}
+
 // HL2SB (2026-09-27): build the GMod-shaped CUserCmd Lua table.  Shared by
 // Player:GetCurrentCommand() and the GM:CreateMove dispatch (in_main.cpp).
 // The table is a SNAPSHOT of the command -- callers that hand it to Lua copy
@@ -266,17 +327,16 @@ void HL2SB_PushUserCmdTable (lua_State *L, const CUserCmd *pCmd) {
   lua_pushcfunction(L, CBasePlayer_CmdSetForwardMove); lua_setfield(L, -2, "SetForwardMove");
   lua_pushcfunction(L, CBasePlayer_CmdSetSideMove);    lua_setfield(L, -2, "SetSideMove");
   lua_pushcfunction(L, CBasePlayer_CmdSetUpMove);      lua_setfield(L, -2, "SetUpMove");
+  lua_pushcfunction(L, CBasePlayer_CmdAddKey);         lua_setfield(L, -2, "AddKey");
+  lua_pushcfunction(L, CBasePlayer_CmdCommandNumber);  lua_setfield(L, -2, "CommandNumber");
+
+  HL2SB_EnsureUserCmdMeta(L);
+  lua_setmetatable(L, -2);
 }
 
 static int CBasePlayer_GetCurrentCommand (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
 #ifdef CLIENT_DLL
-  // HL2SB GMod compat: on the client realm answer from the LIVE input state.
-  // The stamped predicted command only carries its mouse deltas inside the
-  // StartCommand/FinishCommand window, and reads all-zero outside it (measured
-  // 2026-09-19: ten zero reads while Mouse2 was held and the mouse was moving)
-  // -- which made every SWEP:Tick that integrates cmd:GetMouseY() dead
-  // (gmod_camera's zoom).  GMod's predicted command during Tick carries the
-  // same data as the live input state, so this is the faithful answer.
   static CUserCmd s_HL2SBLiveCmd;
   s_HL2SBLiveCmd.Reset();
   if ( input != NULL )
@@ -287,26 +347,21 @@ static int CBasePlayer_GetCurrentCommand (lua_State *L) {
     s_HL2SBLiveCmd.mousedx = dx;
     s_HL2SBLiveCmd.mousedy = dy;
   }
+  s_HL2SBLiveCmd.command_number = pPlayer->CurrentCommandNumber();
+  s_HL2SBLiveCmd.tick_count = gpGlobals->tickcount;
   const CUserCmd *pCmd = &s_HL2SBLiveCmd;
-#else
-  const CUserCmd *pCmd = luaL_checkplayer(L, 1)->GetCurrentUserCommand();
-
-  if (pCmd == NULL) {
-    lua_pushnil(L);
-    return 1;
-  }
-#endif
-
-#ifdef CLIENT_DLL
-  // HL2SB TEMPORARY diagnostic: sample the frames Tick actually processes
-  // while Mouse2 is held -- does the predicted command carry the button AND
-  // the raw mouse deltas the camera's zoom integrates?
   static int s_nCmdDiag = 0;
   if ( s_nCmdDiag < 10 && ( pCmd->buttons & IN_ATTACK2 ) )
   {
     ++s_nCmdDiag;
     luasrc_LuaInfoMsgF( "[HL2SB] GetCurrentCommand #%d: buttons=%d mousedx=%d mousedy=%d\n",
       s_nCmdDiag, pCmd->buttons, pCmd->mousedx, pCmd->mousedy );
+  }
+#else
+  const CUserCmd *pCmd = pPlayer->GetCurrentUserCommand();
+  if (pCmd == NULL) {
+    lua_pushnil(L);
+    return 1;
   }
 #endif
 
@@ -1416,6 +1471,88 @@ static int CBasePlayer_Alive (lua_State *L) {
   return 1;
 }
 
+static int CBasePlayer_GetHull (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  Vector mins, maxs;
+  HL2SB_GetPlayerHullBounds(pPlayer, false, mins, maxs);
+  lua_pushvector(L, mins);
+  lua_pushvector(L, maxs);
+  return 2;
+}
+
+static int CBasePlayer_SetHull (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  HL2SB_SetPlayerHullBounds(pPlayer, false, luaL_checkvector(L, 2), luaL_checkvector(L, 3));
+  return 0;
+}
+
+static int CBasePlayer_GetHullDuck (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  Vector mins, maxs;
+  HL2SB_GetPlayerHullBounds(pPlayer, true, mins, maxs);
+  lua_pushvector(L, mins);
+  lua_pushvector(L, maxs);
+  return 2;
+}
+
+static int CBasePlayer_SetHullDuck (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  HL2SB_SetPlayerHullBounds(pPlayer, true, luaL_checkvector(L, 2), luaL_checkvector(L, 3));
+  return 0;
+}
+
+static int CBasePlayer_ResetHull (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  HL2SB_ResetPlayerHullBounds(pPlayer);
+  HL2SB_ResetPlayerViewOffsets(pPlayer);
+  return 0;
+}
+
+static int CBasePlayer_SetEyeAngles (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  const QAngle angles = luaL_checkangle(L, 2);
+#ifdef CLIENT_DLL
+  pPlayer->SetLocalAngles(angles);
+#else
+  pPlayer->SnapEyeAngles(angles);
+#endif
+  return 0;
+}
+
+static int CBasePlayer_GetViewOffset (lua_State *L) {
+  Vector offset;
+  HL2SB_GetPlayerViewOffsetDesired(luaL_checkplayer(L, 1), false, offset);
+  lua_pushvector(L, offset);
+  return 1;
+}
+
+static int CBasePlayer_SetViewOffset (lua_State *L) {
+  HL2SB_SetPlayerViewOffsetDesired(luaL_checkplayer(L, 1), false, luaL_checkvector(L, 2));
+  return 0;
+}
+
+static int CBasePlayer_GetViewOffsetDucked (lua_State *L) {
+  Vector offset;
+  HL2SB_GetPlayerViewOffsetDesired(luaL_checkplayer(L, 1), true, offset);
+  lua_pushvector(L, offset);
+  return 1;
+}
+
+static int CBasePlayer_SetViewOffsetDucked (lua_State *L) {
+  HL2SB_SetPlayerViewOffsetDesired(luaL_checkplayer(L, 1), true, luaL_checkvector(L, 2));
+  return 0;
+}
+
+static int CBasePlayer_GetCurrentViewOffset (lua_State *L) {
+  lua_pushvector(L, luaL_checkplayer(L, 1)->GetViewOffset());
+  return 1;
+}
+
+static int CBasePlayer_SetCurrentViewOffset (lua_State *L) {
+  luaL_checkplayer(L, 1)->SetViewOffset(luaL_checkvector(L, 2));
+  return 0;
+}
+
 #ifdef CLIENT_DLL
 // HL2SB GMod compat (2026-09-24): Player:Get/SetRenderAngles - First Person
 // Body drives the body's yaw from these every frame.  This fork's render
@@ -1427,33 +1564,7 @@ static int CBasePlayer_Alive (lua_State *L) {
 // entity (GMod answers NULL while alive as well).  The First Person Body
 // gate only tests validity to stand down while dead; Player:Alive() covers
 // that side of it.
-// HL2SB GMod compat (2026-09-25): Player:GetCurrentViewOffset() - the ducked
-// view offset (wiki: "changes while ducking").  This fork's client player has
-// no interpolated view-offset state, so answer the standing offset - First
-// Person Body only uses it for its crouch-offset math, which degrades to a
-// constant while ducked instead of animating.
-static int CBasePlayer_GetCurrentViewOffset (lua_State *L) {
-  lua_pushvector(L, lua_toplayer(L, 1)->GetViewOffset());
-  return 1;
-}
 
-// HL2SB GMod compat (2026-10-03): Player:GetViewOffset() - the STANDING view
-// offset (reference behaviour: a fixed member read, not the live
-// blend that GetCurrentViewOffset's virtual answers).  The pair's difference
-// (standing minus current) is what drives First Person Body's crouch/jump
-// leg offset.  VEC_VIEW is the gamerules' standing view vector.
-static int CBasePlayer_GetViewOffset (lua_State *L) {
-  // No gamerules (level teardown) would make the macro dereference NULL;
-  // 64 is the universal standing height every HL2 rules set answers.
-  if ( g_pGameRules == NULL )
-  {
-    Vector vStanding( 0.0f, 0.0f, 64.0f );
-    lua_pushvector( L, vStanding );
-    return 1;
-  }
-  lua_pushvector( L, VEC_VIEW );
-  return 1;
-}
 
 // HL2SB GMod compat (2026-10-03): Player:ShouldDrawLocalPlayer() - the
 // engine's draw question for this player.  Deliberately WITHOUT the
@@ -2810,13 +2921,23 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"WeaponCount", CBasePlayer_WeaponCount},
   {"Alive", CBasePlayer_Alive},
   {"IsAlive", CBasePlayer_Alive},
+  {"GetHull", CBasePlayer_GetHull},
+  {"SetHull", CBasePlayer_SetHull},
+  {"GetHullDuck", CBasePlayer_GetHullDuck},
+  {"SetHullDuck", CBasePlayer_SetHullDuck},
+  {"ResetHull", CBasePlayer_ResetHull},
+  {"SetViewOffset", CBasePlayer_SetViewOffset},
+  {"GetViewOffsetDucked", CBasePlayer_GetViewOffsetDucked},
+  {"SetViewOffsetDucked", CBasePlayer_SetViewOffsetDucked},
+  {"SetCurrentViewOffset", CBasePlayer_SetCurrentViewOffset},
+  {"GetCurrentViewOffset", CBasePlayer_GetCurrentViewOffset},
+  {"GetViewOffset", CBasePlayer_GetViewOffset},
+  {"SetEyeAngles", CBasePlayer_SetEyeAngles},
 #ifdef CLIENT_DLL
   {"GetRenderAngles", CBasePlayer_GetRenderAngles},
   {"SetRenderAngles", CBasePlayer_SetRenderAngles},
   {"GetRagdollEntity", CBasePlayer_GetRagdollEntity},
   {"GetAllowWeaponsInVehicle", CBasePlayer_GetAllowWeaponsInVehicle},
-  {"GetCurrentViewOffset", CBasePlayer_GetCurrentViewOffset},
-  {"GetViewOffset", CBasePlayer_GetViewOffset},
   {"ShouldDrawLocalPlayer", CBasePlayer_ShouldDrawLocalPlayer},
   // HL2SB GMod compat: the scoreboard's mute button reads and toggles these.
   {"IsMuted", CBasePlayer_IsMuted},
@@ -2855,6 +2976,10 @@ LUALIB_API int luaopen_CBasePlayer_shared (lua_State *L) {
   lua_pushstring(L, "entity");
   lua_setfield(L, -2, "__type");  /* metatable.__type = "entity" */
   luaL_register(L, "_G", CBasePlayer_funcs);
+  HL2SB_EnsureUserCmdMeta(L);
+  lua_pop(L, 1);
+  HL2SB_EnsureMoveDataMeta(L);
+  lua_pop(L, 1);
   lua_pop(L, 1);
   return 1;
 }
@@ -2995,6 +3120,11 @@ static int MoveData_SetUpSpeed (lua_State *L) {
   return 0;
 }
 
+static int MoveData_AddKey (lua_State *L) {
+  HL2SB_CheckMoveData(L, 1)->m_nButtons |= luaL_checkint(L, 2);
+  return 0;
+}
+
 static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"GetButtons",          MoveData_GetButtons},
   {"SetButtons",          MoveData_SetButtons},
@@ -3027,6 +3157,7 @@ static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"SetMoveAngles",       MoveData_SetMoveAngles},
   {"SetUpSpeed",          MoveData_SetUpSpeed},
   {"KeyDown",             MoveData_KeyDown},
+  {"AddKey",              MoveData_AddKey},
   {"KeyReleased",         MoveData_KeyReleased},
   {NULL, NULL}
 };
@@ -3036,16 +3167,24 @@ static const luaL_Reg HL2SB_MoveDatameta[] = {
 #undef HL2SB_MOVEDATA_VEC_GETSET
 #undef HL2SB_MOVEDATA_ANG_GETSET
 
-static void HL2SB_PushMoveData_Internal (lua_State *L, CMoveData *pMove) {
-  CMoveData **ppMove = (CMoveData **)lua_newuserdata(L, sizeof(CMoveData *));
-  *ppMove = pMove;
-  if (luaL_newmetatable(L, "MoveData")) {
+static void HL2SB_EnsureMoveDataMeta (lua_State *L) {
+  luaL_getmetatable(L, "MoveData");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    luaL_newmetatable(L, "MoveData");
     luaL_register(L, NULL, HL2SB_MoveDatameta);
     lua_pushstring(L, "movedata");
     lua_setfield(L, -2, "__type");
     lua_pushvalue(L, -1);
-    lua_setfield(L, -2, "__index");  // mv:GetButtons() etc resolve through __index
+    lua_setfield(L, -2, "__index");
   }
+  /* leave the metatable on top: lua_setmetatable() consumes it */
+}
+
+static void HL2SB_PushMoveData_Internal (lua_State *L, CMoveData *pMove) {
+  CMoveData **ppMove = (CMoveData **)lua_newuserdata(L, sizeof(CMoveData *));
+  *ppMove = pMove;
+  HL2SB_EnsureMoveDataMeta(L);
   lua_setmetatable(L, -2);
 }
 
@@ -3057,12 +3196,143 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 	if ( L == NULL || pPlayer == NULL || pMove == NULL )
 		return;
 
+	const CUserCmd *pCmd = pPlayer->GetCurrentUserCommand();
+	CUserCmd fallbackCmd;
+	if ( pCmd == NULL )
+	{
+		fallbackCmd.Reset();
+		fallbackCmd.viewangles = pMove->m_vecViewAngles;
+		fallbackCmd.buttons = pMove->m_nButtons;
+		fallbackCmd.forwardmove = pMove->m_flForwardMove;
+		fallbackCmd.sidemove = pMove->m_flSideMove;
+		fallbackCmd.upmove = pMove->m_flUpMove;
+		fallbackCmd.command_number = pPlayer->CurrentCommandNumber();
+		fallbackCmd.tick_count = gpGlobals->tickcount;
+		pCmd = &fallbackCmd;
+	}
+
+	int iTableRef = LUA_NOREF;
+
 	BEGIN_LUA_CALL_HOOK( pszHook );
 		lua_pushplayer( L, pPlayer );
 		HL2SB_PushMoveData_Internal( L, pMove );
-		lua_pushnil( L );  // cmd slot: GMod passes CUserCmd; no binding here
+		HL2SB_PushUserCmdTable( L, pCmd );
+		lua_pushvalue( L, -1 );
+		iTableRef = luaL_ref( L, LUA_REGISTRYINDEX );
 	END_LUA_CALL_HOOK( 3, 1 );
 	lua_pop( L, 1 );
+
+	if ( iTableRef != LUA_NOREF )
+	{
+		lua_rawgeti( L, LUA_REGISTRYINDEX, iTableRef );
+		if ( lua_istable( L, -1 ) )
+		{
+			CUserCmd *pMutCmd = ( pCmd != &fallbackCmd ) ? const_cast< CUserCmd * >( pCmd ) : NULL;
+
+			lua_getfield( L, -1, "viewangles" );
+			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+			{
+				const QAngle ang = luaL_checkangle( L, -1 );
+				if ( pMutCmd != NULL )
+				{
+					pMutCmd->viewangles[0] = ang[0];
+					pMutCmd->viewangles[1] = ang[1];
+					// Preserve roll (viewangles[2]) in the command buffer so predicted command replays keep their encoded state
+				}
+				pMove->m_vecViewAngles = ang;
+			}
+			lua_pop( L, 1 );
+
+			lua_getfield( L, -1, "buttons" );
+			if ( lua_isnumber( L, -1 ) )
+			{
+				const int btns = (int)lua_tointeger( L, -1 );
+				if ( pMutCmd != NULL )
+					pMutCmd->buttons = btns;
+				pMove->m_nButtons = btns;
+			}
+			lua_pop( L, 1 );
+
+			lua_getfield( L, -1, "forwardmove" );
+			if ( lua_isnumber( L, -1 ) )
+			{
+				const float fmove = (float)lua_tonumber( L, -1 );
+				if ( pMutCmd != NULL )
+					pMutCmd->forwardmove = fmove;
+				pMove->m_flForwardMove = fmove;
+			}
+			lua_pop( L, 1 );
+
+			lua_getfield( L, -1, "sidemove" );
+			if ( lua_isnumber( L, -1 ) )
+			{
+				const float smove = (float)lua_tonumber( L, -1 );
+				if ( pMutCmd != NULL )
+					pMutCmd->sidemove = smove;
+				pMove->m_flSideMove = smove;
+			}
+			lua_pop( L, 1 );
+
+			lua_getfield( L, -1, "upmove" );
+			if ( lua_isnumber( L, -1 ) )
+			{
+				const float umove = (float)lua_tonumber( L, -1 );
+				if ( pMutCmd != NULL )
+					pMutCmd->upmove = umove;
+				pMove->m_flUpMove = umove;
+			}
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+		luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
+	}
+}
+
+// HL2SB (2026-10-19): GM:StartCommand( ply, cmd ) shared hook helper with
+// full snapshot copy-back for buttons, viewangles, and directional moves.
+void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd )
+{
+	if ( L == NULL || pPlayer == NULL || pCmd == NULL )
+		return;
+
+	HL2SB_PushUserCmdTable( L, pCmd );
+	const int iTableRef = luaL_ref( L, LUA_REGISTRYINDEX );
+
+	BEGIN_LUA_CALL_HOOK( "StartCommand" );
+		lua_pushplayer( L, pPlayer );
+		lua_rawgeti( L, LUA_REGISTRYINDEX, iTableRef );
+		END_LUA_CALL_HOOK( 2, 0 );
+
+	lua_rawgeti( L, LUA_REGISTRYINDEX, iTableRef );
+	if ( lua_istable( L, -1 ) )
+	{
+		lua_getfield( L, -1, "buttons" );
+		if ( lua_isnumber( L, -1 ) )
+			pCmd->buttons = (int)lua_tointeger( L, -1 );
+		lua_pop( L, 1 );
+
+		lua_getfield( L, -1, "viewangles" );
+		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+			pCmd->viewangles = luaL_checkangle( L, -1 );
+		lua_pop( L, 1 );
+
+		lua_getfield( L, -1, "forwardmove" );
+		if ( lua_isnumber( L, -1 ) )
+			pCmd->forwardmove = (float)lua_tonumber( L, -1 );
+		lua_pop( L, 1 );
+
+		lua_getfield( L, -1, "sidemove" );
+		if ( lua_isnumber( L, -1 ) )
+			pCmd->sidemove = (float)lua_tonumber( L, -1 );
+		lua_pop( L, 1 );
+
+		lua_getfield( L, -1, "upmove" );
+		if ( lua_isnumber( L, -1 ) )
+			pCmd->upmove = (float)lua_tonumber( L, -1 );
+		lua_pop( L, 1 );
+	}
+	lua_pop( L, 1 );
+	luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
 }
 
 // HL2SB (2026-10-08): the two landing/jump gamemode hooks.  gamemovement.cpp

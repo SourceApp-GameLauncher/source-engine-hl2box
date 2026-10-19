@@ -380,23 +380,176 @@ Vector CBasePlayer::EyePosition( )
 // Input  : 
 // Output : const Vector
 //-----------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+// HL2SB: per-player GMod-compatible hull and desired view-offset state.
+// Kept out of CBasePlayer's header on purpose: adding members would change the
+// class layout and this fork's waf does not propagate header dependencies.
+// Consumers outside this TU use local extern declarations.
+// ----------------------------------------------------------------------------
+struct HL2SB_PlayerCompatState_t
+{
+    CBaseHandle hPlayer;
+    bool        bHullCustom[2];
+    Vector      vecHullMins[2];
+    Vector      vecHullMaxs[2];
+    bool        bViewCustom[2];
+    Vector      vecViewOffsets[2];
+};
+
+static HL2SB_PlayerCompatState_t s_HL2SB_PlayerCompat[MAX_PLAYERS + 1];
+
+static HL2SB_PlayerCompatState_t *HL2SB_GetPlayerCompatState( CBasePlayer *pPlayer, bool bCreate )
+{
+    if ( pPlayer == NULL )
+        return NULL;
+
+    const int iPlayer = pPlayer->entindex();
+    if ( iPlayer <= 0 || iPlayer > MAX_PLAYERS )
+        return NULL;
+
+    HL2SB_PlayerCompatState_t &state = s_HL2SB_PlayerCompat[iPlayer];
+    const CBaseHandle hPlayer = pPlayer->GetRefEHandle();
+    if ( state.hPlayer != hPlayer )
+    {
+        if ( !bCreate )
+            return NULL;
+
+        state.hPlayer = hPlayer;
+        state.bHullCustom[0] = state.bHullCustom[1] = false;
+        state.bViewCustom[0] = state.bViewCustom[1] = false;
+    }
+
+    return &state;
+}
+
+static void HL2SB_DefaultPlayerHull( CBasePlayer *pPlayer, bool bDucked, Vector &mins, Vector &maxs )
+{
+    if ( g_pGameRules != NULL )
+    {
+        mins = bDucked ? VEC_DUCK_HULL_MIN_SCALED( pPlayer ) : VEC_HULL_MIN_SCALED( pPlayer );
+        maxs = bDucked ? VEC_DUCK_HULL_MAX_SCALED( pPlayer ) : VEC_HULL_MAX_SCALED( pPlayer );
+        return;
+    }
+
+    mins = Vector( -16.0f, -16.0f, 0.0f );
+    maxs = bDucked ? Vector( 16.0f, 16.0f, 36.0f ) : Vector( 16.0f, 16.0f, 72.0f );
+}
+
+static void HL2SB_DefaultPlayerViewOffset( CBasePlayer *pPlayer, bool bDucked, Vector &offset )
+{
+    if ( g_pGameRules != NULL )
+    {
+        offset = bDucked ? VEC_DUCK_VIEW_SCALED( pPlayer ) : VEC_VIEW_SCALED( pPlayer );
+        return;
+    }
+
+    offset = bDucked ? Vector( 0.0f, 0.0f, 28.0f ) : Vector( 0.0f, 0.0f, 64.0f );
+}
+
+void HL2SB_GetPlayerHullBounds( CBasePlayer *pPlayer, bool bDucked, Vector &mins, Vector &maxs )
+{
+    const int iSlot = bDucked ? 1 : 0;
+    HL2SB_PlayerCompatState_t *pState = HL2SB_GetPlayerCompatState( pPlayer, false );
+    if ( pState != NULL && pState->bHullCustom[iSlot] )
+    {
+        mins = pState->vecHullMins[iSlot];
+        maxs = pState->vecHullMaxs[iSlot];
+        return;
+    }
+
+    HL2SB_DefaultPlayerHull( pPlayer, bDucked, mins, maxs );
+}
+
+void HL2SB_SetPlayerHullBounds( CBasePlayer *pPlayer, bool bDucked, const Vector &mins, const Vector &maxs )
+{
+    HL2SB_PlayerCompatState_t *pState = HL2SB_GetPlayerCompatState( pPlayer, true );
+    if ( pState == NULL )
+        return;
+
+    const int iSlot = bDucked ? 1 : 0;
+    pState->bHullCustom[iSlot] = true;
+    pState->vecHullMins[iSlot] = mins;
+    pState->vecHullMaxs[iSlot] = maxs;
+
+    const bool bPlayerDucked = ( pPlayer->GetFlags() & FL_DUCKING ) != 0;
+    if ( bPlayerDucked == bDucked )
+    {
+        pPlayer->SetCollisionBounds( mins, maxs );
+    }
+}
+
+void HL2SB_ResetPlayerHullBounds( CBasePlayer *pPlayer )
+{
+    HL2SB_PlayerCompatState_t *pState = HL2SB_GetPlayerCompatState( pPlayer, false );
+    if ( pState != NULL )
+    {
+        pState->bHullCustom[0] = pState->bHullCustom[1] = false;
+    }
+
+    if ( pPlayer != NULL )
+    {
+        Vector mins, maxs;
+        HL2SB_DefaultPlayerHull( pPlayer, ( pPlayer->GetFlags() & FL_DUCKING ) != 0, mins, maxs );
+        pPlayer->SetCollisionBounds( mins, maxs );
+    }
+}
+
+void HL2SB_GetPlayerViewOffsetDesired( CBasePlayer *pPlayer, bool bDucked, Vector &offset )
+{
+    const int iSlot = bDucked ? 1 : 0;
+    HL2SB_PlayerCompatState_t *pState = HL2SB_GetPlayerCompatState( pPlayer, false );
+    if ( pState != NULL && pState->bViewCustom[iSlot] )
+    {
+        offset = pState->vecViewOffsets[iSlot];
+        return;
+    }
+
+    HL2SB_DefaultPlayerViewOffset( pPlayer, bDucked, offset );
+}
+
+void HL2SB_SetPlayerViewOffsetDesired( CBasePlayer *pPlayer, bool bDucked, const Vector &offset )
+{
+    HL2SB_PlayerCompatState_t *pState = HL2SB_GetPlayerCompatState( pPlayer, true );
+    if ( pState == NULL )
+        return;
+
+    const int iSlot = bDucked ? 1 : 0;
+    pState->bViewCustom[iSlot] = true;
+    pState->vecViewOffsets[iSlot] = offset;
+
+    const bool bPlayerDucked = ( pPlayer->GetFlags() & FL_DUCKING ) != 0;
+    if ( bPlayerDucked == bDucked )
+    {
+        pPlayer->SetViewOffset( offset );
+    }
+}
+
+void HL2SB_ResetPlayerViewOffsets( CBasePlayer *pPlayer )
+{
+    HL2SB_PlayerCompatState_t *pState = HL2SB_GetPlayerCompatState( pPlayer, false );
+    if ( pState != NULL )
+    {
+        pState->bViewCustom[0] = pState->bViewCustom[1] = false;
+    }
+
+    if ( pPlayer != NULL )
+    {
+        Vector offset;
+        HL2SB_DefaultPlayerViewOffset( pPlayer, ( pPlayer->GetFlags() & FL_DUCKING ) != 0, offset );
+        pPlayer->SetViewOffset( offset );
+    }
+}
+
 const Vector CBasePlayer::GetPlayerMins( void ) const
 {
-	if ( IsObserver() )
-	{
-		return VEC_OBS_HULL_MIN_SCALED( this );	
-	}
-	else
-	{
-		if ( GetFlags() & FL_DUCKING )
-		{
-			return VEC_DUCK_HULL_MIN_SCALED( this );
-		}
-		else
-		{
-			return VEC_HULL_MIN_SCALED( this );
-		}
-	}
+    if ( IsObserver() )
+        return VEC_OBS_HULL_MIN_SCALED( this );
+
+    CBasePlayer *pThis = const_cast< CBasePlayer * >( this );
+    Vector mins, maxs;
+    HL2SB_GetPlayerHullBounds( pThis, ( GetFlags() & FL_DUCKING ) != 0, mins, maxs );
+    return mins;
 }
 
 //-----------------------------------------------------------------------------
@@ -405,22 +558,14 @@ const Vector CBasePlayer::GetPlayerMins( void ) const
 // Output : const Vector
 //-----------------------------------------------------------------------------
 const Vector CBasePlayer::GetPlayerMaxs( void ) const
-{	
-	if ( IsObserver() )
-	{
-		return VEC_OBS_HULL_MAX_SCALED( this );	
-	}
-	else
-	{
-		if ( GetFlags() & FL_DUCKING )
-		{
-			return VEC_DUCK_HULL_MAX_SCALED( this );
-		}
-		else
-		{
-			return VEC_HULL_MAX_SCALED( this );
-		}
-	}
+{
+    if ( IsObserver() )
+        return VEC_OBS_HULL_MAX_SCALED( this );
+
+    CBasePlayer *pThis = const_cast< CBasePlayer * >( this );
+    Vector mins, maxs;
+    HL2SB_GetPlayerHullBounds( pThis, ( GetFlags() & FL_DUCKING ) != 0, mins, maxs );
+    return maxs;
 }
 
 //-----------------------------------------------------------------------------

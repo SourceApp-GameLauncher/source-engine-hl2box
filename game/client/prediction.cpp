@@ -733,6 +733,14 @@ void CPrediction::StartCommand( C_BasePlayer *player, CUserCmd *cmd )
 	player->m_pCurrentCommand = cmd;
 	C_BaseEntity::SetPredictionRandomSeed( cmd );
 	C_BaseEntity::SetPredictionPlayer( player );
+
+#if defined( LUA_SDK )
+	if ( cmd != NULL )
+	{
+		extern void HL2SB_LuaStartCommand( C_BasePlayer *pPlayer, CUserCmd *pCmd );
+		HL2SB_LuaStartCommand( player, cmd );
+	}
+#endif
 #endif
 }
 
