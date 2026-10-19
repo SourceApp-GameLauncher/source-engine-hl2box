@@ -1565,26 +1565,20 @@ void CHL2MPRules::Precache( void )
 
 bool CHL2MPRules::ShouldCollide( int collisionGroup0, int collisionGroup1 )
 {
-#if defined ( LUA_SDK )
-	// The particle system simulates collections on worker job threads and its
-	// WorldTraceConstraint traces world geometry, which reaches ShouldCollide
-	// through CTraceFilterSimple::ShouldHitEntity. The Lua state is main-thread
-	// only: calling into it from a job thread leaves luaD_throw with no
-	// protection frame (the pcall's errorJmp lives on the main thread's stack),
-	// so any Lua error escalates to common_exit() and takes the process down
-	// ("PANIC: unprotected error in call to Lua API"). Only invoke the hook
-	// from the main thread and fall through to the native rules otherwise.
-	if ( ThreadInMainThread() )
-	{
-		BEGIN_LUA_CALL_HOOK( "ShouldCollide" );
-			lua_pushinteger( L, collisionGroup0 );
-			lua_pushinteger( L, collisionGroup1 );
-		END_LUA_CALL_HOOK( 2, 1 );
-
-		RETURN_LUA_BOOLEAN();
-	}
-#endif
-
+	// HL2SB (2026-10-19): the native rule set is authoritative for the pairs it
+	// FORBIDS, and the Lua hook may only restrict further.  Reference
+	// behaviour: collision groups are documented as "this group collides with
+	// nothing" style probes, so a hook that answers "true" for every pair must
+	// not re-enable a collision the engine rules turn off.
+	//
+	// This is not theoretical.  The base gamemode ships
+	// GAMEMODE:ShouldCollide => true, and because the hook used to run BEFORE
+	// this function's own rules, every forbidden pair collided again.  A script
+	// measuring the player with a hull trace in COLLISION_GROUP_IN_VEHICLE (the
+	// group defined as colliding with nothing, so the trace is expected to pass
+	// through the player itself) then hit its own collision hull on the very
+	// first step: the trace returns its start point, so the measurement came out
+	// as a fraction of the real one instead of the real one.
 	if ( collisionGroup0 > collisionGroup1 )
 	{
 		// swap so that lowest is always first
@@ -1597,7 +1591,30 @@ bool CHL2MPRules::ShouldCollide( int collisionGroup0, int collisionGroup1 )
 		return false;
 	}
 
-	return BaseClass::ShouldCollide( collisionGroup0, collisionGroup1 ); 
+	if ( !BaseClass::ShouldCollide( collisionGroup0, collisionGroup1 ) )
+		return false;
+
+#if defined ( LUA_SDK )
+	// The particle system simulates collections on worker job threads and its
+	// WorldTraceConstraint traces world geometry, which reaches ShouldCollide
+	// through CTraceFilterSimple::ShouldHitEntity. The Lua state is main-thread
+	// only: calling into it from a job thread leaves luaD_throw with no
+	// protection frame (the pcall's errorJmp lives on the main thread's stack),
+	// so any Lua error escalates to common_exit() and takes the process down
+	// ("PANIC: unprotected error in call to Lua API"). Only invoke the hook
+	// from the main thread; a job thread simply keeps the native answer.
+	if ( ThreadInMainThread() )
+	{
+		BEGIN_LUA_CALL_HOOK( "ShouldCollide" );
+			lua_pushinteger( L, collisionGroup0 );
+			lua_pushinteger( L, collisionGroup1 );
+		END_LUA_CALL_HOOK( 2, 1 );
+
+		RETURN_LUA_BOOLEAN();
+	}
+#endif
+
+	return true;
 }
 
 #if !defined( CLIENT_DLL ) && defined( HL2SB )
