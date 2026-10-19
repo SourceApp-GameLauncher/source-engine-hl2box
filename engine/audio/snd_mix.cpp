@@ -425,6 +425,34 @@ CHANNEL MIXING
 // word in a sentence, release the sentence.
 // Works for static, dynamic, sentence and stream sounds
 
+// HL2SB (2026-10-19): remember which mixers were already destroyed.
+//
+// A wave mixer's destructor starts by asking its IWaveData for the source it
+// came from (`m_pData->Source()`), so tearing the same object down a second
+// time makes that call through a vtable that is no longer there - the
+// 2026-10-19 09:26 dump is a READ of 0x8 at exactly that call, with the
+// IWaveData's first qword already zero.  Whatever ownership error gets a
+// channel to hand the same mixer over twice, the second teardown must not run:
+// it is recorded here and skipped (the object is gone either way, so the cost
+// of a false positive - a mixer address that a *new* mixer reused while the
+// record is still in the window - is one leaked mixer, not a crash).
+static CThreadFastMutex s_FreedMixerMutex;
+static CAudioMixer *s_FreedMixers[64];
+static int s_FreedMixerCursor = 0;
+
+static bool HL2SB_ClaimMixerTeardown( CAudioMixer *pMixer )
+{
+	AUTO_LOCK( s_FreedMixerMutex );
+	for ( int i = 0; i < ARRAYSIZE( s_FreedMixers ); ++i )
+	{
+		if ( s_FreedMixers[i] == pMixer )
+			return false;
+	}
+	s_FreedMixers[ s_FreedMixerCursor ] = pMixer;
+	s_FreedMixerCursor = ( s_FreedMixerCursor + 1 ) % ARRAYSIZE( s_FreedMixers );
+	return true;
+}
+
 // HL2SB (2026-10-19): the deferred-deletion experiment is over.
 //
 // Between 2026-10-04 and 2026-10-19 freed mixers were parked here and destroyed
@@ -489,8 +517,21 @@ void S_FreeChannel(channel_t *ch)
 	// Destroy the mixer while the source it references is still loaded.  The
 	// destructor runs ReferenceRemove -> CacheUnload on its CAudioSource, so
 	// it is only safe between the channel letting go and the sound table
-	// being torn down - which is exactly here.
-	delete pMixer;
+	// being torn down - which is exactly here.  A mixer that was already
+	// destroyed once is skipped: its destructor would walk an IWaveData that
+	// is gone (see HL2SB_ClaimMixerTeardown).
+	if ( pMixer != NULL )
+	{
+		if ( HL2SB_ClaimMixerTeardown( pMixer ) )
+		{
+			delete pMixer;
+		}
+		else
+		{
+			Warning( "[HL2SB] audio: mixer %p handed to a second teardown (channel %d, guid %d) - skipped\n",
+				pMixer, (int)( ch - channels ), ch->guid );
+		}
+	}
 
 	// zero all data in channel
 	Q_memset(ch, 0, sizeof(channel_t));
