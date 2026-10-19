@@ -71,6 +71,11 @@ CAudioMixer *CreateSentenceMixer( voxword_t *pWords )
 
 CSentenceMixer::CSentenceMixer( voxword_t *pWords )
 {
+	// HL2SB (2026-10-19): register with the live-mixer registry in snd_mix.cpp
+	// (local extern on purpose - waf has no header dependency propagation).
+	extern void HL2SB_MixerConstructed( CAudioMixer *pMixer );
+	HL2SB_MixerConstructed( this );
+
 	// count the expected number of words
 	m_nNumWords = 0;
 	while ( pWords[m_nNumWords].sfx != NULL )
@@ -113,6 +118,11 @@ CSentenceMixer::CSentenceMixer( voxword_t *pWords )
 
 CSentenceMixer::~CSentenceMixer( void )
 {
+	// HL2SB (2026-10-19): deregister first, then free the words (see the
+	// note in the constructor).
+	extern void HL2SB_MixerDestroyed( CAudioMixer *pMixer );
+	HL2SB_MixerDestroyed( this );
+
 	// free all words
 	for ( int nWord = 0; nWord < m_nNumWords; nWord++ )
 	{

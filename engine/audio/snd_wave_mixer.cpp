@@ -139,6 +139,11 @@ CAudioMixer *CreateWaveMixer( IWaveData *data, int format, int nChannels, int bi
 // Purpose: Init the base WAVE mixer.
 // Input  : *data - data access object
 //-----------------------------------------------------------------------------
+// HL2SB (2026-10-19): the live-mixer registry lives in snd_mix.cpp; local
+// extern on purpose (waf has no header dependency propagation).
+extern void HL2SB_MixerConstructed( CAudioMixer *pMixer );
+extern void HL2SB_MixerDestroyed( CAudioMixer *pMixer );
+
 CAudioMixerWave::CAudioMixerWave( IWaveData *data ) : m_pData(data)
 {
 	CAudioSource *pSource = GetSource();
@@ -153,6 +158,8 @@ CAudioMixerWave::CAudioMixerWave( IWaveData *data ) : m_pData(data)
 	m_finished = false;
 	m_forcedEndSample = 0;
 	m_delaySamples = 0;
+
+	HL2SB_MixerConstructed( this );
 }
 
 
@@ -161,6 +168,10 @@ CAudioMixerWave::CAudioMixerWave( IWaveData *data ) : m_pData(data)
 //-----------------------------------------------------------------------------
 CAudioMixerWave::~CAudioMixerWave( void )
 {
+	// Deregister first: the registry is what tells S_FreeChannel whether this
+	// object may still be destroyed at all.
+	HL2SB_MixerDestroyed( this );
+
 	CAudioSource *pSource = GetSource();
 	if ( pSource )
 	{

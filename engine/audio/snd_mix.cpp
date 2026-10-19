@@ -425,32 +425,54 @@ CHANNEL MIXING
 // word in a sentence, release the sentence.
 // Works for static, dynamic, sentence and stream sounds
 
-// HL2SB (2026-10-19): remember which mixers were already destroyed.
+// HL2SB (2026-10-19): a registry of the mixers that currently exist.
 //
-// A wave mixer's destructor starts by asking its IWaveData for the source it
-// came from (`m_pData->Source()`), so tearing the same object down a second
-// time makes that call through a vtable that is no longer there - the
-// 2026-10-19 09:26 dump is a READ of 0x8 at exactly that call, with the
-// IWaveData's first qword already zero.  Whatever ownership error gets a
-// channel to hand the same mixer over twice, the second teardown must not run:
-// it is recorded here and skipped (the object is gone either way, so the cost
-// of a false positive - a mixer address that a *new* mixer reused while the
-// record is still in the window - is one leaked mixer, not a crash).
-static CThreadFastMutex s_FreedMixerMutex;
-static CAudioMixer *s_FreedMixers[64];
-static int s_FreedMixerCursor = 0;
+// A mixer's destructor dereferences its IWaveData before it can free anything
+// (CAudioMixerWave asks the data object for its source in order to unregister
+// from it), so once a channel is seen holding a mixer pointer that is not a
+// live mixer, running that destructor is exactly the crash we keep getting at
+// cold map entry: the data object's first qword is already zero and the call
+// through its vtable lands on address 0.  The registry is filled by the mixer
+// constructors themselves, so it distinguishes a genuinely dead pointer from
+// a new mixer that merely reused a freed address - which the pointer prints
+// could not.
+//
+// Every mixer family has to register: the wave family (which covers the mp3,
+// adpcm and voice mixers, all built through CAudioMixerWave) and the sentence
+// mixer.  A family that forgets to register is not crashed into - it is
+// refused and reported, so the cost of an omission is one leaked mixer with a
+// named warning, never a silent double free.
+static CThreadFastMutex s_LiveMixerMutex;
+static CUtlVector< CAudioMixer * > s_LiveMixers;
 
-static bool HL2SB_ClaimMixerTeardown( CAudioMixer *pMixer )
+void HL2SB_MixerConstructed( CAudioMixer *pMixer )
 {
-	AUTO_LOCK( s_FreedMixerMutex );
-	for ( int i = 0; i < ARRAYSIZE( s_FreedMixers ); ++i )
+	if ( pMixer == NULL )
+		return;
+	AUTO_LOCK( s_LiveMixerMutex );
+	s_LiveMixers.AddToTail( pMixer );
+}
+
+void HL2SB_MixerDestroyed( CAudioMixer *pMixer )
+{
+	if ( pMixer == NULL )
+		return;
+	AUTO_LOCK( s_LiveMixerMutex );
+	int i = s_LiveMixers.Find( pMixer );
+	if ( i == s_LiveMixers.InvalidIndex() )
 	{
-		if ( s_FreedMixers[i] == pMixer )
-			return false;
+		Warning( "[HL2SB] audio: mixer %p was destroyed while not registered as live\n", pMixer );
+		return;
 	}
-	s_FreedMixers[ s_FreedMixerCursor ] = pMixer;
-	s_FreedMixerCursor = ( s_FreedMixerCursor + 1 ) % ARRAYSIZE( s_FreedMixers );
-	return true;
+	s_LiveMixers.Remove( i );
+}
+
+bool HL2SB_IsMixerLive( CAudioMixer *pMixer )
+{
+	if ( pMixer == NULL )
+		return false;
+	AUTO_LOCK( s_LiveMixerMutex );
+	return s_LiveMixers.Find( pMixer ) != s_LiveMixers.InvalidIndex();
 }
 
 // HL2SB (2026-10-19): the deferred-deletion experiment is over.
@@ -514,22 +536,20 @@ void S_FreeChannel(channel_t *ch)
 	if ( sfx )
 		g_pSoundServices->OnSoundStopped( ch->guid, ch->soundsource, ch->entchannel, sfx->getname() );
 
-	// Destroy the mixer while the source it references is still loaded.  The
-	// destructor runs ReferenceRemove -> CacheUnload on its CAudioSource, so
-	// it is only safe between the channel letting go and the sound table
-	// being torn down - which is exactly here.  A mixer that was already
-	// destroyed once is skipped: its destructor would walk an IWaveData that
-	// is gone (see HL2SB_ClaimMixerTeardown).
+	// Destroy the mixer while the source it references is still loaded, and
+	// only if it is still a live mixer: a channel can be left pointing at one
+	// that is already gone (see HL2SB_IsMixerLive), and its destructor would
+	// walk freed memory before it freed anything.
 	if ( pMixer != NULL )
 	{
-		if ( HL2SB_ClaimMixerTeardown( pMixer ) )
+		if ( HL2SB_IsMixerLive( pMixer ) )
 		{
 			delete pMixer;
 		}
 		else
 		{
-			Warning( "[HL2SB] audio: mixer %p handed to a second teardown (channel %d, guid %d) - skipped\n",
-				pMixer, (int)( ch - channels ), ch->guid );
+			Warning( "[HL2SB] audio: channel %d held a stale mixer %p (sfx %s) - not destroyed\n",
+				(int)( ch - channels ), pMixer, sfx ? sfx->getname() : "<none>" );
 		}
 	}
 
