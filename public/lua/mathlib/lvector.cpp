@@ -189,22 +189,21 @@ static int Vector_IsEqualTol (lua_State *L) {
   return 1;
 }
 
-// GMod's Vector:Normalize() normalises the vector IN PLACE.  This used to return
-// the normalised value without touching the receiver, which is visibly wrong for
-// the canonical GMod idiom
+// GMod's Vector:Normalize() normalises the vector IN PLACE and answers
+// nothing (the reference binding returns zero values; the length is what
+// Vector:Length is for).  This used to return the normalised value without
+// touching the receiver, which is visibly wrong for the canonical GMod idiom
 //
 //     local vel = self:GetVelocity()
 //     vel:Normalize()
 //     ... use vel ...
 //
-// (weapon_nyangun's ENT:Draw does exactly that).  It stays a superset of the old
-// behaviour: the normalised vector is still returned, so callers that wrote
-// `local dir = v:Normalize()` keep working.
+// (weapon_nyangun's ENT:Draw does exactly that).  The return value is gone
+// too now: no caller in the tree consumed it, and a reference script testing
+// the result would see a vector where the reference answers nil.
 static int Vector_Normalize (lua_State *L) {
-  Vector &v = luaL_checkvector(L, 1);
-  v.NormalizeInPlace();
-  lua_pushvector(L, v);
-  return 1;
+  luaL_checkvector(L, 1).NormalizeInPlace();
+  return 0;
 }
 
 /*

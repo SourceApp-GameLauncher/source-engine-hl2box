@@ -634,12 +634,15 @@ static int CBaseEntity_GetSmoothedVelocity (lua_State *L) {
 }
 
 static int CBaseEntity_GetVelocity (lua_State *L) {
+  // GMod's Entity:GetVelocity answers ONE value (the velocity vector); the
+  // angular impulse this used to push as a second return is this fork's own
+  // addition.  No script in the tree or in any addon unpacks the second
+  // value, but a reference script iterating the returns would see it.
   Vector vVelocity;
   AngularImpulse vAngVelocity;
   luaL_checkentity(L, 1)->GetVelocity(&vVelocity, &vAngVelocity);
   lua_pushvector(L, vVelocity);
-  lua_pushvector(L, (Vector &)vAngVelocity);
-  return 2;
+  return 1;
 }
 
 static int CBaseEntity_GetFriction (lua_State *L) {

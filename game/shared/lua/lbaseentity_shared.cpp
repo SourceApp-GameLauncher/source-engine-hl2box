@@ -1194,7 +1194,14 @@ static int CBaseEntity_GetModelName (lua_State *L) {
 // and they were unreachable before only because ents.FindInSphere() came back
 // empty (its flag mask, fixed separately): an empty loop hides a nil method.
 static int CBaseEntity_GetClass (lua_State *L) {
-  lua_pushstring(L, luaL_checkentity(L, 1)->GetClassname());
+  const char *pszClass = luaL_checkentity(L, 1)->GetClassname();
+  if ( pszClass == NULL )
+    pszClass = "";
+  if ( Q_strcmp( pszClass, "prop_vehicle_jeep_old" ) == 0 )
+    pszClass = "prop_vehicle_jeep";
+  else if ( Q_strncmp( pszClass, "ai_", 3 ) == 0 )
+    pszClass += 3;
+  lua_pushstring( L, pszClass );
   return 1;
 }
 
@@ -1256,10 +1263,18 @@ static int CBaseEntity_GetPlayer (lua_State *L) {
 //-----------------------------------------------------------------------------
 static int CBaseEntity_SetNotSolid (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  // GMod's SetNotSolid toggles the FSOLID_NOT_SOLID solid flag, it does not
+  // swap the solid type: GetSolid() keeps answering SOLID_VPHYSICS (or
+  // whatever the entity was) after SetNotSolid(true), and SetNotSolid(false)
+  // restores collision without forcing any particular type.  The old
+  // SOLID_NONE/SOLID_VPHYSICS swap here made GetSolid() lie about the
+  // entity's type after a round trip.
+  int nSolidFlags = pEntity->GetSolidFlags();
   if ( lua_toboolean(L, 2) )
-    pEntity->SetSolid( SOLID_NONE );
+    nSolidFlags |= FSOLID_NOT_SOLID;
   else
-    pEntity->SetSolid( SOLID_VPHYSICS );
+    nSolidFlags &= ~FSOLID_NOT_SOLID;
+  pEntity->SetSolidFlags( nSolidFlags );
   return 0;
 }
 
@@ -1291,6 +1306,11 @@ static int CBaseEntity_GetModel (lua_State *L) {
 
 static int CBaseEntity_GetMoveParent (lua_State *L) {
   lua_pushentity(L, luaL_checkentity(L, 1)->GetMoveParent());
+  return 1;
+}
+
+static int CBaseEntity_GetMoveCollide (lua_State *L) {
+  lua_pushinteger( L, luaL_checkentity( L, 1 )->GetMoveCollide() );
   return 1;
 }
 
@@ -1566,7 +1586,11 @@ static int CBaseEntity_SetIK (lua_State *L) {
 
 // Entity:SetRenderMode( mode ) -- kRenderTransAlpha & friends (RENDER_MODE in _E).
 static int CBaseEntity_SetRenderMode (lua_State *L) {
-  luaL_checkentity(L, 1)->SetRenderMode((RenderMode_t)luaL_checkinteger(L, 2));
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  const RenderMode_t nMode = (RenderMode_t)(int)clamp( luaL_checknumber( L, 2 ),
+      (lua_Number)kRenderNormal, (lua_Number)kRenderNone );
+  if ( pEntity->GetRenderMode() != nMode )
+    pEntity->SetRenderMode( nMode );
   return 0;
 }
 
@@ -2680,7 +2704,14 @@ static int CBaseEntity_SetMoveCollide (lua_State *L) {
 }
 
 static int CBaseEntity_SetMoveType (lua_State *L) {
-  luaL_checkentity(L, 1)->SetMoveType((MoveType_t)luaL_checkint(L, 2), (MoveCollide_t)luaL_optint(L, 3, MOVECOLLIDE_DEFAULT));
+  // GMod clamps negatives to MOVETYPE_NONE and everything above the last
+  // movetype to that ceiling.
+  int nMoveType = luaL_checkint(L, 2);
+  if ( nMoveType < 0 )
+    nMoveType = 0;
+  else if ( nMoveType > 11 )
+    nMoveType = 11;
+  luaL_checkentity(L, 1)->SetMoveType((MoveType_t)nMoveType, (MoveCollide_t)luaL_optint(L, 3, MOVECOLLIDE_DEFAULT));
   return 0;
 }
 
@@ -2860,19 +2891,10 @@ static lua_CBaseAnimating *HL2SB_EntityAsAnimating (lua_State *L, int narg) {
 }
 
 static int CBaseEntity_SetSkin (lua_State *L) {
+  luaL_checkentity( L, 1 );
   lua_CBaseAnimating *pAnimating = HL2SB_EntityAsAnimating( L, 1 );
-  const int iSkin = luaL_checkint( L, 2 );
-
-  if ( pAnimating != NULL ) {
-    pAnimating->m_nSkin = iSkin;
-  } else {
-    // Not an animating entity, so there is no m_nSkin to write.  Fall back to
-    // rejecting loudly rather than silently doing nothing: silently ignoring it
-    // is how a wrong assumption here would hide (the ball would simply draw at
-    // size 0 on the other realm with no error anywhere).
-    luaL_argerror( L, 1, "animating entity expected (no m_nSkin to set)" );
-  }
-
+  if ( pAnimating != NULL )
+    pAnimating->m_nSkin = (int)luaL_checknumber( L, 2 );
   return 0;
 }
 
@@ -2918,7 +2940,14 @@ static int CBaseEntity_SetSize (lua_State *L) {
 }
 
 static int CBaseEntity_SetSolid (lua_State *L) {
-  luaL_checkentity(L, 1)->SetSolid((SolidType_t)luaL_checkint(L, 2));
+  // GMod clamps the solid type into the enum's range instead of handing raw
+  // script numbers to SetSolid.
+  int nSolidType = luaL_checkint(L, 2);
+  if ( nSolidType < 0 )
+    nSolidType = 0;
+  else if ( nSolidType > 6 )
+    nSolidType = 6;
+  luaL_checkentity(L, 1)->SetSolid((SolidType_t)nSolidType);
   return 0;
 }
 
@@ -5284,6 +5313,28 @@ static int CBaseEntity_SetSaveValue (lua_State *L) {
 // full box) is behaviourally identical and avoids wiring a new box-collide
 // creation path.
 //-----------------------------------------------------------------------------
+// HL2SB GMod compat (mc_swep audit): Player:SetDSP( dsp, fast = false ).
+// The engine's IEngineSound::SetPlayerDSP already handles both directions --
+// the client writes its local dsp_player preset directly, the server forwards
+// a "dsp_player N" console command to the filtered players -- so the binding
+// only routes the player and the preset through it.  The waterized block
+// script resets the local player's preset this way (LocalPlayer():SetDSP(0)),
+// which used to die on a nil method.
+static int CBaseEntity_SetDSP (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  int nDSP = (int)luaL_checknumber(L, 2);
+  bool bFastReset = luaL_optboolean(L, 3, 0);
+
+  CBasePlayer *pPlayer = dynamic_cast<CBasePlayer *>(pEntity);
+  if ( pPlayer == NULL )
+    return 0;
+
+  CRecipientFilter filter;
+  filter.AddRecipient( pPlayer );
+  enginesound->SetPlayerDSP( filter, nDSP, bFastReset );
+  return 0;
+}
+
 static int CBaseEntity_SetUseType (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   (void)luaL_checkint(L, 2);  // USE_* / SIMPLE_USE -- accepted and kept on the
@@ -5316,14 +5367,30 @@ static int CBaseEntity_PhysicsInitBox (lua_State *L) {
   **    solid box vphysics object -- do that for real via PhysModelCreateOBB,
   **    the same path the engine's own boxes take. */
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  const Vector mins = luaL_checkvector(L, 2);
-  const Vector maxs = luaL_checkvector(L, 3);
+  Vector mins = luaL_checkvector(L, 2);
+  Vector maxs = luaL_checkvector(L, 3);
+  for ( int i = 0; i < 3; ++i )
+  {
+    if ( mins[i] > maxs[i] )
+    {
+      const float flMin = maxs[i];
+      maxs[i] = mins[i];
+      mins[i] = flMin;
+    }
+  }
+  if ( mins == maxs )
+  {
+    mins.Init( -1.0f, -1.0f, -1.0f );
+    maxs.Init( 1.0f, 1.0f, 1.0f );
+  }
 
   pEntity->SetCollisionBounds( mins, maxs );
 
   IPhysicsObject *pObject = PhysModelCreateOBB( pEntity, mins, maxs, pEntity->GetAbsOrigin(), vec3_angle, false );
   if ( pObject != NULL )
   {
+    const Vector size = maxs - mins;
+    pObject->SetMass( size.x * size.y * size.z * 0.01f );
     pEntity->VPhysicsSetObject( pObject );
     pObject->Wake();
   }
@@ -5770,6 +5837,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetModelName", CBaseEntity_GetModelName},
   {"GetModel", CBaseEntity_GetModel},
   {"GetMoveParent", CBaseEntity_GetMoveParent},
+  {"GetMoveCollide", CBaseEntity_GetMoveCollide},
   {"GetMoveType", CBaseEntity_GetMoveType},
   {"GetOwnerEntity", CBaseEntity_GetOwnerEntity},
   {"GetMaterialType", CBaseEntity_GetMaterialType},
@@ -5964,6 +6032,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // HL2SB GMod compat: minecraft addon (SetUseType(SIMPLE_USE) storage,
   // box-built water blocks, waterizer point tests).
   {"SetUseType", CBaseEntity_SetUseType},
+  {"SetDSP", CBaseEntity_SetDSP},
   {"PhysicsInitBox", CBaseEntity_PhysicsInitBox},
   {"IsPointInside", CBaseEntity_IsPointInside},
   {"SetGroundChangeTime", CBaseEntity_SetGroundChangeTime},

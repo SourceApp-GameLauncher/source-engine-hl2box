@@ -960,6 +960,17 @@ static int LuaGlobal_ParticleEmitter( lua_State *Lstate )
 
 	CSmartPtr<CLuaEmitter> pEmitter = CLuaEmitter::Create( vecPos, b3D );
 
+	// GMod primes the emitter's render binding at creation: a 256-unit particle
+	// cull radius plus a +/-16 box around the sort origin, before any particle
+	// exists (reference client.dll ParticleEmitter -- the SetParticleCullRadius
+	// 256 call and the 0/16 pair in its constructor).  The stock binding starts
+	// with a degenerate box at the world origin, so until the first simulate
+	// recalculates it the leaf system files the emitter under the wrong leaves
+	// and every quad it owns draws nowhere -- the "effect runs, nothing renders"
+	// symptom with no error anywhere.
+	pEmitter->GetBinding().SetParticleCullRadius( 256.0f );
+	pEmitter->GetBinding().SetBBox( vecPos - Vector( 16, 16, 16 ), vecPos + Vector( 16, 16, 16 ), false );
+
 	LuaParticleUD *pUD = (LuaParticleUD *)lua_newuserdata( Lstate, sizeof( LuaParticleUD ) );
 	new ( &pUD->m_pEmitter ) CSmartPtr<CLuaEmitter>( pEmitter );
 	pUD->m_iSerial = 0;

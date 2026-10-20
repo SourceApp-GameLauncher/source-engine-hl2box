@@ -18,6 +18,9 @@
 // for HitSky / HitNoDraw.
 #include "vphysics_interface.h"
 #include "bspflags.h"
+// HL2SB: HitBoxBone reads the hitbox-set-0 table of the hit entity's studio
+// model.
+#include "studio.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -150,8 +153,12 @@ static int CGameTrace___index (lua_State *L) {
   //         tr.Entity:TakeDamageInfo( dmginfo )      -- never ran => no damage
   else if (Q_strcmp(field, "Entity") == 0)
     lua_pushentity(L, tr.m_pEnt);
+  // GMod's "Hit" also covers traces that never got out of the solid they
+  // started in: the reference table builder answers true for
+  // fraction < 1 OR AllSolid OR StartSolid (a fully-swallowed trace has
+  // fraction 1 in some of those cases and would read false otherwise).
   else if (Q_strcmp(field, "Hit") == 0)
-    lua_pushboolean(L, tr.fraction < 1.0f);
+    lua_pushboolean(L, tr.fraction < 1.0f || tr.allsolid || tr.startsolid);
   // HL2SB GMod compat: the hitbox / hitgroup under GMod's own capitalisation.
   // The lowercase spellings above are this fork's, and a Lua script reading the
   // GMod one got nil -- silently.  SCP-096's nextbot keys its entire aggro on
@@ -166,6 +173,19 @@ static int CGameTrace___index (lua_State *L) {
     lua_pushinteger(L, tr.hitbox);
   else if (Q_strcmp(field, "HitGroup") == 0)
     lua_pushinteger(L, tr.hitgroup);
+  // GMod's last TraceResult key: the bone owning the traced hitbox, filled
+  // only for a studio-model (non-world) hit whose hitbox set 0 carries the
+  // hitbox index; every other case reads nil.
+  else if (Q_strcmp(field, "HitBoxBone") == 0)
+  {
+    const model_t *pModel = ( tr.m_pEnt != NULL && !tr.DidHitWorld() ) ? tr.m_pEnt->GetModel() : NULL;
+    const studiohdr_t *pHdr = ( pModel != NULL ) ? modelinfo->GetStudiomodel( (model_t *)pModel ) : NULL;
+    const mstudiohitboxset_t *pSet = ( pHdr != NULL && pHdr->numhitboxsets > 0 ) ? pHdr->pHitboxSet( 0 ) : NULL;
+    if ( pSet != NULL && tr.hitbox >= 0 && tr.hitbox < pSet->numhitboxes )
+      lua_pushinteger( L, pSet->pHitbox( tr.hitbox )->bone );
+    else
+      lua_pushnil( L );
+  }
   // HL2SB GMod compat: the remaining GMod-cased TraceResult fields.  scp173's
   // teleport search branches on tr.StartSolid (util.TraceLineEx polyfill feeds
   // it every result); nil made "not tr.StartSolid" always true so the search
@@ -181,7 +201,8 @@ static int CGameTrace___index (lua_State *L) {
   // "HitNormal".  reference from GMod x64 server.dll: the shared trace-table
   // builder used by util.TraceLine/TraceHull/TraceEntity/TraceEntityHull
   // normalizes endpos - startpos, and on a zero-length difference falls back
-  // to the negated plane normal.  scp173 keys its entire vision cone on
+  // to the negated plane normal, and if that is zero too, to (0,0,1).
+  // scp173 keys its entire vision cone on
   //     local aimVec = currVictim:GetEyeTraceNoCursor().Normal
   // with plane.normal instead (or (0,0,0) when the eye ray misses), the
   // view-offset angle came out ~180 degrees while the player stared straight
@@ -194,9 +215,13 @@ static int CGameTrace___index (lua_State *L) {
     {
       vecDir /= flLen;
     }
-    else
+    else if ( tr.plane.normal.LengthSqr() != 0.0f )
     {
       vecDir.Init( -tr.plane.normal.x, -tr.plane.normal.y, -tr.plane.normal.z );
+    }
+    else
+    {
+      vecDir.Init( 0.0f, 0.0f, 1.0f );
     }
     lua_pushvector(L, vecDir);
   }
@@ -206,16 +231,26 @@ static int CGameTrace___index (lua_State *L) {
   // physics-force paths).  MatType is the material character the engine's
   // surface-property database carries for the hit surface (the same CHAR_TEX
   // value every impact effect branches on); HitSky is the sky surface flag.
+  // GMod only fills "MatType" on a trace that actually hit something; a miss
+  // leaves the key absent (reads nil) instead of answering the worldspawn
+  // default material.
   else if (Q_strcmp(field, "MatType") == 0)
   {
-    extern IPhysicsSurfaceProps *physprops;
-    if ( physprops != NULL )
+    if ( tr.fraction < 1.0f || tr.allsolid || tr.startsolid )
     {
-      surfacedata_t *pSurface = physprops->GetSurfaceData( tr.surface.surfaceProps );
-      if ( pSurface != NULL )
-        lua_pushinteger(L, pSurface->game.material);
+      extern IPhysicsSurfaceProps *physprops;
+      if ( physprops != NULL )
+      {
+        surfacedata_t *pSurface = physprops->GetSurfaceData( tr.surface.surfaceProps );
+        if ( pSurface != NULL )
+          lua_pushinteger(L, pSurface->game.material);
+        else
+          lua_pushnil(L);
+      }
       else
+      {
         lua_pushnil(L);
+      }
     }
     else
     {
@@ -227,7 +262,14 @@ static int CGameTrace___index (lua_State *L) {
   else if (Q_strcmp(field, "HitSky") == 0)
     lua_pushboolean(L, (tr.surface.flags & (SURF_SKY | SURF_SKY2D)) != 0);
   else if (Q_strcmp(field, "HitTexture") == 0)
-    lua_pushstring(L, (tr.surface.name != NULL) ? tr.surface.name : "");
+  {
+    // reference keeps the key absent (nil here) when the surface carries no
+    // material name, rather than answering an empty string.
+    if ( tr.surface.name != NULL )
+      lua_pushstring(L, tr.surface.name);
+    else
+      lua_pushnil(L);
+  }
   else if (Q_strcmp(field, "SurfaceFlags") == 0)
     lua_pushinteger(L, tr.surface.flags);
   else if (Q_strcmp(field, "DispFlags") == 0)

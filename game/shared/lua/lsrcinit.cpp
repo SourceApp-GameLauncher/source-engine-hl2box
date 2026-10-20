@@ -57,6 +57,11 @@ static ConVar cl_drawownshadow("cl_drawownshadow", "0", FCVAR_ARCHIVE, "Render t
 #include "ai_default.h"			// SCHED_* enum
 #include "ai_hull.h"			// Hull_t (HULL_*)
 #include "util.h"				// HL2SB_NWResyncClient: UTIL_EntityByIndex
+// HL2SB (mc_swep audit B2): resource.AddFile queues client downloads by
+// writing into the engine's "downloadables" string table.  Relative includes
+// on purpose: the engine headers are not on this project's include path, and
+// a luasrclib.h touch would force a full-tree rebuild.
+#include "../../../engine/networkstringtable.h"
 #endif
 // HL2SB (2026-09-21): Lua NetworkVar replication -- the shim's storage below
 // is per-realm and local-only, so a server-side NetworkVar write (the Nuke
@@ -95,6 +100,153 @@ LUALIB_API int luaopen_timer ( lua_State *L );
 // to see them, so luasrclib.h stays untouched.
 LUALIB_API int (luaopen_NPC_shared) (lua_State *L);
 LUALIB_API int (luaopen_NextBot_shared) (lua_State *L);
+
+#ifndef CLIENT_DLL
+// HL2SB (mc_swep audit B2): GMod's server-only `resource` library --
+// resource.AddFile / resource.AddSingleFile queue a file for client download
+// by writing its (backslash-normalised) path into the engine's
+// "downloadables" network string table, which connecting clients already
+// watch.  The reference also skips the call entirely on single-player
+// servers: with no second client there is nobody to download anything.
+// Local to this file on purpose (no header touch, no .vpc edit) -- the
+// minecraft wall-sign's init.lua calls resource.AddFile at load time and the
+// missing global aborted the whole script, taking the SENT down with it.
+// the engine string-table container; defined in game/server/gameinterface.cpp
+extern INetworkStringTableContainer *networkstringtable;
+
+static void HL2SB_ResourceQueueFile (INetworkStringTable *pTable, const char *pszPath)
+{
+	for ( int i = 0; i < pTable->GetNumStrings(); i++ )
+	{
+		if ( Q_stricmp( pTable->GetString( i ), pszPath ) == 0 )
+			return;
+	}
+
+	if ( !g_pFullFileSystem->FileExists( pszPath ) )
+	{
+		Warning( "resource.AddFile: file %s does not exist, not queued\n", pszPath );
+		return;
+	}
+
+	pTable->AddString( true, pszPath, -1 );
+}
+
+// A model download is useless without its compiled siblings -- a client that
+// only got the .mdl cannot load it.  Queue every standard studio-family
+// extension that exists next to it (the reference errors per missing file;
+// warning once here instead, some packs ship without .phy/.ani on purpose).
+static void HL2SB_ResourceQueueModelFamily (INetworkStringTable *pTable, const char *pszModelPath)
+{
+	static const char *const s_pSiblings[] = {
+		"vvd", "ani", "dx80.vtx", "dx90.vtx", "sw.vtx", "phy"
+	};
+
+	const char *pszDot = strrchr( pszModelPath, '.' );
+	if ( pszDot == NULL )
+		return;
+
+	char szPath[260];
+	for ( int i = 0; i < ARRAYSIZE( s_pSiblings ); i++ )
+	{
+		Q_snprintf( szPath, sizeof( szPath ), "%.*s.%s", (int)( pszDot - pszModelPath ), pszModelPath, s_pSiblings[ i ] );
+		HL2SB_ResourceQueueFile( pTable, szPath );
+	}
+}
+
+static int luasrc_resource_AddFile (lua_State *L)
+{
+	const char *pszPath = luaL_checkstring( L, 1 );
+
+	if ( pszPath == NULL || pszPath[0] == '\0' || gpGlobals->maxClients <= 1 )
+		return 0;
+
+	INetworkStringTable *pTable = networkstringtable->FindTable( "downloadables" );
+	if ( pTable == NULL )
+		return 0;
+
+	char szPath[260];
+	Q_strncpy( szPath, pszPath, sizeof( szPath ) );
+	Q_FixSlashes( szPath );
+
+	HL2SB_ResourceQueueFile( pTable, szPath );
+
+	// the reference pulls in a model's compiled siblings with AddFile;
+	// AddSingleFile opts out of that expansion.
+	if ( V_stristr( szPath, ".mdl" ) != NULL )
+	{
+		HL2SB_ResourceQueueModelFamily( pTable, szPath );
+	}
+
+	return 0;
+}
+
+// GMod's folder-skipping variant: queue exactly the named file, no model
+// sibling expansion.  The second internal argument above stays unused here.
+static int luasrc_resource_AddSingleFile (lua_State *L)
+{
+	const char *pszPath = luaL_checkstring( L, 1 );
+
+	if ( pszPath == NULL || pszPath[0] == '\0' || gpGlobals->maxClients <= 1 )
+		return 0;
+
+	INetworkStringTable *pTable = networkstringtable->FindTable( "downloadables" );
+	if ( pTable == NULL )
+		return 0;
+
+	char szPath[260];
+	Q_strncpy( szPath, pszPath, sizeof( szPath ) );
+	Q_FixSlashes( szPath );
+
+	HL2SB_ResourceQueueFile( pTable, szPath );
+	return 0;
+}
+
+// GMod's workshop variant: reference just queues "<id>.gma" into the same
+// downloadables table (multiplayer gate, and ids shorter than 3 characters
+// raise "Invalid input to resource.AddWorkshop").  Whether the receiving
+// client can mount the archive afterwards is that client's business -- here
+// it matters for local-listen play only, where the workshop copy is already
+// mounted from disk.
+static int luasrc_resource_AddWorkshop (lua_State *L)
+{
+	const char *pszId = luaL_checkstring( L, 1 );
+
+	if ( pszId == NULL || gpGlobals->maxClients <= 1 )
+		return 0;
+
+	if ( strlen( pszId ) < 3 )
+		luaL_error( L, "Invalid input to resource.AddWorkshop" );
+
+	INetworkStringTable *pTable = networkstringtable->FindTable( "downloadables" );
+	if ( pTable == NULL )
+		return 0;
+
+	char szPath[260];
+	Q_snprintf( szPath, sizeof( szPath ), "%s.gma", pszId );
+
+	for ( int i = 0; i < pTable->GetNumStrings(); i++ )
+	{
+		if ( Q_stricmp( pTable->GetString( i ), szPath ) == 0 )
+			return 0;
+	}
+
+	pTable->AddString( true, szPath, -1 );
+	return 0;
+}
+
+static const luaL_Reg luasrc_resourcelib[] = {
+	{ "AddFile", luasrc_resource_AddFile },
+	{ "AddSingleFile", luasrc_resource_AddSingleFile },
+	{ "AddWorkshop", luasrc_resource_AddWorkshop },
+	{ NULL, NULL }
+};
+
+LUALIB_API int luaopen_resource (lua_State *L)
+{
+	luaL_register( L, "resource", luasrc_resourcelib );
+	return 1;
+}
+#endif
 
 static const luaL_Reg luasrclibs[] = {
   // HL2SB: ported from Experiment: Source.  Fills _E with the shared enums.
@@ -233,6 +385,8 @@ static const luaL_Reg luasrclibs[] = {
   {LUA_CLIENTENUMNAME, luaopen_ClientEnumerations},
 #else
   {LUA_SERVERENUMNAME, luaopen_ServerEnumerations},
+  // HL2SB (mc_swep audit B2): GMod's server-only downloadables library.
+  { "resource", luaopen_resource },
 #endif
   {LUA_MASKLIBNAME, luaopen_MASK},
   {LUA_MATHLIBLIBNAME, luaopen_mathlib},

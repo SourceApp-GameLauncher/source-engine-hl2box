@@ -743,34 +743,52 @@ LUA_BINDING_BEGIN( Entities, GetByClass, "library", "Gets all entities in the li
 }
 LUA_BINDING_END( "table", "A table of all entities in the entity list with the given class name." )
 
-LUA_BINDING_BEGIN( Entities, FindInBox, "library", "Finds all entities whose origin is inside the given box" )
+LUA_BINDING_BEGIN( Entities, FindInBox, "library", "Finds all entities whose bounding box intersects the given box" )
 {
 	Vector mins = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "mins" );
 	Vector maxs = LUA_BINDING_ARGUMENT( luaL_checkvector, 2, "maxs" );
 
 	lua_newtable( L );
 
-	CBaseEntity *pEnt = NULL;
+	// GMod answers a real box query: every entity whose bounding box
+	// intersects the region, not merely whose origin happens to fall inside
+	// it.  The origin-only walk missed entities parked exactly on the box's
+	// border -- the minecraft addon's vertical neighbour check looks one block
+	// size above and below, which is exactly that case, so stacked blocks
+	// passed the overlap test and could be placed inside each other.
 	int i = 0;
 #ifdef CLIENT_DLL
+	CBaseEntity *pEnt = NULL;
 	while ( ( pEnt = ClientEntityList().NextBaseEntity( pEnt ) ) != NULL )
-#else
-	while ( ( pEnt = gEntList.NextEnt( pEnt ) ) != NULL )
-#endif
 	{
-		const Vector &pos = pEnt->GetAbsOrigin();
-		if ( pos.x >= mins.x && pos.y >= mins.y && pos.z >= mins.z
-			&& pos.x <= maxs.x && pos.y <= maxs.y && pos.z <= maxs.z )
-		{
-			lua_pushinteger( L, ++i );
-			CBaseEntity::PushLuaInstanceSafe( L, pEnt );
-			lua_settable( L, -3 );
-		}
+		Vector vecEntMin, vecEntMax;
+		pEnt->CollisionProp()->WorldSpaceAABB( &vecEntMin, &vecEntMax );
+		if ( vecEntMin.x > maxs.x || vecEntMax.x < mins.x )
+			continue;
+		if ( vecEntMin.y > maxs.y || vecEntMax.y < mins.y )
+			continue;
+		if ( vecEntMin.z > maxs.z || vecEntMax.z < mins.z )
+			continue;
+		lua_pushinteger( L, ++i );
+		CBaseEntity::PushLuaInstanceSafe( L, pEnt );
+		lua_settable( L, -3 );
 	}
+#else
+	CBaseEntity *pList[1024];
+	int count = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), mins, maxs, 0 );
+	for ( int k = 0; k < count; ++k )
+	{
+		if ( pList[ k ] == NULL )
+			continue;
+		lua_pushinteger( L, ++i );
+		CBaseEntity::PushLuaInstanceSafe( L, pList[ k ] );
+		lua_settable( L, -3 );
+	}
+#endif
 
 	return 1;
 }
-LUA_BINDING_END( "table", "A table of every entity whose origin is inside the box." )
+LUA_BINDING_END( "table", "A table of every entity whose bounding box intersects the box." )
 
 LUA_BINDING_BEGIN( Entities, NextInList, "library", "Gets the next entity in the list" )
 {

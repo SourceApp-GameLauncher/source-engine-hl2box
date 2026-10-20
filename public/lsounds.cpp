@@ -181,20 +181,22 @@ LUA_BINDING_END()
 //     ( sound, origin, entity, channel, volume, soundLevel, soundFlags,
 //       pitchPercent, dsp, filter )
 // but GMod's sound.Play is
-//     sound.Play( sound, pos, level, pitch, volume, channel )
-// so a stock GMod script calling sound.Play( BounceSound, pos, 75, pitch, vol )
-// (which is what sent_ball's ENT:PhysicsCollide does) had 75 read as an
-// ENTITY INDEX and the pitch read as a CHANNEL, and the sound either went to the
-// wrong place or was dropped.  GMod's order is implemented here; nothing inside
-// this tree called Sounds.Play at all before, so nothing regresses.
-LUA_BINDING_BEGIN( Sounds, Play, "library", "Plays a sound emitting from a place in the world. GMod order: ( sound, pos, level, pitch, volume, channel )." )
+//     sound.Play( sound, pos, level, pitch, volume, dsp )
+// (wiki: level 75 = normal, pitch 100 = normal, volume 1 = full, dsp 0 = the
+// DSP preset for the sound), and a stock GMod script calling
+// sound.Play( BounceSound, pos, 75, pitch, vol ) -- which is what sent_ball's
+// ENT:PhysicsCollide does -- had 75 read as an ENTITY INDEX and the pitch read
+// as a CHANNEL, and the sound either went to the wrong place or was dropped.
+// The reference returns nothing, so the sound duration is no longer handed
+// back to the caller.
+LUA_BINDING_BEGIN( Sounds, Play, "library", "Plays a sound emitting from a place in the world. GMod order: ( sound, pos, level, pitch, volume, dsp )." )
 {
     const char *pszSoundName = LUA_BINDING_ARGUMENT( luaL_checkstring, 1, "soundName" );  // doc: sound script name or sound file name relative to sound/ folder
     const Vector vecOrigin = LUA_BINDING_ARGUMENT( luaL_checkvector, 2, "origin" );       // doc: position of the sound
     soundlevel_t soundLevel = LUA_BINDING_ARGUMENT_ENUM_WITH_DEFAULT( soundlevel_t, 3, SNDLVL_NORM, "soundLevel" );
     float flPitchPercent = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 4, 100, "pitchPercent" );
     float flVolume = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 5, 1, "volume" );
-    SOUND_CHANNEL channel = ( SOUND_CHANNEL )LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 6, CHAN_AUTO, "channel" );
+    int nDSP = ( int )LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 6, 0, "dsp" );
 
     // Not part of GMod's signature, but a few call sites in this tree and in
     // Experiment-era scripts pass a recipient filter last; keep accepting it.
@@ -232,18 +234,16 @@ LUA_BINDING_BEGIN( Sounds, Play, "library", "Plays a sound emitting from a place
     params.m_flVolume = flVolume;
     params.m_SoundLevel = soundLevel;
     params.m_nPitch = flPitchPercent;
-    params.m_nSpecialDSP = 0;
+    params.m_nSpecialDSP = nDSP;
     params.m_flSoundTime = 0;
     params.m_pflSoundDuration = &duration;
     params.m_bWarnOnDirectWaveReference = false;
-    params.m_nChannel = channel;
+    params.m_nChannel = CHAN_AUTO;
     params.m_nFlags = 0;
 
     CBaseEntity::EmitSound( filter, entityIndex, params );
 
-    lua_pushnumber( L, duration );
-
-    return 1;
+    return 0;
 }
 LUA_BINDING_END()
 
