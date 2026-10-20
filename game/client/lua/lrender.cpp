@@ -1047,7 +1047,19 @@ LUA_BINDING_END()
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: the cam library.  cam.Start( {type="3D"/"2D", ...} )
 // mirrors the table API the content render.lua shim builds on top of.
+//
+// The "2D" type must NOT push anything onto the view stack.  GMod's cam.Start
+// only counts a 2D nesting depth and flips a render-context flag; the
+// projection for surface drawing comes from the SURFACE layer
+// (MatSystemSurface::StartDrawing builds an ortho over the CURRENT viewport).
+// Pushing the player view here re-widened the viewport to the full screen
+// right after render.PushRenderTarget had narrowed it to the target size, so
+// every draw into a toolgun-screen-sized target landed as a tiny sliver in
+// the texture's top-left corner.
 //-----------------------------------------------------------------------------
+
+static int s_nCam2DDepth = 0;   // open cam.Start2D without a matching cam.End
+static int s_nCamViewDepth = 0; // 3D views pushed through cam.Start
 
 static int cam_Start (lua_State *L) {
   luaL_checktype( L, 1, LUA_TTABLE );
@@ -1056,15 +1068,16 @@ static int cam_Start (lua_State *L) {
   const char *pszType = luaL_optstring( L, -1, "3D" );
   lua_pop( L, 1 );
 
+  if ( !Q_stricmp( pszType, "2D" ) )
+  {
+    s_nCam2DDepth++;
+    return 0;
+  }
+
   CViewSetup playerView = *view->GetPlayerViewSetup();
   CViewSetup viewSetup( playerView );
   viewSetup.m_flAspectRatio = 0.0f;   // the rect decides the aspect (see PushView3D)
-
-  if ( !Q_stricmp( pszType, "2D" ) )
-  {
-    render->Push2DView( viewSetup, 0, NULL, view->GetFrustum() );
-    return 0;
-  }
+  s_nCamViewDepth++;
 
   lua_getfield( L, 1, "origin" );
   if ( !lua_isnil( L, -1 ) ) viewSetup.origin = luaL_checkvector( L, -1 );
@@ -1102,8 +1115,44 @@ static int cam_Start (lua_State *L) {
   return 0;
 }
 
-static int cam_End (lua_State *L) {
+// The three closers are separate functions, GMod's shape: an unbalanced closer
+// must only affect its OWN kind.  A single generic closer that consults the 2D
+// depth first would let one skipped cam.End2D (any Lua error between a Start2D
+// and its End2D) swallow every later cam.End3D - the 3D views would never pop
+// and the whole frame renders black.
+static int cam_End2D (lua_State *L) {
+  if ( s_nCam2DDepth <= 0 )
+  {
+    Warning( "cam.End2D() called without a matching cam.Start2D()!\n" );
+    return 0;
+  }
+  s_nCam2DDepth--;
+  return 0;
+}
+
+static int cam_End3D (lua_State *L) {
+  if ( s_nCamViewDepth <= 0 )
+  {
+    Warning( "cam.End3D() called without a matching cam.Start3D()!\n" );
+    return 0;
+  }
+  s_nCamViewDepth--;
   render->PopView( view->GetFrustum() );
+  return 0;
+}
+
+static int cam_End (lua_State *L) {
+  // The generic closer: unwind whichever kind is open (2D first, GMod order).
+  if ( s_nCam2DDepth > 0 )
+  {
+    s_nCam2DDepth--;
+    return 0;
+  }
+  if ( s_nCamViewDepth > 0 )
+  {
+    s_nCamViewDepth--;
+    render->PopView( view->GetFrustum() );
+  }
   return 0;
 }
 
@@ -1174,6 +1223,8 @@ static int cam_End3D2D (lua_State *L) {
 static const luaL_Reg cam_funcs[] = {
   { "Start", cam_Start },
   { "End", cam_End },
+  { "End2D", cam_End2D },
+  { "End3D", cam_End3D },
   { "IgnoreZ", cam_IgnoreZ },
   { "Start3D2D", cam_Start3D2D },
   { "End3D2D", cam_End3D2D },

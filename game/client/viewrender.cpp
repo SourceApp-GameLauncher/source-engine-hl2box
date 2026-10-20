@@ -1222,6 +1222,18 @@ void CViewRender::DrawViewModels( const CViewSetup &view, bool drawViewmodel )
 					lua_pushentity( L, pVM );
 				END_LUA_CALL_HOOK( 1, 0 );
 
+				// GMod fires the weapon's RenderScreen callback from this same
+				// viewmodel draw path - the engine's weapon callback name table
+				// carries "RenderScreen" next to ViewModelDrawn, so the reference
+				// dispatches it by id and no name string appears in its client.dll.
+				// The toolgun paints its scrolling tool name into the screen render
+				// target from there (weapons/gmod_tool/cl_viewscreen.lua).
+				if ( pWep != NULL && pWep->IsScripted() )
+				{
+					BEGIN_LUA_CALL_WEAPON_HOOK( "RenderScreen", pWep );
+					END_LUA_CALL_WEAPON_HOOK( 0, 0 );
+				}
+
 				if ( pWep != NULL && pWep->IsScripted() )
 				{
 					BEGIN_LUA_CALL_WEAPON_HOOK( "ViewModelDrawn", pWep );

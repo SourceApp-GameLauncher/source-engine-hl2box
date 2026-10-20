@@ -684,7 +684,14 @@ void CRender::Push2DView( const CViewSetup &view, int nFlags, ITexture* pRenderT
 
 	CMatRenderContextPtr pRenderContext( materials );
 
-	if ( !pRenderContext )
+	// A caller that passes no target keeps the CURRENT one: cam.Start2D() runs
+	// inside a render.PushRenderTarget() block and has to draw there (the
+	// reference's cam.Start2D is byte-identical Lua, so the target handling lives
+	// here).  This branch used to test the render-context pointer, which is always
+	// valid, so pRenderTarget stayed NULL and the back buffer was pushed over the
+	// bound target: the toolgun screen stayed black while its text landed on the
+	// screen.
+	if ( pRenderTarget == NULL )
 	{
 		pRenderTarget = pRenderContext->GetRenderTarget();
 	}
