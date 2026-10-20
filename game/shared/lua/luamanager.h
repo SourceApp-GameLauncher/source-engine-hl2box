@@ -803,6 +803,10 @@ void       luasrc_shutdown_gameui (void);
 void       luasrc_init (void);
 void       luasrc_shutdown (void);
 
+// GMod auto refresh: re-executes Lua files whose on-disk timestamp changed.
+// Called once per frame by the client; -disableluarefresh disables it.
+void       luasrc_AutoRefreshTick (void);
+
 LUA_API int   (luasrc_dostring) (lua_State *L, const char *string);
 LUA_API int   (luasrc_dofile) (lua_State *L, const char *filename);
 LUA_API void  (luasrc_dofolder) (lua_State *L, const char *path);
@@ -876,6 +880,12 @@ LUA_API void  (luasrc_LuaInfoMsgF) (const char *pszFormat, ...);
 void       luasrc_LoadEffects (const char *path = 0);
 void       luasrc_LoadEntities (const char *path = 0);
 void       luasrc_LoadWeapons (const char *path = 0);
+
+// HL2SB: scripted_ents.OnLoaded() -- builds the baseclass registry.  The
+// reference runs it once every entity/weapon/effect script has run, so each
+// realm's loader sequence calls it at the far end (a class registered from
+// lua/autorun can name a base that lua/entities has not reached yet).
+void       luasrc_RunEntsOnLoaded (void);
 
 // HL2SB: WHICH Lua file a scripted class was loaded from -- the spawn menu's
 // source sidebar (game/client/menu/sm_menu_list.cpp) asks this so it can say

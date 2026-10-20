@@ -1036,9 +1036,10 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	// step for lua_reloadents.
 	luasrc_dofolder( L, LUA_ROOT "/matproxy" );
 
-	luasrc_LoadWeapons();
-	luasrc_LoadEntities();
-	//luasrc_LoadEffects();
+	// GMod's loading order (wiki: Lua Loading Order): weapons, entities and
+	// effects are loaded AFTER the gamemode files, so a gamemode can register its
+	// own bases first and the folders override them.  They run further down,
+	// after PostGamemodeLoaded.
 
 	//Andrew; loadup base gamemode.
 	//
@@ -1061,6 +1062,16 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 
 	BEGIN_LUA_CALL_HOOK( "PostGamemodeLoaded" );
 	END_LUA_CALL_HOOK( 0, 0 );
+
+	luasrc_LoadWeapons();
+	luasrc_LoadEntities();
+	luasrc_LoadEffects();
+
+	// HL2SB: the reference's scripted_ents.OnLoaded() runs once all of the
+	// above have loaded ("load order could cause some entities to load before
+	// their bases"), which is what fills the baseclass registry every
+	// DEFINE_BASECLASS reads.
+	luasrc_RunEntsOnLoaded();
 
 	if ( gpGlobals->maxClients > 1 )
 	{
@@ -1332,6 +1343,12 @@ ConVar  trace_report( "trace_report", "0" );
 void CServerGameDLL::GameFrame( bool simulating )
 {
 	VPROF( "CServerGameDLL::GameFrame" );
+
+	// GMod auto refresh is event driven: the reference asks the OS for directory
+	// change notifications and its watch worker is woken by them; the launch
+	// switch is -disableluarefresh.  The polling tick here stays disabled until
+	// that event-driven watcher is implemented -- it made the 07:57 session
+	// stutter.
 
 	// Don't run frames until fully restored
 	if ( g_InRestore )

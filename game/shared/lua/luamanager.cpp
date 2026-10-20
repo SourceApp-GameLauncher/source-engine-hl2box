@@ -1,4 +1,4 @@
-﻿//===== Copyright © 1996-2005, Valve Corporation, All rights reserved. ======//
+//===== Copyright © 1996-2005, Valve Corporation, All rights reserved. ======//
 //
 // Purpose: Contains the implementation of Lua for scripting.
 //
@@ -535,6 +535,16 @@ void luasrc_init_gameui (void) {
   base_open(LGameUI);
   lua_pushboolean(LGameUI, 1);
   lua_setglobal(LGameUI, "_GAMEUI");  /* set global _GAMEUI */
+
+  /* GMod's menu-state marker (wiki: States) -- menu code detects its realm with
+     MENU_DLL, not with CLIENT/SERVER.  The menu state is neither client nor
+     server, so both of those globals are explicitly false here. */
+  lua_pushboolean(LGameUI, 1);
+  lua_setglobal(LGameUI, "MENU_DLL");
+  lua_pushboolean(LGameUI, 0);
+  lua_setglobal(LGameUI, "CLIENT");
+  lua_pushboolean(LGameUI, 0);
+  lua_setglobal(LGameUI, "SERVER");
 
   /* HL2SB: this function opens every library straight from its own C frame -
      no lua_CFunction LUA_MINSTACK guarantee backs it - and luaL_register
@@ -2011,7 +2021,68 @@ LUA_API int luasrc_dostring (lua_State *L, const char *string) {
   return iError;
 }
 
+// GMod auto refresh (wiki: Auto_Refresh).  Every file this state executed is
+// remembered together with its on-disk timestamp; a periodic tick re-executes
+// the ones whose timestamp changed, which is the reference's "scripts are
+// reloaded live when they are changed on disk".  -disableluarefresh turns it off
+// and the lua_refresh_file command re-runs one file on demand.
+struct LuaRefreshEntry_t
+{
+	char szFile[ MAX_PATH ];
+	time_t tTime;
+};
+
+static LuaRefreshEntry_t s_LuaRefresh[ 512 ];
+static int s_nLuaRefreshCount = 0;
+static double s_flLuaRefreshNextCheck = 0.0;
+
+static void LuaAutoRefreshTrack( const char *pszFile )
+{
+	if ( pszFile == NULL || pszFile[0] == '\0' || !g_pFullFileSystem )
+		return;
+
+	for ( int i = 0; i < s_nLuaRefreshCount; ++i )
+	{
+		if ( !Q_stricmp( s_LuaRefresh[i].szFile, pszFile ) )
+		{
+			s_LuaRefresh[i].tTime = g_pFullFileSystem->GetFileTime( pszFile, "MOD" );
+			return;
+		}
+	}
+	if ( s_nLuaRefreshCount >= (int)V_ARRAYSIZE( s_LuaRefresh ) )
+		return;
+
+	Q_strncpy( s_LuaRefresh[ s_nLuaRefreshCount ].szFile, pszFile, MAX_PATH );
+	s_LuaRefresh[ s_nLuaRefreshCount ].tTime = g_pFullFileSystem->GetFileTime( pszFile, "MOD" );
+	++s_nLuaRefreshCount;
+}
+
+void luasrc_AutoRefreshTick( void )
+{
+	if ( CommandLine() != NULL && CommandLine()->FindParm( "-disableluarefresh" ) )
+		return;
+	if ( L == NULL || !g_pFullFileSystem )
+		return;
+
+	double flNow = Plat_FloatTime();
+	if ( flNow < s_flLuaRefreshNextCheck )
+		return;
+	s_flLuaRefreshNextCheck = flNow + 2.0;
+
+	for ( int i = 0; i < s_nLuaRefreshCount; ++i )
+	{
+		time_t tNow = g_pFullFileSystem->GetFileTime( s_LuaRefresh[i].szFile, "MOD" );
+		if ( tNow == 0 || tNow == s_LuaRefresh[i].tTime )
+			continue;
+
+		s_LuaRefresh[i].tTime = tNow;
+		Msg( "[lua] refreshing %s\n", s_LuaRefresh[i].szFile );
+		luasrc_dofile( L, s_LuaRefresh[i].szFile );
+	}
+}
+
 LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
+
 	// HL2SB: an ABSOLUTE path cannot be opened with pathID "MOD" (see
 	// LuaMakeRelative) -- several loaders hand us RelativePathToFullPath output,
 	// and every one of those reported
@@ -2024,6 +2095,8 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 	Q_strncpy( szRelative, ( filename != NULL ) ? filename : "", sizeof( szRelative ) );
 	LuaMakeRelative( szRelative, sizeof( szRelative ) );
 	filename = szRelative;
+
+	LuaAutoRefreshTrack( filename );
 
 	// GLua syntax compat: stock GMod scripts (and many workshop SWEPs) use
 	// C-style `//` line comments and the `!=` operator, which standard Lua 5.1
@@ -3187,16 +3260,21 @@ void luasrc_LoadEntities (const char *path)
 }
 
 //-----------------------------------------------------------------------------
-// HL2SB (2026-09-21): every entity script is on disk-loaded now, so build the
-// baseclass registry -- GMod runs scripted_ents.OnLoaded() / weapons.OnLoaded()
-// at exactly this point, and every DEFINE_BASECLASS depends on it.  The
-// registration used to live only in gmod_compatibility/sh_init.lua behind a
+// HL2SB (2026-09-21): build the baseclass registry.  GMod calls
+// scripted_ents.OnLoaded() / weapons.OnLoaded() once every entity script has
+// run -- its own comment is "once all the scripts are loaded we can set up the
+// baseclass ... because load order could cause some entities to load before
+// their bases" -- and every DEFINE_BASECLASS depends on it.  The registration
+// used to live only in gmod_compatibility/sh_init.lua behind a
 // "PostEntitiesLoaded" hook that NOTHING ever dispatched, so the registry
 // stayed empty forever and every BaseClass was a fresh empty table:
 // BaseClass.Initialize silently skipped, SCP173_Initialized never set, the
 // statue brain-dead.
+//
+// The callers therefore run it at the far end of the loader sequence (after
+// weapons, entities and effects), on both realms, plus lua_reloadents.
 //-----------------------------------------------------------------------------
-static void HL2SB_RunEntsOnLoaded ( void )
+void luasrc_RunEntsOnLoaded ( void )
 {
 	lua_getglobal( L, "scripted_ents" );
 	if ( lua_istable( L, -1 ) )
@@ -3655,9 +3733,13 @@ bool luasrc_SetGamemode (const char *gamemode) {
 	  luasrc_LoadEntities( loadPath );
 	  luasrc_LoadEffects( loadPath );
 
-	  // HL2SB (2026-09-21): build the baseclass registry now that every entity
-	  // script has loaded -- see HL2SB_RunEntsOnLoaded above.
-	  HL2SB_RunEntsOnLoaded();
+	  // HL2SB: the baseclass registry is built at the END of the loader sequence
+	  // (after weapons/entities/effects), exactly like the reference -- its own
+	  // OnLoaded() comment says "once all the scripts are loaded we can set up
+	  // the baseclass ... because load order could cause some entities to load
+	  // before their bases".  Calling it here would see the classes that
+	  // lua/autorun registered but not yet the lua/entities ones, which reported
+	  // stock classes such as widget_bonemanip_* as deriving from a missing base.
 
 	  BEGIN_LUA_CALL_HOOK("Initialize");
 	  END_LUA_CALL_HOOK(0,0);
@@ -3767,8 +3849,8 @@ static void HL2SB_LuaReloadCmd( const CCommand &args )
 #endif
 
 	// HL2SB (2026-09-21): rebuild the baseclass registry for the reloaded
-	// classes -- see HL2SB_RunEntsOnLoaded.
-	HL2SB_RunEntsOnLoaded();
+	// classes -- see luasrc_RunEntsOnLoaded.
+	luasrc_RunEntsOnLoaded();
 
 	luasrc_LuaInfoMsgF( "[HL2SB] lua_reloadents: done\n" );
 }
@@ -4034,6 +4116,24 @@ static ConVar lua_networkvar_bytespertick( "lua_networkvar_bytespertick", "256",
 	"Bytes per tick available for NW variable replication. HL2SB NW variables are local-only, so this is advisory" );
 static ConVar lua_matproxy( "lua_matproxy", "1", FCVAR_REPLICATED,
 	"Enable Lua material proxies" );
+
+// GMod's miscellaneous console variables (ConVars In Garrysmod): the names and
+// defaults are the documented ones.  Entries whose feature needs a subsystem
+// this tree does not carry are still registered so addons that query them read
+// the reference value instead of nil.
+#ifdef CLIENT_DLL
+static ConVar cl_steamoverlay_pos( "cl_steamoverlay_pos", "1", FCVAR_ARCHIVE,
+	"Corner in which Steam notifications appear (0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right). No overlay in this build; registered for compatibility" );
+static ConVar gmod_delete_temp_files( "gmod_delete_temp_files", "1", FCVAR_ARCHIVE,
+	"Delete temporary files downloaded from servers such as sprays." );
+static ConVar gmod_unload_test( "gmod_unload_test", "0", FCVAR_ARCHIVE,
+	"Unload materials and models on disconnect. Unstable. Use at your own risk." );
+#else
+static ConVar gmod_sneak_attack( "gmod_sneak_attack", "1", FCVAR_REPLICATED,
+	"If set to 0 disables HL2's sneak attack, where headshotting NPCs that have not seen the player is an instant kill" );
+static ConVar mp_weaponrespawn( "mp_weaponrespawn", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED,
+	"Enables Half-Life 2 Deathmatch pickup respawning" );
+#endif
 
 static bool HL2SB_LuaStateReady( lua_State *pL, const char *cmdname, const char *realmname )
 {

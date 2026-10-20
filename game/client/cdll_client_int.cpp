@@ -1018,6 +1018,62 @@ ISourceVirtualReality *g_pSourceVR = NULL;
 // Input  : engineFactory - 
 // Output : int
 //-----------------------------------------------------------------------------
+// GMod's gmod_delete_temp_files cleanup (reference client behaviour): at
+// startup the material/sound/custom temp folders are deleted when the switch is
+// on, the server download cache is deleted unconditionally, the same words are
+// printed, and five log files are trimmed to 100 MB.
+static void OPGMOS_DeleteTempTree( const char *pszDir, int nDepth = 0 )
+{
+	if ( g_pFullFileSystem == NULL || nDepth > 8 )
+		return;
+
+	char szPattern[MAX_PATH];
+	Q_snprintf( szPattern, sizeof( szPattern ), "%s*", pszDir );
+
+	FileFindHandle_t hFind = FILESYSTEM_INVALID_FIND_HANDLE;
+	const char *pszName = g_pFullFileSystem->FindFirstEx( szPattern, "GAME", &hFind );
+	while ( pszName != NULL && pszName[0] != '\0' )
+	{
+		// The directory listing always carries "." and ".."; recursing into them
+		// is an endless loop (the 2026-10-20 07:47 run died of a stack overflow:
+		// the crash handler printed sixty identical frames).
+		if ( !Q_stricmp( pszName, "." ) || !Q_stricmp( pszName, ".." ) )
+		{
+			pszName = g_pFullFileSystem->FindNext( hFind );
+			continue;
+		}
+
+		char szChild[MAX_PATH];
+		char szProbe[MAX_PATH];
+		Q_snprintf( szProbe, sizeof( szProbe ), "%s%s", pszDir, pszName );
+		if ( g_pFullFileSystem->IsDirectory( szProbe, "GAME" ) )
+		{
+			Q_snprintf( szChild, sizeof( szChild ), "%s%s/", pszDir, pszName );
+			OPGMOS_DeleteTempTree( szChild, nDepth + 1 );
+		}
+		else
+		{
+			Q_snprintf( szChild, sizeof( szChild ), "%s%s", pszDir, pszName );
+			g_pFullFileSystem->RemoveFile( szChild, "GAME" );
+		}
+		pszName = g_pFullFileSystem->FindNext( hFind );
+	}
+	g_pFullFileSystem->FindClose( hFind );
+}
+
+static void OPGMOS_CleanTempFiles( void )
+{
+	ConVarRef refDeleteTempFiles( "gmod_delete_temp_files" );
+	if ( refDeleteTempFiles.IsValid() && refDeleteTempFiles.GetBool() )
+	{
+		Msg( "Clearning temporary files...\n" );
+		OPGMOS_DeleteTempTree( "materials/temp/" );
+		OPGMOS_DeleteTempTree( "sound/temp/" );
+		OPGMOS_DeleteTempTree( "download/user_custom/" );
+	}
+	OPGMOS_DeleteTempTree( "downloads/server/" );
+}
+
 int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physicsFactory, CGlobalVarsBase *pGlobals )
 {
 	InitCRTMemDebug();
@@ -1456,6 +1512,21 @@ void CHLClient::HudProcessInput( bool bActive )
 //-----------------------------------------------------------------------------
 void CHLClient::HudUpdate( bool bActive )
 {
+	// GMod keeps auto refresh on the server; the client only has the manual
+	// lua_autorefresh_file / lua_refresh_file commands.
+
+	// GMod's gmod_delete_temp_files cleanup: run once on the first HUD frame,
+	// where the filesystem and the convar system are both up.  Calling it from
+	// CHLClient::Init crashed on the 2026-10-20 run: g_pFullFileSystem was still
+	// NULL there (AV read of 0 in OPGMOS_DeleteTempTree).
+	{
+		static bool s_bTempCleanupDone = false;
+		if ( !s_bTempCleanupDone )
+		{
+			s_bTempCleanupDone = true;
+			OPGMOS_CleanTempFiles();
+		}
+	}
 	float frametime = gpGlobals->frametime;
 
 #if defined( TF_CLIENT_DLL )
@@ -1879,13 +1950,9 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	// land here, before weapons/entities, and not in a later stage.
 	luasrc_dofolder( L, LUA_ROOT "/matproxy" );
 
-	luasrc_LoadWeapons();
-	luasrc_LoadEntities();
-	// HL2SB: GMod's effects/ stage (Lua Loading Order step 9) -- the loader was
-	// written but never called, so lua/effects/*.lua (and every addon's custom
-	// util.Effect / tracer effect) did nothing at all.  It is idempotent per
-	// call and nothing else walks LUA_PATH_EFFECTS, so nothing loads twice.
-	luasrc_LoadEffects();
+	// GMod's loading order (wiki: Lua Loading Order): weapons, entities and
+	// effects come AFTER the gamemode files.  They are executed further down,
+	// right after PostGamemodeLoaded.
 
 	//Andrew; loadup base gamemode.
 	//
@@ -1922,6 +1989,18 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 
 	BEGIN_LUA_CALL_HOOK( "PostGamemodeLoaded" );
 	END_LUA_CALL_HOOK( 0, 0 );
+
+	luasrc_LoadWeapons();
+	luasrc_LoadEntities();
+	// HL2SB: GMod's effects/ stage -- the loader was written but never called, so
+	// lua/effects/*.lua (and every addon's custom util.Effect / tracer effect)
+	// did nothing at all.  It is idempotent per call and nothing else walks
+	// LUA_PATH_EFFECTS, so nothing loads twice.
+	luasrc_LoadEffects();
+
+	// HL2SB: scripted_ents.OnLoaded() -- see the server call site; the registry
+	// has to be built after the whole loader sequence, not before it.
+	luasrc_RunEntsOnLoaded();
 
 	BEGIN_LUA_CALL_HOOK( "LevelInitPreEntity" );
 		lua_pushstring( L, pMapName );

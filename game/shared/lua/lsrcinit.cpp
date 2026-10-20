@@ -2583,6 +2583,70 @@ static int HL2SB_Lua_EntityNetworkVarNotify (lua_State *L) {
   return 0;
 }
 
+//-----------------------------------------------------------------------------
+// HL2SB: the caller's script file, GMod style.
+//
+// The reference's ILuaInterface::GetCurrentFile walks the LIVE Lua stack (frames
+// 1..9) and answers with the first source that starts with '@', minus the '@'.
+// That is what makes an argument-less AddCSLuaFile() name the file that is
+// running, and what a relative name resolves against.
+//-----------------------------------------------------------------------------
+static bool HL2SB_LuaCurrentFile (lua_State *pL, char *pszOut, int nOut)
+{
+  lua_Debug ar;
+  for ( int iLevel = 1; iLevel <= 9; ++iLevel )
+  {
+    if ( lua_getstack( pL, iLevel, &ar ) == 0 )
+      break;
+    lua_getinfo( pL, "S", &ar );
+    if ( ar.source != NULL && ar.source[0] == '@' )
+    {
+      Q_strncpy( pszOut, ar.source + 1, nOut );
+      return true;
+    }
+  }
+  if ( nOut > 0 )
+    pszOut[0] = '\0';
+  return false;
+}
+
+//-----------------------------------------------------------------------------
+// HL2SB: raise one of AddCSLuaFile's errors.  The reference reports through
+// ILuaInterface::ErrorFromLua, which shows the message as written and then the
+// stack; raising a plain string (instead of luaL_error, which prefixes
+// "file:line:") keeps the message byte-identical to the reference.
+//-----------------------------------------------------------------------------
+static int HL2SB_CSRaise (lua_State *pL, const char *pszFmt, const char *pszArg)
+{
+  char szMsg[ MAX_PATH + 128 ];
+  Q_snprintf( szMsg, sizeof( szMsg ), pszFmt, pszArg );
+  lua_pushstring( pL, szMsg );
+  return lua_error( pL );
+}
+
+//-----------------------------------------------------------------------------
+// HL2SB: collapse "a/./b" and "a/../b" -- the literal composed path is not
+// something the engine filesystem opens (same rule include() uses).
+//-----------------------------------------------------------------------------
+static void HL2SB_CSNormalizeDots (const char *pszIn, char *pszOut, int nOutSize)
+{
+  int nOut = 0;
+  const char *p = pszIn;
+  while ( *p && nOut < nOutSize - 2 )
+  {
+    if ( p[0] == '.' && ( p[1] == '/' || p[1] == '\\' ) ) { p += 2; continue; }
+    if ( p[0] == '.' && p[1] == '.' && ( p[2] == '/' || p[2] == '\\' ) )
+    {
+      while ( nOut > 0 && pszOut[nOut - 1] != '/' && pszOut[nOut - 1] != '\\' ) --nOut;
+      if ( nOut > 0 ) --nOut;
+      p += 3;
+      continue;
+    }
+    pszOut[nOut++] = *p++;
+  }
+  pszOut[nOut] = '\0';
+}
+
 LUALIB_API void luasrc_openlibs (lua_State *L) {
   const luaL_Reg *lib = luasrclibs;
   for (; lib->func; lib++) {
@@ -2791,6 +2855,152 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   **   LoadPresets()         lua/includes/modules/presets.lua:6 calls it at load.
   **   SENSORBONE            lua/includes/modules/motionsensor.lua:16 indexes it.
   */
+  /* AddCSLuaFile( file = "current file" ) -- wiki Global.AddCSLuaFile.
+  **
+  ** Reference behaviour (GMod's engine-side binding; the four message strings
+  ** below are verbatim from it):
+  **   - the argument is OPTIONAL: when no value is supplied the binding asks the
+  **     Lua interface for the file that is currently running, which walks the
+  **     live stack and answers with the first chunk whose source starts with '@';
+  **   - the client binding only re-syncs the Lua state and returns 0 values, so
+  **     "does nothing on the client" is exact;
+  **   - the name is validated (leading '/', '\\', '.', '~', '@' are refused; ':' ,
+  **     ' ' and ".." anywhere are refused; the extension must be .lua), then
+  **     resolved (calling script's directory first, then the lua search root,
+  **     then the game root) and filed into the client download pack;
+  **   - a name that cannot be found or an empty file raises a Lua error instead
+  **     of returning quietly -- that is what a probe such as
+  **         print( AddCSLuaFile( "autorun/client/probe.lua" ) )
+  **     shows, and it is why the call never returns a value.
+  ** The delivery half (shipping the recorded file to joining clients) is still
+  ** not implemented in this tree; the server keeps its registration list so the
+  ** call contract and its error paths match. */
+  lua_pushcfunction( L, []( lua_State *pL ) -> int {
+    // The download list is server state.  The realm is read from the SERVER
+    // global instead of a preprocessor branch: this tree's compiler rejects
+    // #ifdef inside a lambda body (C2146/C2065).
+    bool bServerRealm = false;
+    lua_getglobal( pL, "SERVER" );
+    bServerRealm = lua_toboolean( pL, -1 ) != 0;
+    lua_pop( pL, 1 );
+    if ( !bServerRealm )
+      return 0;
+
+    char szName[ MAX_PATH ] = { 0 };
+    const bool bExplicit = ( lua_type( pL, 1 ) != LUA_TNONE );
+    if ( bExplicit )
+    {
+      const char *pszArg = luaL_checkstring( pL, 1 );
+      Q_strncpy( szName, pszArg, sizeof( szName ) );
+    }
+    else
+    {
+      HL2SB_LuaCurrentFile( pL, szName, sizeof( szName ) );
+    }
+
+    // Validation, in the reference order: a leading dodgy symbol, then ':', ' '
+    // and ".." anywhere, then the .lua extension.
+    if ( szName[0] == '\\' || szName[0] == '/' || szName[0] == '.' ||
+         szName[0] == '~' || szName[0] == '@' )
+      return HL2SB_CSRaise( pL, "Refusing to AddCSLuaFile '%s' because its name contains dodgy symbols", szName );
+    for ( const char *p = szName; *p; ++p )
+    {
+      if ( *p == ':' || *p == ' ' || ( p[0] == '.' && p[1] == '.' ) )
+        return HL2SB_CSRaise( pL, "Refusing to AddCSLuaFile '%s' because its name contains dodgy symbols", szName );
+    }
+    const char *pszExt = strrchr( szName, '.' );
+    if ( pszExt == NULL || Q_stricmp( pszExt, ".lua" ) != 0 )
+      return HL2SB_CSRaise( pL, "AddCSLuaFile: Invalid filename '%s'", szName );
+
+    // The reference rewrites '\\' to '/' before it resolves and reports the name.
+    for ( char *p = szName; *p; ++p )
+    {
+      if ( *p == '\\' )
+        *p = '/';
+    }
+
+    char szCaller[ MAX_PATH ] = { 0 };
+    HL2SB_LuaCurrentFile( pL, szCaller, sizeof( szCaller ) );
+
+    char szResolved[ MAX_PATH ] = { 0 };
+    char szCandidate[ MAX_PATH ];
+    char szNorm[ MAX_PATH ];
+
+    // 1. Relative to the calling script (the reference asks for the current
+    //    script's directory first).  Chunk names are MOD-relative and already
+    //    carry "lua/" or the addon tree prefix, so they need no rewriting.
+    if ( szCaller[0] != '\0' )
+    {
+      char szDir[ MAX_PATH ];
+      Q_strncpy( szDir, szCaller, sizeof( szDir ) );
+      char *pszSlash = strrchr( szDir, '/' );
+      if ( pszSlash != NULL )
+      {
+        pszSlash[1] = '\0';
+        Q_snprintf( szCandidate, sizeof( szCandidate ), "%s%s", szDir, szName );
+        HL2SB_CSNormalizeDots( szCandidate, szNorm, sizeof( szNorm ) );
+        if ( g_pFullFileSystem != NULL && g_pFullFileSystem->FileExists( szNorm, "MOD" ) )
+          Q_strncpy( szResolved, szNorm, sizeof( szResolved ) );
+      }
+    }
+
+    // 2. The lua search root, then 3. the game root.
+    if ( szResolved[0] == '\0' )
+    {
+      Q_snprintf( szCandidate, sizeof( szCandidate ), "lua/%s", szName );
+      HL2SB_CSNormalizeDots( szCandidate, szNorm, sizeof( szNorm ) );
+      if ( g_pFullFileSystem != NULL && g_pFullFileSystem->FileExists( szNorm, "MOD" ) )
+        Q_strncpy( szResolved, szNorm, sizeof( szResolved ) );
+    }
+    if ( szResolved[0] == '\0' && g_pFullFileSystem != NULL &&
+         g_pFullFileSystem->FileExists( szName, "MOD" ) )
+    {
+      Q_strncpy( szResolved, szName, sizeof( szResolved ) );
+    }
+
+    if ( szResolved[0] == '\0' )
+    {
+      // A no-argument call names the chunk that is running, so the file is known
+      // to exist even when the composed candidates miss (a file inside a mounted
+      // pack is not addressable from the MOD root).  An explicit name has no such
+      // guarantee and gets the reference error.
+      if ( !bExplicit && szCaller[0] != '\0' )
+        Q_strncpy( szResolved, szCaller, sizeof( szResolved ) );
+      else
+        return HL2SB_CSRaise( pL, "AddCSLuaFile: Couldn't find '%s'", szName );
+    }
+
+    if ( g_pFullFileSystem != NULL )
+    {
+      FileHandle_t hFile = g_pFullFileSystem->Open( szResolved, "rb", "MOD" );
+      if ( hFile )
+      {
+        const int nSize = g_pFullFileSystem->Size( hFile );
+        g_pFullFileSystem->Close( hFile );
+        if ( nSize == 0 )
+          return HL2SB_CSRaise( pL, "AddCSLuaFile: Empty file '%s'", szResolved );
+      }
+    }
+
+    static char s_rgchCSFiles[ 8192 ][ 128 ];
+    static int s_nCSFileCount = 0;
+    int i = 0;
+    for ( ; i < s_nCSFileCount; ++i )
+    {
+      if ( !Q_stricmp( s_rgchCSFiles[i], szResolved ) )
+        break;
+    }
+    if ( i == s_nCSFileCount && s_nCSFileCount < (int)V_ARRAYSIZE( s_rgchCSFiles ) &&
+         Q_strlen( szResolved ) < (int)sizeof( s_rgchCSFiles[0] ) )
+    {
+      Q_strncpy( s_rgchCSFiles[ s_nCSFileCount ], szResolved, sizeof( s_rgchCSFiles[0] ) );
+      ++s_nCSFileCount;
+      Msg( "[lua] AddCSLuaFile: %s (client delivery pending)\n", szResolved );
+    }
+    return 0;
+  } );
+  lua_setglobal( L, "AddCSLuaFile" );
+
   if ( luaL_loadstring( L,
     "AddCSLuaFile = AddCSLuaFile or function( path ) return path end\n"
     "IncludeCS = IncludeCS or function( path ) return path end\n"
