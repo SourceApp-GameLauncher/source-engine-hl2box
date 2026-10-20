@@ -735,15 +735,9 @@ static int CBaseAnimating___index (lua_State *L) {
     HL2SB_PushNullEntityIndex( L, lua_tostring( L, 2 ) );
     return 1;
   }
-  /* HL2SB (2026-10-07): self.Owner for ENT methods.  Every engine dispatch
-  ** (Think/Touch/PhysicsCollide/...) runs the script with THIS metatable,
-  ** and this __index had no Owner answer: the hl1sweps hornet's Touch
-  ** handler opens with IsValid(self.Owner) and with nil the hornet landed
-  ** but never dealt its contact damage.  GMod answers self.Owner with the
-  ** holder entity.  Same precedence as CBaseEntity___index's branch: a
-  ** script-table Owner field wins, the C owner entity is the fallback, and
-  ** no owner yields the NULL sentinel. */
-  if ( lua_tostring( L, 2 ) != NULL && Q_stricmp( lua_tostring( L, 2 ), "Owner" ) == 0 )
+  // Only weapons have an implicit Owner field. Ordinary entities use their
+  // script fields, including nil when no Owner has been assigned.
+  if ( pEntity->IsWeapon() && lua_tostring( L, 2 ) != NULL && Q_stricmp( lua_tostring( L, 2 ), "Owner" ) == 0 )
   {
     if ( lua_isrefvalid( L, pEntity->m_nTableReference ) )
     {

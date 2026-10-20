@@ -3343,11 +3343,31 @@ bool C_BaseAnimating::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 //-----------------------------------------------------------------------------
 // 
 //-----------------------------------------------------------------------------
+#if defined( LUA_SDK )
+extern IMaterial *HL2SB_EntityMaterialOverride( C_BaseEntity *pEntity );
+#endif
+
 void C_BaseAnimating::DoInternalDrawModel( ClientModelRenderInfo_t *pInfo, DrawModelState_t *pState, matrix3x4_t *pBoneToWorldArray )
 {
 	if ( pState)
 	{
+#if defined( LUA_SDK )
+		IMaterial *pForcedMaterial = NULL;
+		OverrideType_t overrideType = OVERRIDE_NORMAL;
+		modelrender->GetMaterialOverride( &pForcedMaterial, &overrideType );
+		IMaterial *pEntityMaterial = NULL;
+		// Explicit render overrides and special passes take precedence.
+		if ( !pForcedMaterial && overrideType == OVERRIDE_NORMAL &&
+			 !( pInfo->flags & ( STUDIO_SHADOWDEPTHTEXTURE | STUDIO_SSAODEPTHTEXTURE ) ) )
+			pEntityMaterial = HL2SB_EntityMaterialOverride( this );
+		if ( pEntityMaterial )
+			modelrender->ForcedMaterialOverride( pEntityMaterial );
+#endif
 		modelrender->DrawModelExecute( *pState, *pInfo, pBoneToWorldArray );
+#if defined( LUA_SDK )
+		if ( pEntityMaterial )
+			modelrender->ForcedMaterialOverride( pForcedMaterial, overrideType );
+#endif
 	}
 
 	if ( vcollide_wireframe.GetBool() )

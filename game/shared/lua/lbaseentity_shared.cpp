@@ -25,6 +25,9 @@
 #include "lc_recipientfilter.h"
 #include "c_baseplayer.h"			// HL2SB: Entity:GetViewEntity (C_BasePlayer::GetLocalPlayer)
 #include "view.h"					// CurrentViewOrigin - the global EyePos()
+#include "materialsystem/imaterial.h"
+#include "materialsystem/imaterialsystem.h"
+#include "materialsystem/materialsystemutil.h"
 #else
 #include "lbaseanimating.h"
 #include "player.h"					// HL2SB: Entity:GetViewEntity (CBasePlayer::m_hViewEntity)
@@ -2826,52 +2829,9 @@ static int CBaseEntity_SetColor (lua_State *L) {
   return 0;
 }
 
-// HL2SB GMod compat: Entity:GetMaterial() / Entity:SetMaterial( name ).
-//
-// This fork has no per-entity material override (the tree's only SetMaterial
-// belongs to Portal's portalgun and to CRopeKeyframe), so the name is remembered
-// on the entity's own Lua table and handed back by the getter: scripts that copy
-// one entity's material onto another get a sane answer instead of a nil-method
-// error.  The visual override is not applied - that part is cosmetic here.
-static int CBaseEntity_GetMaterial (lua_State *L) {
-  CBaseEntity *pEntity = luaL_checkentity(L, 1);
-
-  if ( pEntity->m_nTableReference < 0 ) {
-    lua_pushstring( L, "" );
-    return 1;
-  }
-
-  lua_getref( L, pEntity->m_nTableReference );
-  lua_getfield( L, -1, "HL2SB_Material" );
-
-  if ( !lua_isstring( L, -1 ) ) {
-    lua_pop( L, 1 );
-    lua_pushstring( L, "" );
-  }
-
-  lua_remove( L, -2 );
-  return 1;
-}
-
-static int CBaseEntity_SetMaterial (lua_State *L) {
-  CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  const char *pszMaterial = luaL_checkstring(L, 2);
-
-  if ( pEntity->m_nTableReference < 0 ||
-       !lua_isrefvalid( L, pEntity->m_nTableReference ) )
-  {
-    if ( pEntity->m_nTableReference > 0 )
-      lua_unref( L, pEntity->m_nTableReference );
-    lua_newtable( L );
-    pEntity->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
-  }
-
-  lua_getref( L, pEntity->m_nTableReference );
-  lua_pushstring( L, pszMaterial );
-  lua_setfield( L, -2, "HL2SB_Material" );
-  lua_pop( L, 1 );
-  return 0;
-}
+// Material accessors share the entity variable transport defined below.
+static int CBaseEntity_GetMaterial( lua_State *L );
+static int CBaseEntity_SetMaterial( lua_State *L );
 
 // HL2SB GMod compat: Entity:SetSkin( n ) / Entity:GetSkin().
 //
@@ -3269,13 +3229,8 @@ static int CBaseEntity_SetPhysicsAttacker (lua_State *L) {
 }
 
 //-----------------------------------------------------------------------------
-// HL2SB GMod compat: NW variables (local-per-realm store).
-//
-// GMod's SetNWString/GetNWString etc. are real networked variables.  This is
-// a minimal stand-in: a static dict keyed by "<entindex>_<name>_<type>" so
-// scripts that call the API (player_auth.lua's UserGroup) stop crashing with
-// "attempt to call a nil value (method 'SetNWString')".  Values do NOT sync
-// between client and server; a real NW implementation is still a follow-up.
+// HL2SB GMod compat: NW variables. Server writes replicate on change and
+// during sign-on; client writes stay local until the next server update.
 //-----------------------------------------------------------------------------
 // The struct, the wire tags and the two family dicts live in
 // lbaseentity_shared.h (lsrcinit.cpp's transport reads them).  GMod keeps NW
@@ -3284,6 +3239,11 @@ static int CBaseEntity_SetPhysicsAttacker (lua_State *L) {
 // key prefix.
 CUtlDict<HL2SB_NWValue, unsigned short> g_HL2SB_NWVars;
 CUtlDict<HL2SB_NWValue, unsigned short> g_HL2SB_NW2Vars;
+
+#ifdef CLIENT_DLL
+extern bool HL2SB_NWReplicatedString( int iFamily, int entindex, const char *pszName, CUtlString &value );
+extern void HL2SB_NWReplicatedFreeEntityVars( int entindex );
+#endif
 
 static HL2SB_NWValue *NWVarGetOrCreateIn( CUtlDict<HL2SB_NWValue, unsigned short> &dict,
                                           CBaseEntity *pEntity, const char *pszName, bool bCreate )
@@ -3321,6 +3281,140 @@ static HL2SB_NWValue *NW2VarGetOrCreate( CBaseEntity *pEntity, const char *pszNa
   return NWVarGetOrCreateIn( g_HL2SB_NW2Vars, pEntity, pszName, bCreate );
 }
 
+// Keep material names in the native variable store so server changes and
+// sign-on resends use the same transport as other entity state.
+static const char *s_pszEntityMaterialKey = "__hl2sb_material";
+
+static void HL2SB_EntityMaterialKey( CBaseEntity *pEntity, char *key, size_t size )
+{
+#ifdef CLIENT_DLL
+  // Client-only models share entindex -1 but have distinct entity handles.
+  if ( pEntity->entindex() < 0 )
+  {
+    Q_snprintf( key, size, "%s_%u", s_pszEntityMaterialKey, pEntity->GetRefEHandle().ToInt() );
+    return;
+  }
+#endif
+  Q_strncpy( key, s_pszEntityMaterialKey, size );
+}
+
+static void HL2SB_EntityMaterialName( CBaseEntity *pEntity, CUtlString &name )
+{
+  name = "";
+  char key[64];
+  HL2SB_EntityMaterialKey( pEntity, key, sizeof( key ) );
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, key, false );
+  if ( p && p->tag == HL2SB_NWTAG_STRING )
+    name = p->s;
+#ifdef CLIENT_DLL
+  else if ( pEntity->entindex() >= 0 )
+    HL2SB_NWReplicatedString( HL2SB_NWFAMILY_NW2, pEntity->entindex(), s_pszEntityMaterialKey, name );
+#endif
+}
+
+#ifdef CLIENT_DLL
+// Entries are default-constructed; initialized references stay with their entity.
+static CUtlDict<CMaterialReference, unsigned short> s_EntityMaterialRefs;
+
+static void HL2SB_EntityMaterialRefKey( CBaseEntity *pEntity, char *key, size_t size )
+{
+  Q_snprintf( key, size, "%u", pEntity->GetRefEHandle().ToInt() );
+}
+
+IMaterial *HL2SB_EntityMaterialOverride( CBaseEntity *pEntity )
+{
+  CUtlString name;
+  HL2SB_EntityMaterialName( pEntity, name );
+  char key[32];
+  HL2SB_EntityMaterialRefKey( pEntity, key, sizeof( key ) );
+  IMaterial *pMaterial = name.IsEmpty() ? NULL :
+    materials->FindMaterial( name.Get(), TEXTURE_GROUP_MODEL, false );
+  if ( !pMaterial || pMaterial->IsErrorMaterial() )
+  {
+    s_EntityMaterialRefs.Remove( key );
+    return NULL;
+  }
+  unsigned short idx = s_EntityMaterialRefs.Find( key );
+  if ( !s_EntityMaterialRefs.IsValidIndex( idx ) )
+    idx = s_EntityMaterialRefs.Insert( key );
+  s_EntityMaterialRefs[idx].Init( pMaterial );
+  return s_EntityMaterialRefs[idx];
+}
+#endif
+
+static int CBaseEntity_GetMaterial( lua_State *L )
+{
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+#ifdef CLIENT_DLL
+  IMaterial *pMaterial = HL2SB_EntityMaterialOverride( pEntity );
+  lua_pushstring( L, pMaterial ? pMaterial->GetName() : "" );
+#else
+  CUtlString name;
+  HL2SB_EntityMaterialName( pEntity, name );
+  lua_pushstring( L, name.Get() );
+#endif
+  return 1;
+}
+
+static int CBaseEntity_SetMaterial( lua_State *L )
+{
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  const char *pszMaterial = luaL_optstring( L, 2, "" );
+  char szMaterial[256];
+  Q_strncpy( szMaterial, pszMaterial, sizeof( szMaterial ) );
+#ifdef CLIENT_DLL
+  if ( szMaterial[0] )
+  {
+    IMaterial *pMaterial = materials->FindMaterial( szMaterial, TEXTURE_GROUP_MODEL, false );
+    if ( !pMaterial || pMaterial->IsErrorMaterial() )
+      szMaterial[0] = '\0';
+    else
+      Q_strncpy( szMaterial, pMaterial->GetName(), sizeof( szMaterial ) );
+  }
+#endif
+  char key[64];
+  HL2SB_EntityMaterialKey( pEntity, key, sizeof( key ) );
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, key, true );
+  if ( p )
+  {
+#ifndef CLIENT_DLL
+    bool bChanged = p->tag != HL2SB_NWTAG_STRING || Q_strcmp( p->s.Get(), szMaterial ) != 0;
+#endif
+    p->s = szMaterial;
+    p->tag = HL2SB_NWTAG_STRING;
+#ifndef CLIENT_DLL
+    if ( bChanged )
+    {
+      lua_pushstring( L, szMaterial );
+      HL2SB_NWReplicateValue( HL2SB_NWFAMILY_NW2, pEntity, s_pszEntityMaterialKey,
+        HL2SB_NWTAG_STRING, L, -1 );
+      lua_pop( L, 1 );
+    }
+#endif
+  }
+#ifdef CLIENT_DLL
+  HL2SB_EntityMaterialOverride( pEntity );
+#endif
+  return 0;
+}
+
+#ifdef CLIENT_DLL
+void HL2SB_EntityMaterialReleased( CBaseEntity *pEntity )
+{
+  char refKey[32];
+  HL2SB_EntityMaterialRefKey( pEntity, refKey, sizeof( refKey ) );
+  s_EntityMaterialRefs.Remove( refKey );
+  if ( pEntity->entindex() >= 0 )
+    HL2SB_NWFreeEntityVars( pEntity->entindex() );
+  else
+  {
+    char key[64];
+    HL2SB_EntityMaterialKey( pEntity, key, sizeof( key ) );
+    HL2SB_NWDropLocalVar( HL2SB_NWFAMILY_NW2, pEntity->entindex(), key );
+  }
+}
+#endif
+
 void HL2SB_NWDropLocalVar( int iFamily, int entindex, const char *pszName )
 {
   if ( !pszName || !pszName[0] )
@@ -3331,10 +3425,21 @@ void HL2SB_NWDropLocalVar( int iFamily, int entindex, const char *pszName )
   char szKey[256];
   Q_snprintf( szKey, sizeof( szKey ), "%d_%s", entindex, pszName );
   dict.Remove( szKey );
+#ifdef CLIENT_DLL
+  if ( iFamily == HL2SB_NWFAMILY_NW2 && Q_strcmp( pszName, s_pszEntityMaterialKey ) == 0 )
+  {
+    CBaseEntity *pEntity = CBaseEntity::Instance( entindex );
+    if ( pEntity )
+      HL2SB_EntityMaterialOverride( pEntity );
+  }
+#endif
 }
 
 void HL2SB_NWFreeEntityVars( int entindex )
 {
+#ifdef CLIENT_DLL
+  HL2SB_NWReplicatedFreeEntityVars( entindex );
+#endif
   // Collect matching keys first: Remove() invalidates the iterator mid-walk.
   CUtlVector<CUtlString> kill;
   char szPrefix[32];
@@ -4092,38 +4197,9 @@ static int CBaseEntity___index (lua_State *L) {
   const char *field = luaL_checkstring(L, 2);
   if (Q_strcmp(field, "m_bAllowPrecache") == 0)
     lua_pushboolean(L, pEntity->m_bAllowPrecache);
-  else if (Q_strcmp(field, "Owner") == 0) {
-    /* HL2SB (2026-09-22): self.Owner -- GMod SWEPs read their holder as a
-    ** FIELD, not only via GetOwner().  The WEAPON metatable already answered
-    ** it, but cf_beast's SWEP self carries this plain entity metatable, so
-    ** self.Owner was nil: the server's PrimaryAttack died on
-    ** self.Owner:GetShootPos() before it ever reached SetNextPrimaryFire, and
-    ** the client (whose CanPrimaryAttack then never went false) re-ran the
-    ** whole attack EVERY FRAME -- machine-gun sound, viewmodel reset each tick
-    ** (the "jitter"), client-side ammo drain and duplicated FireBullets.  No
-    ** owner yields GMod's NULL sentinel, like the weapon metatable's answer.
-    ** The shared C++ accessor for the field is GetOwnerEntity() (the same one
-    ** Entity:GetOwner below uses -- m_hOwnerEntity itself is private).
-    ** PushLuaInstanceSafe (NOT plain lua_pushentity) resolves the metatable
-    ** from the DYNAMIC type: a held weapon's owner is a player, and the Player
-    ** metatable is what answers ShouldDrawLocalPlayer/Crouching/GetShootPos --
-    ** the generic CBaseEntity table made every one of those reads die with
-    ** "attempt to call a nil value (method ...)".
-    */
-    /* HL2SB (2026-09-29): the SCRIPT field wins, the C entity is the fallback.
-    ** "Owner" is first and foremost a Lua-side field: addons' ENT:SetPlayer is
-    ** literally `self.Owner = ply` and __newindex stores that on the instance
-    ** table -- m_hOwnerEntity is never touched.  Reading the C accessor first
-    ** made every such write invisible: minecraft_block's server-side BlockInit
-    ** read self.Owner as the NULL sentinel (its GetOwnerEntity() is unset),
-    ** GetEyeTrace() answered false through HL2SB_NullEntityMethod, the
-    ** `tr.HitPos` throw aborted SpawnMinecraftBlock BEFORE ent:Spawn() -- the
-    ** blocks stayed created-but-unspawned ghosts: unhittable by server traces
-    ** ("attack cannot destroy block"), and AttackAnim never ran because
-    ** SpawnMinecraftBlock returned nothing ("no placement animation").  This is
-    ** the same precedence the generic branch below already documents (instance
-    ** fields beat C methods); only this early special case missed it.
-    */
+  else if (pEntity->IsWeapon() && Q_strcmp(field, "Owner") == 0) {
+    // Script fields take precedence over the weapon's implicit holder.
+    // Ordinary entities reach the normal field lookup below.
     if ( lua_isrefvalid( L, pEntity->m_nTableReference ) )
     {
       lua_getref( L, pEntity->m_nTableReference );

@@ -23,6 +23,7 @@
 #include "particles_simple.h"
 #include "particle_util.h"
 #include "particledraw.h"
+#include "c_tracer.h"
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "luabinding.h"
@@ -98,6 +99,7 @@ public:
 		pRet->SetDynamicallyAllocated( true );
 		pRet->SetSortOrigin( origin );
 		pRet->m_b3D = b3D;
+		pRet->GetBinding().SetEffectCameraSpace( !b3D );
 		return pRet;
 	}
 
@@ -179,16 +181,16 @@ public:
 				luasrc_pcall( L, 1, 0, 0 );
 			}
 
-			if ( pParticle->m_flAirResistance > 0.0f )
+			pParticle->m_vecVelocity += pParticle->m_vecGravity * flDt;
+			if ( pParticle->m_flAirResistance != 0.0f )
 			{
-				float flScale = MAX( 0.0f, 1.0f - pParticle->m_flAirResistance * flDt );
-				pParticle->m_vecVelocity *= flScale;
+				float flScale = 100.0f / ( 100.0f + pParticle->m_flAirResistance * flDt );
+				pParticle->m_vecVelocity *= flScale * flScale;
 			}
 			if ( pParticle->m_bVelocityDecay )
 			{
 				pParticle->m_vecVelocity *= MAX( 0.0f, 1.0f - flDt );
 			}
-			pParticle->m_vecVelocity += pParticle->m_vecGravity * flDt;
 			pParticle->m_angAngles += pParticle->m_vecAngVelocity * flDt;
 
 			Vector vDest = pParticle->m_Pos + pParticle->m_vecVelocity * flDt;
@@ -225,7 +227,6 @@ public:
 
 	virtual void RenderParticles( CParticleRenderIterator *pIterator )
 	{
-		// CLuaEmitter:SetNoDraw( true ): no quads submitted at all.
 		if ( m_bNoDraw )
 			return;
 
@@ -241,172 +242,46 @@ public:
 			float flAlpha = ( (int)pParticle->m_uchStartAlpha +
 				( (int)pParticle->m_uchEndAlpha - (int)pParticle->m_uchStartAlpha ) * flT ) / 255.0f;
 			Vector vColor( pParticle->m_uchColor[0] / 255.0f,
-						   pParticle->m_uchColor[1] / 255.0f,
-						   pParticle->m_uchColor[2] / 255.0f );
-
+				pParticle->m_uchColor[1] / 255.0f, pParticle->m_uchColor[2] / 255.0f );
 			float flRoll = pParticle->m_flRoll + pParticle->m_flRollDelta * pParticle->m_flLifetime;
 
-			// HL2SB (CLuaEmitter:SetNearClip): fade in from the min camera
-			// distance (alpha 0) to the max (alpha 1).  Both zero = disabled.
-			if ( m_flNearClipMax > m_flNearClipMin )
-			{
-				float flDist = CurrentViewOrigin().DistTo( pParticle->m_Pos );
-				flAlpha *= clamp( ( flDist - m_flNearClipMin ) / ( m_flNearClipMax - m_flNearClipMin ), 0.0f, 1.0f );
-			}
-
+			// Billboard vertices must be in camera space: the particle manager
+			// loads identity model/view matrices for this rendering mode.
 			Vector vView;
 			TransformParticle( ParticleMgr()->GetModelView(), pParticle->m_Pos, vView );
-			float flSortKey = vView.z;
-
-			// HL2SB (CLuaParticle:SetVelocityScale): the length axis is
-			// speed * lerp( StartLength, EndLength, T ) along the velocity
-			// direction; the width stays StartSize/EndSize.
-			float flHalfWidth = flSize;
-			float flHalfLength = flSize;
-			Vector vecStretch, vecPerp( vec3_origin );
-			bool bStretch = false;
-			if ( pParticle->m_bVelocityScale && pParticle->m_vecVelocity != vec3_origin )
-			{
-				float flLen = pParticle->m_vecVelocity.Length() *
-					( pParticle->m_flStartLength + ( pParticle->m_flEndLength - pParticle->m_flStartLength ) * flT );
-				if ( flLen > 0.01f )
-				{
-					vecStretch = pParticle->m_vecVelocity;
-					VectorNormalize( vecStretch );
-					flHalfLength = flLen * 0.5f;
-					bStretch = true;
-
-					if ( m_b3D )
-					{
-						// width axis: perpendicular to the ribbon and roughly
-						// facing the camera, so the stretched quad stays visible
-						Vector vecToParticle = pParticle->m_Pos - CurrentViewOrigin();
-						vecPerp = CrossProduct( vecStretch, vecToParticle );
-						VectorNormalize( vecPerp );
-					}
-				}
-			}
+			float flSortKey = m_b3D ?
+				DotProduct( CurrentViewForward(), CurrentViewOrigin() - pParticle->m_Pos ) : vView.z;
+			if ( !m_b3D && m_flNearClipMax > m_flNearClipMin )
+				flAlpha *= GetAlphaDistanceFade( vView, m_flNearClipMin, m_flNearClipMax );
 
 			ParticleDraw *pDraw = pIterator->GetParticleDraw();
 			if ( flAlpha >= 0.001f && pDraw->GetMeshBuilder() &&
 				 pIterator->GetQuadsLeftInBatch() > 0 )
 			{
-				CMeshBuilder *pBuilder = pDraw->GetMeshBuilder();
-				unsigned char ubColor[4];
-				ubColor[0] = (unsigned char)RoundFloatToInt( vColor.x * 254.9f );
-				ubColor[1] = (unsigned char)RoundFloatToInt( vColor.y * 254.9f );
-				ubColor[2] = (unsigned char)RoundFloatToInt( vColor.z * 254.9f );
-				ubColor[3] = (unsigned char)RoundFloatToInt( flAlpha * 254.9f );
-
-				Vector vCorner;
 				if ( m_b3D )
 				{
-					// 3D (non-billboarded): a quad in the world, oriented by
-					// the particle's angles (CLuaParticle:SetAngles); when the
-					// particle is velocity-scaled, the length axis follows the
-					// velocity instead.
-					Vector vAxisRight, vAxisUp;
-					if ( bStretch )
-					{
-						vAxisRight = vecPerp * flHalfWidth;
-						vAxisUp = vecStretch * flHalfLength;
-					}
-					else
-					{
-						Vector vFwd;
-						AngleVectors( pParticle->m_angAngles, &vFwd, &vAxisRight, &vAxisUp );
-						vAxisRight *= flHalfWidth;
-						vAxisUp *= flHalfLength;
-					}
-
-					vCorner = pParticle->m_Pos - vAxisRight + vAxisUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMins[0], pDraw->m_pSubTexture->m_tCoordMaxs[1] );
-					pBuilder->AdvanceVertex();
-
-					vCorner = pParticle->m_Pos - vAxisRight - vAxisUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMins[0], pDraw->m_pSubTexture->m_tCoordMins[1] );
-					pBuilder->AdvanceVertex();
-
-					vCorner = pParticle->m_Pos + vAxisRight - vAxisUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMaxs[0], pDraw->m_pSubTexture->m_tCoordMins[1] );
-					pBuilder->AdvanceVertex();
-
-					vCorner = pParticle->m_Pos + vAxisRight + vAxisUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMaxs[0], pDraw->m_pSubTexture->m_tCoordMaxs[1] );
-					pBuilder->AdvanceVertex();
+					// The world-space helper takes a corner and a full width.
+					Vector vRight, vUp;
+					AngleVectors( pParticle->m_angAngles, NULL, &vRight, &vUp );
+					Vector vCorner = pParticle->m_Pos - ( vRight + vUp ) * flSize;
+					RenderParticle_ColorSizeAngles( pDraw, vCorner, vColor, flAlpha,
+						flSize * 2.0f, pParticle->m_angAngles );
+				}
+				else if ( pParticle->m_flStartLength != 0.0f || pParticle->m_flEndLength != 0.0f )
+				{
+					float flLength = pParticle->m_flStartLength +
+						( pParticle->m_flEndLength - pParticle->m_flStartLength ) * flT;
+					Vector vDelta = ParticleMgr()->GetModelView().VMul3x3( pParticle->m_vecVelocity );
+					if ( !pParticle->m_bVelocityScale )
+						VectorNormalize( vDelta );
+					vDelta *= flLength;
+					float color[4] = { vColor.x, vColor.y, vColor.z, flAlpha };
+					if ( flLength != 0.0f && flSize != 0.0f )
+						Tracer_Draw( pDraw, vView, vDelta, flSize, color );
 				}
 				else
 				{
-					// 2D: screen-facing billboard.  The modelview matrix rotates
-					// world->view, so its transposed rotation rows give the camera
-					// right/up axes in world space.
-					const VMatrix &matView = ParticleMgr()->GetModelView();
-					Vector vRight( matView[0][0], matView[1][0], matView[2][0] );
-					Vector vUp( matView[0][1], matView[1][1], matView[2][1] );
-
-					// roll rotates the billboard in screen plane
-					float sa, ca;
-					SinCos( flRoll, &sa, &ca );
-					Vector vAxisRight = vRight * ca + vUp * sa;
-					Vector vAxisUp    = vUp * ca - vRight * sa;
-
-					Vector vQuadRight, vQuadUp;
-					if ( bStretch )
-					{
-						// project the velocity onto the billboard plane: that
-						// projection is the length axis, its in-plane
-						// perpendicular is the width axis
-						float flDotR = DotProduct( vecStretch, vAxisRight );
-						float flDotU = DotProduct( vecStretch, vAxisUp );
-						float flLen2 = sqrtf( flDotR * flDotR + flDotU * flDotU );
-						if ( flLen2 > 0.0001f )
-						{
-							vQuadRight = ( vAxisRight * ( -flDotU ) + vAxisUp * flDotR ) * ( flHalfWidth / flLen2 );
-							vQuadUp    = ( vAxisRight * flDotR  + vAxisUp * flDotU ) * ( flHalfLength / flLen2 );
-						}
-						else
-						{
-							vQuadRight = vAxisRight * flHalfWidth;
-							vQuadUp    = vAxisUp * flHalfLength;
-						}
-					}
-					else
-					{
-						vQuadRight = vAxisRight * flHalfWidth;
-						vQuadUp    = vAxisUp * flHalfLength;
-					}
-
-					vCorner = pParticle->m_Pos - vQuadRight + vQuadUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMins[0], pDraw->m_pSubTexture->m_tCoordMaxs[1] );
-					pBuilder->AdvanceVertex();
-
-					vCorner = pParticle->m_Pos - vQuadRight - vQuadUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMins[0], pDraw->m_pSubTexture->m_tCoordMins[1] );
-					pBuilder->AdvanceVertex();
-
-					vCorner = pParticle->m_Pos + vQuadRight - vQuadUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMaxs[0], pDraw->m_pSubTexture->m_tCoordMins[1] );
-					pBuilder->AdvanceVertex();
-
-					vCorner = pParticle->m_Pos + vQuadRight + vQuadUp;
-					pBuilder->Position3fv( &vCorner.x );
-					pBuilder->Color4ubv( ubColor );
-					pBuilder->TexCoord2f( 0, pDraw->m_pSubTexture->m_tCoordMaxs[0], pDraw->m_pSubTexture->m_tCoordMaxs[1] );
-					pBuilder->AdvanceVertex();
+					RenderParticle_ColorSizeAngle( pDraw, vView, vColor, flAlpha, flSize, flRoll );
 				}
 			}
 

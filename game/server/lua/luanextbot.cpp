@@ -1960,10 +1960,28 @@ static int LUA_SDK_CBaseEntity_BoundingRadius( lua_State *L )
 	return 1;
 }
 
+// The base gamemode calls this only when OnNPCKilled is actually dispatched.
+// Reuse the native HUD transport without forcing notices from Event_Killed.
+static int HL2SB_NotifyNextBotKilled( lua_State *L )
+{
+	NextBotCombatCharacter *pBot = dynamic_cast<NextBotCombatCharacter *>( lua_toentity( L, 1 ) );
+	if ( !pBot )
+		return 0;
+
+	CTakeDamageInfo info;
+	info.SetAttacker( lua_toentity( L, 2 ) );
+	info.SetInflictor( lua_toentity( L, 3 ) );
+	pBot->SendOnKilledGameEvent( info );
+	return 0;
+}
+
 static void InstallNextBotEntityMethods( void )
 {
 	if ( L == NULL )
 		return;
+
+	lua_pushcfunction( L, HL2SB_NotifyNextBotKilled );
+	lua_setglobal( L, "HL2SB_NotifyNextBotKilled" );
 
 	// HL2SB: keyed on the state, not on the process -- see LuaNavMesh_Install for
 	// why.  When the CLuaLocomotion metatable is already present in this state we

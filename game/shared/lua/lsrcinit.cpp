@@ -1836,6 +1836,33 @@ struct HL2SB_NWBlob_t
 };
 static CUtlDict<HL2SB_NWBlob_t, unsigned short> s_NWReplicated;
 
+// Native render state must be readable without entering the Lua VM.
+bool HL2SB_NWReplicatedString( int iFamily, int entindex, const char *pszName, CUtlString &value )
+{
+	char key[192];
+	Q_snprintf( key, sizeof( key ), "%d|%d|%s", iFamily, entindex, pszName );
+	unsigned short idx = s_NWReplicated.Find( key );
+	if ( !s_NWReplicated.IsValidIndex( idx ) )
+		return false;
+	const HL2SB_NWBlob_t &blob = s_NWReplicated[idx];
+	if ( blob.nBytes < 2 || blob.buf[0] != HL2SB_NWTAG_STRING || blob.buf[1] > blob.nBytes - 2 )
+		return false;
+	value.SetDirect( (const char *)blob.buf + 2, blob.buf[1] );
+	return true;
+}
+
+void HL2SB_NWReplicatedFreeEntityVars( int entindex )
+{
+	for ( unsigned short idx = s_NWReplicated.First(); s_NWReplicated.IsValidIndex( idx ); )
+	{
+		unsigned short next = s_NWReplicated.Next( idx );
+		int family, entity;
+		if ( sscanf( s_NWReplicated.GetElementName( idx ), "%d|%d|", &family, &entity ) == 2 && entity == entindex )
+			s_NWReplicated.RemoveAt( idx );
+		idx = next;
+	}
+}
+
 static void HL2SB_NWReplicatedStore( int iFamily, int entindex, const char *pszName, char tag,
 									const unsigned char *pPayload, int nPayload )
 {

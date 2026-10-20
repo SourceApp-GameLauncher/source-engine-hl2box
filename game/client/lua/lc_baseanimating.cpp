@@ -2097,10 +2097,9 @@ static int CBaseAnimating___index (lua_State *L) {
     HL2SB_PushNullEntityIndex( L, lua_tostring( L, 2 ) );
     return 1;
   }
-  /* HL2SB (2026-10-07): self.Owner for ENT methods.  Mirrors the server copy
-  ** in lbaseanimating.cpp -- keep the two in sync.  GMod answers self.Owner
-  ** with the holder entity; a script-table Owner field wins first. */
-  if ( lua_tostring( L, 2 ) != NULL && Q_stricmp( lua_tostring( L, 2 ), "Owner" ) == 0 )
+  // Only weapons have an implicit Owner field. Ordinary entities use their
+  // script fields, including nil when no Owner has been assigned.
+  if ( pEntity->IsWeapon() && lua_tostring( L, 2 ) != NULL && Q_stricmp( lua_tostring( L, 2 ), "Owner" ) == 0 )
   {
     if ( lua_isrefvalid( L, pEntity->m_nTableReference ) )
     {

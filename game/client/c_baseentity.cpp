@@ -1184,6 +1184,10 @@ bool C_BaseEntity::InitializeAsClientEntityByIndex( int iIndex, RenderGroup_t re
 }
 
 
+#if defined( LUA_SDK )
+extern void HL2SB_EntityMaterialReleased( C_BaseEntity *pEntity );
+#endif
+
 void C_BaseEntity::Term()
 {
 	C_BaseEntity::PhysicsRemoveTouchedList( this );
@@ -1212,6 +1216,9 @@ void C_BaseEntity::Term()
 		}
 
 		// Remove from the client entity list.
+#if defined( LUA_SDK )
+		HL2SB_EntityMaterialReleased( this );
+#endif
 		ClientEntityList().RemoveEntity( GetClientHandle() );
 
 		m_RefEHandle = INVALID_CLIENTENTITY_HANDLE;
