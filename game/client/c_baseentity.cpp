@@ -42,6 +42,7 @@
 #include "proto_version.h"
 #ifdef LUA_SDK
 #include "luamanager.h"
+#include "lbaseentity_shared.h"	// HL2SB: lua_pushentity (the NetworkEntityCreated hook)
 #include "mathlib/lvector.h"
 #include "basescripted.h"	// HL2SB: dynamic_cast for the UpdateVisibility diagnostic
 #endif
@@ -2602,6 +2603,17 @@ void C_BaseEntity::PostDataUpdate( DataUpdateType_t updateType )
 	PREDICTION_TRACKVALUECHANGESCOPE_ENTITY( this, "postdataupdate" );
 
 #ifdef LUA_SDK
+	// HL2SB GMod compat (2026-10-21): the reference client raises the
+	// "NetworkEntityCreated" hook when a networked entity is created; the
+	// hook is answered with the entity.  The point of creation on this side
+	// is the first data update of the entity.
+	if ( updateType == DATA_UPDATE_CREATED && L != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "NetworkEntityCreated" );
+			lua_pushentity( L, this );
+		END_LUA_CALL_HOOK( 1, 0 );
+	}
+
 	// HL2SB: probe.  The client builds exactly one C++ class per networked entity,
 	// and a Lua nextbot has to come out of this as C_NextBotCombatCharacter --
 	// that is where the RenderGroup/DrawModel hooks live.  Every probe placed

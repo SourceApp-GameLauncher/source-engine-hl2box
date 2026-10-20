@@ -363,6 +363,32 @@ static const luaL_Reg CBaseEntitymeta[] = {
 
 
 /*
+** GMod compat (2026-10-21): the client asks the script before a mouse press
+** reaches a panel -- the hook is "VGUIMousePressAllowed", it is answered with
+** the mouse code, and a script that answers true swallows the press.
+**
+** vgui2 cannot reach the script, so the callback is installed here: this
+** library is opened when the client Lua state comes up, and the game never
+** needs the hook before that.
+*/
+extern "C" void VGUI_SetOnMousePressAllowed( bool ( *fn )( int mouseCode ) );
+
+static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
+{
+	if ( L == NULL )
+		return false;
+
+	const int iTop = lua_gettop( L );
+	BEGIN_LUA_CALL_HOOK( "VGUIMousePressAllowed" );
+		lua_pushinteger( L, mouseCode );
+	END_LUA_CALL_HOOK( 1, 1 );
+	// The hook answers true to swallow the press.
+	const bool bBlocked = lua_toboolean( L, -1 );
+	lua_settop( L, iTop );
+	return bBlocked;
+}
+
+/*
 ** Open CBaseEntity object
 */
 LUALIB_API int luaopen_CBaseEntity (lua_State *L) {
@@ -372,6 +398,7 @@ LUALIB_API int luaopen_CBaseEntity (lua_State *L) {
     luaL_newmetatable(L, LUA_BASEENTITYLIBNAME);
   }
   luaL_register(L, NULL, CBaseEntitymeta);
+  VGUI_SetOnMousePressAllowed( HL2SB_VGUIOnMousePressAllowed );
   return 1;
 }
 

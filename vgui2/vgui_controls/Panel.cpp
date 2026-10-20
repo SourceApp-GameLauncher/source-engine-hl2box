@@ -1941,8 +1941,29 @@ bool Panel::ShouldHandleInputMessage()
 	return ::ShouldHandleInputMessage( GetVPanel() );
 }
 
+//-----------------------------------------------------------------------------
+// GMod compat (2026-10-21): the reference client asks the script before a
+// mouse press reaches a panel.  The hook is "VGUIMousePressAllowed", it is
+// answered with the mouse code, and a script that answers true swallows the
+// press -- the press never reaches the panel.
+//
+// vgui2 has no access to the script, so the game side installs a callback
+// with VGUI_SetOnMousePressAllowed().  The callback answers TRUE when the
+// press must be swallowed.
+//-----------------------------------------------------------------------------
+typedef bool ( *VGUIOnMousePressAllowed_t )( int mouseCode );
+static VGUIOnMousePressAllowed_t g_pVGUIOnMousePressAllowed = NULL;
+
+extern "C" void VGUI_SetOnMousePressAllowed( VGUIOnMousePressAllowed_t fn )
+{
+	g_pVGUIOnMousePressAllowed = fn;
+}
+
 void Panel::InternalMousePressed(int code)
 {
+	if ( g_pVGUIOnMousePressAllowed && g_pVGUIOnMousePressAllowed( code ) )
+		return;
+
 	long curtime = system()->GetTimeMillis();
 	if ( IsTriplePressAllowed() )
 	{
@@ -2017,6 +2038,10 @@ void Panel::InternalMousePressed(int code)
 
 void Panel::InternalMouseDoublePressed(int code)
 {
+	// The reference client consults the same hook on the double press.
+	if ( g_pVGUIOnMousePressAllowed && g_pVGUIOnMousePressAllowed( code ) )
+		return;
+
 	m_lLastDoublePressTime = system()->GetTimeMillis();
 
 	if ( !ShouldHandleInputMessage() )

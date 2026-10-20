@@ -20,6 +20,7 @@
 #include "tier0/vprof.h"
 
 #include "proxyentity.h"
+#include "luamanager.h"		// HL2SB GMod compat: the GetMotionBlurValues hook
 
 //-----------------------------------------------------------------------------
 // Globals
@@ -2957,6 +2958,44 @@ void DoImageSpaceMotionBlur( const CViewSetup &view, int x, int y, int w, int h 
 		s_flPreviousYaw = flCurrentYaw;
 		s_flLastTimeUpdate = gpGlobals->realtime;
 	}
+
+#if defined( LUA_SDK )
+	// GMod's client lets a script override the motion blur parameters through
+	// the "GetMotionBlurValues" hook.  The four numbers are the horizontal
+	// blur, the vertical blur, the forward/falling blur and the roll blur --
+	// the same four the material proxy reads.  The hook is answered with the
+	// current values and may replace them; answering zeros switches the blur
+	// off for that frame (the portal addon does exactly that while it renders
+	// a portal view).
+	//
+	// The reference client asks the same question four times, once per
+	// component, with that component's value as the argument, and writes the
+	// four answers back.  Here the question is asked once with the four
+	// current values and the four answers replace them, which is the same
+	// contract for a script that answers one number per call.
+	if ( L != NULL )
+	{
+		const int iTop = lua_gettop( L );
+		BEGIN_LUA_CALL_HOOK( "GetMotionBlurValues" );
+			lua_pushnumber( L, g_vMotionBlurValues[0] );
+			lua_pushnumber( L, g_vMotionBlurValues[1] );
+			lua_pushnumber( L, g_vMotionBlurValues[2] );
+			lua_pushnumber( L, g_vMotionBlurValues[3] );
+		END_LUA_CALL_HOOK( 4, 4 );
+		// The error path of the macro leaves a single nil, not four values, so
+		// the count decides whether the script answered at all.
+		if ( lua_gettop( L ) >= iTop + 4 )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				if ( !lua_isnumber( L, iTop + 1 + i ) )
+					break;
+				g_vMotionBlurValues[i] = ( float )lua_tonumber( L, iTop + 1 + i );
+			}
+		}
+		lua_settop( L, iTop );
+	}
+#endif
 
 	//=============================================================================================//
 	// Render quad and let material proxy pick up the g_vMotionBlurValues[4] values just set above //

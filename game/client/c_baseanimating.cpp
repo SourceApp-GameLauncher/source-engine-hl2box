@@ -56,6 +56,8 @@
 #include "replay/replay_ragdoll.h"
 #include "studio_stats.h"
 #include "tier1/callqueue.h"
+#include "luamanager.h"			// HL2SB GMod compat: the Pre/PostPlayerDraw hooks
+#include "lbaseentity_shared.h"	// HL2SB: lua_pushentity (the player draw hooks)
 
 #ifdef TF_CLIENT_DLL
 #include "c_tf_player.h"
@@ -3220,6 +3222,23 @@ int C_BaseAnimating::DrawModel( int flags )
 		// Necessary for lighting blending
 		CreateModelInstance();
 
+#if defined( LUA_SDK )
+		// HL2SB GMod compat: GM:PrePlayerDraw / GM:PostPlayerDraw bracket the
+		// player model draw (client only).  The reference client answers them
+		// with (entity, drawType int) and guards the call against re-entry.
+		// The depth passes are left out: they draw the model into a
+		// shadow/SSAO buffer, and addon geometry would land there too.
+		const bool bPlayerDraw = IsPlayer() &&
+			( flags & ( STUDIO_SHADOWDEPTHTEXTURE | STUDIO_SSAODEPTHTEXTURE ) ) == 0;
+		if ( bPlayerDraw && L != NULL )
+		{
+			BEGIN_LUA_CALL_HOOK( "PrePlayerDraw" );
+				lua_pushentity( L, this );
+				lua_pushinteger( L, flags );
+			END_LUA_CALL_HOOK( 2, 0 );
+		}
+#endif
+
 		if ( !IsFollowingEntity() )
 		{
 			drawn = InternalDrawModel( flags|extraFlags );
@@ -3234,7 +3253,7 @@ int C_BaseAnimating::DrawModel( int flags )
 				int baseDrawn = pFollow->DrawModel( 0 );
 
 				// draw entity
-				// FIXME: Currently only draws if aiment is drawn.
+				// FIXME: Currently only draws if aient is drawn.
 				// BUGBUG: Fixup bbox and do a separate cull for follow object
 				if ( baseDrawn )
 				{
@@ -3242,6 +3261,16 @@ int C_BaseAnimating::DrawModel( int flags )
 				}
 			}
 		}
+
+#if defined( LUA_SDK )
+		if ( bPlayerDraw && L != NULL )
+		{
+			BEGIN_LUA_CALL_HOOK( "PostPlayerDraw" );
+				lua_pushentity( L, this );
+				lua_pushinteger( L, flags );
+			END_LUA_CALL_HOOK( 2, 0 );
+		}
+#endif
 	}
 
 	// The physgun held-entity GLOW shell -- the whole-body additive tint.

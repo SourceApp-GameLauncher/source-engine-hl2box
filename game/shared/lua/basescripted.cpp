@@ -874,6 +874,17 @@ void CBaseScripted::Spawn( void )
 	AddEFlags( EFL_FORCE_CHECK_TRANSMIT );
 
 	InitScriptedEntity();
+
+	// HL2SB GMod compat (2026-10-21): a scripted entity that comes to life is
+	// the server side of the "NetworkEntityCreated" hook -- the reference
+	// client raises it when a networked entity is created, and the entity
+	// that is created here is the one that gets networked.
+	if ( L != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "NetworkEntityCreated" );
+			lua_pushentity( L, this );
+		END_LUA_CALL_HOOK( 1, 0 );
+	}
 #endif
 }
 

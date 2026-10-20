@@ -2062,7 +2062,52 @@ static void __MsgFunc_HL2SB_NW( bf_read &read )
 	if ( read.IsOverflowed() )
 		return;
 
+	// HL2SB GMod compat (2026-10-21): the reference client raises the
+	// "EntityNetworkedVarChanged" hook when a networked value really changes.
+	// The hook is answered with the entity, the name, the old value and the
+	// new one.  The old value is read before the update is stored and the new
+	// one after, and the reference skips the hook when the two are equal.
+	int iBase = 0;
+	int iOldSlot = 0;
+	if ( L != NULL )
+	{
+		iBase = lua_gettop( L );
+		if ( !HL2SB_NWReplicatedPushFamily( L, iFamily, entindex, szName ) )
+			lua_pushnil( L );
+		iOldSlot = lua_gettop( L );
+	}
+
 	HL2SB_NWReplicatedStore( iFamily, entindex, szName, tag, payload, len );
+
+	if ( L != NULL )
+	{
+		if ( !HL2SB_NWReplicatedPushFamily( L, iFamily, entindex, szName ) )
+			lua_pushnil( L );
+		const int iNewSlot = lua_gettop( L );
+
+		// Only a real change is worth a hook: the reference compares the two
+		// values and stays quiet when they match.
+		bool bChanged = true;
+		if ( lua_isnumber( L, iOldSlot ) && lua_isnumber( L, iNewSlot ) )
+			bChanged = ( lua_tonumber( L, iOldSlot ) != lua_tonumber( L, iNewSlot ) );
+		else if ( lua_isstring( L, iOldSlot ) && lua_isstring( L, iNewSlot ) )
+			bChanged = ( Q_strcmp( lua_tostring( L, iOldSlot ), lua_tostring( L, iNewSlot ) ) != 0 );
+		else if ( lua_isnil( L, iOldSlot ) && lua_isnil( L, iNewSlot ) )
+			bChanged = false;
+
+		IClientEntity *pIClient = cl_entitylist->GetClientEntity( entindex );
+		C_BaseEntity *pEnt = pIClient ? pIClient->GetBaseEntity() : NULL;
+		if ( bChanged && pEnt != NULL )
+		{
+			BEGIN_LUA_CALL_HOOK( "EntityNetworkedVarChanged" );
+				lua_pushentity( L, pEnt );
+				lua_pushstring( L, szName );
+				lua_pushvalue( L, iOldSlot );
+				lua_pushvalue( L, iNewSlot );
+			END_LUA_CALL_HOOK( 4, 0 );
+		}
+		lua_settop( L, iBase );
+	}
 
 	// HL2SB (2026-09-25): the server update OVERWRITES the realm-local value.
 	// A scripted entity's client-side ENT:Initialize writes its defaults into

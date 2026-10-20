@@ -642,20 +642,47 @@ LUA_BINDING_BEGIN( Renders, DrawScreenQuad, "library", "Draws a fullscreen quad 
     if ( pMaterial == NULL || pMaterial->IsErrorMaterial() )
         return luaL_error( L, "render.DrawScreenQuad: no material bound (call render.SetMaterial first)" );
 
-    // HL2SB GMod compat (2026-10-13): the reference engine's quad core brackets
-    // every quad with identity MODEL/VIEW/PROJECTION matrices, so a leftover
-    // model matrix (an unbalanced cam.Start3D2D or PushModelMatrix) cannot drag
-    // the quad off-screen.  The DrawScreenSpaceQuad helper below already pushes
-    // and pops the VIEW and PROJECTION legs internally, so only the MODEL leg
-    // is missing on this side.
-    pRenderContext->MatrixMode( MATERIAL_MODEL );
-    pRenderContext->PushMatrix();
-    pRenderContext->LoadIdentity();
+    int nWide, nTall;
+    pRenderContext->GetRenderTargetDimensions( nWide, nTall );
+    if ( nWide <= 0 || nTall <= 0 )
+        return 0;
 
-    pRenderContext->DrawScreenSpaceQuad( pMaterial );
+    // GMod draws over the current target's full dimensions and restores the
+    // previous viewport afterwards. Blur passes may alternate target sizes.
+    ITexture *pTarget = pRenderContext->GetRenderTarget();
+    CViewSetup view2D;
+    view2D.x = view2D.y = 0;
+    view2D.width = nWide;
+    view2D.height = nTall;
+    render->Push2DView( view2D, 0, pTarget, view->GetFrustum() );
+    pRenderContext->Flush( false );
+    pRenderContext->Bind( pMaterial );
 
-    pRenderContext->MatrixMode( MATERIAL_MODEL );
-    pRenderContext->PopMatrix();
+    float flHalfPixel = 0.5f;
+    if ( pTarget != NULL && pTarget->GetActualWidth() > 1 )
+        flHalfPixel *= (float)nWide / (float)( pTarget->GetActualWidth() - 1 );
+
+    const float positions[4][2] = {
+        { -flHalfPixel, -flHalfPixel },
+        { nWide - flHalfPixel, -flHalfPixel },
+        { nWide - flHalfPixel, nTall - flHalfPixel },
+        { -flHalfPixel, nTall - flHalfPixel }
+    };
+    const float texcoords[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+    IMesh *pMesh = pRenderContext->GetDynamicMesh( true );
+    CMeshBuilder meshBuilder;
+    meshBuilder.Begin( pMesh, MATERIAL_QUADS, 1 );
+    for ( int i = 0; i < 4; ++i )
+    {
+        meshBuilder.Position3f( positions[i][0], positions[i][1], 0 );
+        meshBuilder.Color4ub( 255, 255, 255, 255 );
+        meshBuilder.TexCoord2f( 0, texcoords[i][0], texcoords[i][1] );
+        meshBuilder.AdvanceVertex();
+    }
+    meshBuilder.End();
+    pMesh->Draw();
+    pRenderContext->Flush( false );
+    render->PopView( view->GetFrustum() );
     return 0;
 }
 LUA_BINDING_END()
@@ -899,107 +926,8 @@ LUA_BINDING_BEGIN( Renders, GetBloomTex1, "library", "Returns the bloom render t
 }
 LUA_BINDING_END()
 
-// render.BlurRenderTarget( rt, blurx, blury, passes )
-//
-// HL2SB (2026-09-24): separable gaussian on the ORIGIN Source blur shaders.
-// stdshader_dx9 ships BlurFilterX/BlurFilterY (the bloom-chain blur: taps at
-// 1.3366..11.4401 texels, sigma ~4.7 -- full source in
-// materialsystem/stdshaders/BlurFilter[XY].cpp), and their stock VMTs
-// dev/blurfilterx|y mount from hl2_misc, so this needs NO new shader and NO
-// GMod plugin dll.  (GMod's own g_blurx/g_blury live in
-// game_shader_generic_garrysmod.dll; same algorithm, Valve's sources here.)
-//
-// Structure mirrors GMod's Lua loop: rounds = passes+1, each round does
-// horizontal (source -> ping) then vertical (ping -> source, in place).
-// blurx/blury are API parity -- GMod scales its tap STEP with $size; this
-// kernel's step is fixed, so large sizes are approximated with EXTRA ROUNDS
-// (repeated convolution widens sigma by ~sqrt(rounds)).
-LUA_BINDING_BEGIN( Renders, BlurRenderTarget, "library", "Blurs a render target (separable gaussian).", "client" )
-{
-    ITexture *pSource = LUA_BINDING_ARGUMENT( luaL_checkitexture, 1, "renderTarget" );
-    float flBlurX = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 2, 2, "blurx" );
-    float flBlurY = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 3, 2, "blury" );
-    int nPasses = (int)LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optnumber, 4, 1, "passes" );
-
-    // rounds = passes+1 like GMod's Lua; big blurx/blury adds rounds.
-    float flSize = MAX( flBlurX, flBlurY );
-    int nRounds = nPasses + 1;
-    if ( flSize >= 6.0f )
-        nRounds += 2;
-    else if ( flSize >= 4.0f )
-        nRounds += 1;
-    nRounds = clamp( nRounds, 1, 6 );
-
-    static IMaterial *s_pBlurX = NULL, *s_pBlurY = NULL;
-    static IMaterialVar *s_pVarX = NULL, *s_pVarY = NULL;
-    static ITexture *s_pPing = NULL;
-    static bool s_bWarned = false;
-
-    if ( s_pBlurX == NULL )
-    {
-        s_pBlurX = materials->FindMaterial( "dev/blurfilterx", TEXTURE_GROUP_CLIENT_EFFECTS );
-        s_pBlurY = materials->FindMaterial( "dev/blurfiltery", TEXTURE_GROUP_CLIENT_EFFECTS );
-        bool bVarX = false, bVarY = false;
-        if ( s_pBlurX != NULL && !s_pBlurX->IsErrorMaterial() )
-            s_pVarX = s_pBlurX->FindVar( "$basetexture", &bVarX );
-        if ( s_pBlurY != NULL && !s_pBlurY->IsErrorMaterial() )
-            s_pVarY = s_pBlurY->FindVar( "$basetexture", &bVarY );
-        if ( !bVarX || !bVarY || s_pVarX == NULL || s_pVarY == NULL )
-        {
-            s_pBlurX = s_pBlurY = NULL;
-            s_pVarX = s_pVarY = NULL;
-        }
-    }
-    if ( s_pBlurX == NULL )
-    {
-        if ( !s_bWarned )
-        {
-            s_bWarned = true;
-            Warning( "[HL2SB] BlurRenderTarget: dev/blurfilterx|y not resolvable - blur skipped\n" );
-        }
-        return 0;
-    }
-
-    int nW = pSource->GetActualWidth();
-    int nH = pSource->GetActualHeight();
-    if ( nW < 8 || nH < 8 )
-        return 0;
-
-    if ( s_pPing == NULL )
-    {
-        g_pMaterialSystem->OverrideRenderTargetAllocation( true );
-        s_pPing = materials->CreateNamedRenderTargetTextureEx( "_rt_hl2sb_blurping",
-            nW, nH, RT_SIZE_NO_CHANGE,
-            IMAGE_FORMAT_RGBA8888, MATERIAL_RT_DEPTH_SHARED,
-            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 );
-        g_pMaterialSystem->OverrideRenderTargetAllocation( false );
-        if ( s_pPing == NULL )
-            return 0;
-    }
-    // later calls with a different-size source clamp into the ping viewport
-    int nVW = MIN( nW, s_pPing->GetActualWidth() );
-    int nVH = MIN( nH, s_pPing->GetActualHeight() );
-
-    CMatRenderContextPtr pRenderContext( materials );
-
-    for ( int i = 0; i < nRounds; ++i )
-    {
-        // horizontal: source -> ping
-        pRenderContext->PushRenderTargetAndViewport( s_pPing, 0, 0, nVW, nVH );
-        s_pVarX->SetTextureValue( pSource );
-        pRenderContext->DrawScreenSpaceQuad( s_pBlurX );
-        pRenderContext->PopRenderTargetAndViewport();
-
-        // vertical: ping -> source (in place, GMod parity)
-        pRenderContext->PushRenderTargetAndViewport( pSource, 0, 0, nVW, nVH );
-        s_pVarY->SetTextureValue( s_pPing );
-        pRenderContext->DrawScreenSpaceQuad( s_pBlurY );
-        pRenderContext->PopRenderTargetAndViewport();
-    }
-
-    return 0;
-}
-LUA_BINDING_END()
+// render.BlurRenderTarget is implemented in lua/includes/extensions/client/render.lua
+// using the pp/blurx and pp/blury shaders.
 
 // render.ModelMaterialOverride( IMaterial|nil ) -- forces the material onto
 // every DrawModel until cleared with nil.  The stable halo technique: draw the
@@ -1048,18 +976,45 @@ LUA_BINDING_END()
 // HL2SB GMod compat: the cam library.  cam.Start( {type="3D"/"2D", ...} )
 // mirrors the table API the content render.lua shim builds on top of.
 //
-// The "2D" type must NOT push anything onto the view stack.  GMod's cam.Start
-// only counts a 2D nesting depth and flips a render-context flag; the
-// projection for surface drawing comes from the SURFACE layer
-// (MatSystemSurface::StartDrawing builds an ortho over the CURRENT viewport).
-// Pushing the player view here re-widened the viewport to the full screen
-// right after render.PushRenderTarget had narrowed it to the target size, so
-// every draw into a toolgun-screen-sized target landed as a tiny sliver in
-// the texture's top-left corner.
+// The "2D" type brackets the matrices using the CURRENT viewport.  It must
+// establish a pixel-space projection even outside HUD painting, while keeping
+// the caller's render target and viewport (including toolgun-sized targets).
 //-----------------------------------------------------------------------------
 
 static int s_nCam2DDepth = 0;   // open cam.Start2D without a matching cam.End
 static int s_nCamViewDepth = 0; // 3D views pushed through cam.Start
+
+static void HL2SB_PushCam2DMatrices()
+{
+  CMatRenderContextPtr pRenderContext( materials );
+  int x, y, width, height;
+  pRenderContext->GetViewport( x, y, width, height );
+
+  pRenderContext->MatrixMode( MATERIAL_PROJECTION );
+  pRenderContext->PushMatrix();
+  pRenderContext->LoadIdentity();
+  pRenderContext->Scale( 1.0f, -1.0f, 1.0f );
+  pRenderContext->Ortho( 0.5, 0.5, width + 0.5, height + 0.5, -1.0, 1.0 );
+
+  pRenderContext->MatrixMode( MATERIAL_MODEL );
+  pRenderContext->PushMatrix();
+  pRenderContext->LoadIdentity();
+
+  pRenderContext->MatrixMode( MATERIAL_VIEW );
+  pRenderContext->PushMatrix();
+  pRenderContext->LoadIdentity();
+}
+
+static void HL2SB_PopCam2DMatrices()
+{
+  CMatRenderContextPtr pRenderContext( materials );
+  pRenderContext->MatrixMode( MATERIAL_PROJECTION );
+  pRenderContext->PopMatrix();
+  pRenderContext->MatrixMode( MATERIAL_MODEL );
+  pRenderContext->PopMatrix();
+  pRenderContext->MatrixMode( MATERIAL_VIEW );
+  pRenderContext->PopMatrix();
+}
 
 static int cam_Start (lua_State *L) {
   luaL_checktype( L, 1, LUA_TTABLE );
@@ -1070,6 +1025,7 @@ static int cam_Start (lua_State *L) {
 
   if ( !Q_stricmp( pszType, "2D" ) )
   {
+    HL2SB_PushCam2DMatrices();
     s_nCam2DDepth++;
     return 0;
   }
@@ -1127,6 +1083,7 @@ static int cam_End2D (lua_State *L) {
     return 0;
   }
   s_nCam2DDepth--;
+  HL2SB_PopCam2DMatrices();
   return 0;
 }
 
@@ -1145,8 +1102,7 @@ static int cam_End (lua_State *L) {
   // The generic closer: unwind whichever kind is open (2D first, GMod order).
   if ( s_nCam2DDepth > 0 )
   {
-    s_nCam2DDepth--;
-    return 0;
+    return cam_End2D( L );
   }
   if ( s_nCamViewDepth > 0 )
   {
