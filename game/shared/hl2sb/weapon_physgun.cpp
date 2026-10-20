@@ -115,6 +115,7 @@ ConVar physgun_DampingFactor( "physgun_DampingFactor", "0.8", FCVAR_ARCHIVE | FC
 // names without reading them -- plugins may query them client-side).
 ConVar physgun_rotation_sensitivity( "physgun_rotation_sensitivity", "0.05", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: E+mouse rotation (degrees per mouse count)" );
 ConVar physgun_wheelspeed( "physgun_wheelspeed", "10", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: wheel push/pull distance per notch" );
+ConVar physgun_limited( "physgun_limited", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: when enabled only props and ragdolls can be picked up" );
 ConVar physgun_minrange( "physgun_minrange", "40", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: minimum hold distance" );
 ConVar physgun_maxrange( "physgun_maxrange", "4096", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: maximum hold distance" );
 ConVar phys_spinspeed( "phys_spinspeed", "200", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: E+A/D spin speed (degrees per second)" );
@@ -1465,6 +1466,14 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		m_hObject = NULL;
 		return;
 	}
+
+	// GMod implements physgun_limited in the GAMEMODE, not in the C++ weapon:
+	// sandbox/gamemode/shared.lua registers the convar with the help text
+	// "Prevent the Physics Gun from picking up certain map entities." and its
+	// GM:PhysgunPickup rejects prop_dynamic, prop_door, func_physbox with
+	// SF_PHYSBOX_MOTIONDISABLED, and prop_* with SF_PHYSPROP_MOTIONDISABLED /
+	// SF_PHYSPROP_PREVENT_PICKUP.  Ordinary props AND NPCs stay pickable, so no
+	// C++ rule belongs here (an earlier hard "prop_ only" rule was wrong).
 
 	// HL2SB: a wheel burst accumulated while not holding must not fling the
 	// new hold distance on the first tick after the grab.

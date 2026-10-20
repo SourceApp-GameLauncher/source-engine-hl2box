@@ -2684,10 +2684,32 @@ FileHandle_t CBaseFileSystem::OpenForRead( const char *pFileNameT, const char *p
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+// GMod's filesystem debug switch (ConVars In Garrysmod: "Causes the Filesystem
+// to print every action").  The reference keeps this switch in the filesystem
+// module and, at the head of each filesystem action, prints one line describing
+// that action when it is enabled; the switch itself defaults to 0.
+static ConVar fs_tellmeyoursecrets( "fs_tellmeyoursecrets", "0", FCVAR_ARCHIVE,
+	"Causes the Filesystem to print every action." );
+
+static void FS_TellMeYourSecrets( const char *pFmt, ... )
+{
+	if ( !fs_tellmeyoursecrets.GetBool() )
+		return;
+
+	char szBuf[1024];
+	va_list args;
+	va_start( args, pFmt );
+	V_vsnprintf( szBuf, sizeof( szBuf ), pFmt, args );
+	va_end( args );
+	Msg( "[fs] %s\n", szBuf );
+}
+
 FileHandle_t CBaseFileSystem::OpenForWrite( const char *pFileName, const char *pOptions, const char *pathID )
 {
 	char tempPathID[MAX_PATH];
 	ParsePathID( pFileName, pathID, tempPathID );
+
+	FS_TellMeYourSecrets( "open(write) '%s' options='%s' pathID='%s'", pFileName, pOptions, pathID ? pathID : "" );
 
 	if ( ThreadInMainThread() && fs_report_sync_opens.GetInt() )
 	{
@@ -2789,6 +2811,8 @@ FileHandle_t CBaseFileSystem::Open( const char *pFileName, const char *pOptions,
 //-----------------------------------------------------------------------------
 FileHandle_t CBaseFileSystem::OpenEx( const char *pFileName, const char *pOptions, unsigned flags, const char *pathID, char **ppszResolvedFilename )
 {
+	FS_TellMeYourSecrets( "open '%s' options='%s' flags=%u pathID='%s'", pFileName ? pFileName : "(null)", pOptions ? pOptions : "", flags, pathID ? pathID : "" );
+
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s(%s, %s, %u %s )", __FUNCTION__, tmDynamicString( TELEMETRY_LEVEL0, pFileName ), tmDynamicString( TELEMETRY_LEVEL0, pOptions ), flags, tmDynamicString( TELEMETRY_LEVEL0, pathID ) );
 
 	VPROF_BUDGET( "CBaseFileSystem::Open", VPROF_BUDGETGROUP_OTHER_FILESYSTEM );
@@ -3000,6 +3024,7 @@ bool CBaseFileSystem::EndOfFile( FileHandle_t file )
 //-----------------------------------------------------------------------------
 int CBaseFileSystem::Read( void *pOutput, int size, FileHandle_t file )
 {
+	FS_TellMeYourSecrets( "read %d byte(s) handle=%p", size, (void *)file );
 	return ReadEx( pOutput, size, size, file );
 }
 
@@ -3271,6 +3296,8 @@ void CBaseFileSystem::DiscardPreloadData()
 int CBaseFileSystem::Write( void const* pInput, int size, FileHandle_t file )
 {
 	VPROF_BUDGET( "CBaseFileSystem::Write", VPROF_BUDGETGROUP_OTHER_FILESYSTEM );
+
+	FS_TellMeYourSecrets( "write %d byte(s) handle=%p", size, (void *)file );
 
 	AUTOBLOCKREPORTER_FH( Write, this, true, file, FILESYSTEM_BLOCKING_SYNCHRONOUS, FileBlockingItem::FB_ACCESS_WRITE );
 

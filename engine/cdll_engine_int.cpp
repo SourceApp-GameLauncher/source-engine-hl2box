@@ -1935,6 +1935,13 @@ void ClientDLL_Init( void )
 	InitExtraClientCmdCanExecuteVars();
 }
 
+// GMod's gmod_unload_test: the reference reads it in the engine at shutdown and,
+// when set, asks the material system to release what is no longer referenced, so
+// the next session starts from a cold cache (the switch is documented as
+// unstable).  Same name, default and help text as the reference.
+static ConVar gmod_unload_test( "gmod_unload_test", "0", FCVAR_ARCHIVE,
+	"Unload materials and models on disconnect. Unstable. Use at your own risk." );
+
 //-----------------------------------------------------------------------------
 // Purpose: Shuts down the client .dll
 //-----------------------------------------------------------------------------
@@ -1954,6 +1961,9 @@ void ClientDLL_Shutdown( void )
 	vgui::ivgui()->RunFrame();
 	
 	materials->UncacheAllMaterials();
+
+	if ( gmod_unload_test.GetBool() )
+		materials->UncacheUnusedMaterials( false );
 
 	vgui::ivgui()->RunFrame();
 
