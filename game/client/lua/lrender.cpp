@@ -1030,9 +1030,8 @@ static int cam_Start (lua_State *L) {
     return 0;
   }
 
-  CViewSetup playerView = *view->GetPlayerViewSetup();
-  CViewSetup viewSetup( playerView );
-  viewSetup.m_flAspectRatio = 0.0f;   // the rect decides the aspect (see PushView3D)
+  // Reuse the active render view, including camera overrides and its aspect.
+  CViewSetup viewSetup( *view->GetViewSetup() );
   s_nCamViewDepth++;
 
   lua_getfield( L, 1, "origin" );
@@ -1058,6 +1057,14 @@ static int cam_Start (lua_State *L) {
   lua_pop( L, 1 );
   lua_getfield( L, 1, "h" );
   if ( !lua_isnil( L, -1 ) ) viewSetup.height = (int)lua_tonumber( L, -1 );
+  bool bCustomViewport = !lua_isnil( L, -1 );
+  lua_pop( L, 1 );
+
+  lua_getfield( L, 1, "aspect" );
+  if ( !lua_isnil( L, -1 ) )
+    viewSetup.m_flAspectRatio = (float)lua_tonumber( L, -1 );
+  else if ( bCustomViewport )
+    viewSetup.m_flAspectRatio = 0.0f;
   lua_pop( L, 1 );
 
   lua_getfield( L, 1, "znear" );

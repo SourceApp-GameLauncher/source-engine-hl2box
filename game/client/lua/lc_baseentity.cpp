@@ -12,7 +12,8 @@
 #include "lbaseentity_shared.h"
 #include "mathlib/lvector.h"
 #include "model_types.h"	// HL2SB: STUDIO_RENDER, the default of Entity:DrawModel()
-#include "c_baseanimating.h"	// HL2SB: non-dispatching DrawModel path, see CBaseEntity_DrawModel
+#include "c_baseanimating.h"
+#include "basescripted.h"
 #include "particles_new.h"	// HL2SB: Entity:CreateParticleEffect (CNewParticleEffect)
 #include "particle_parse.h"	// HL2SB: ParticleAttachment_t
 #include "lnewparticle.h"	// HL2SB: HL2SB_PushNewParticleEffect
@@ -120,22 +121,19 @@ static int CBaseEntity_UsesFullFrameBufferTexture (lua_State *L) {
 }
 
 static int CBaseEntity_DrawModel (lua_State *L) {
-  // HL2SB GMod compat: `flags` is optional and defaults to STUDIO_RENDER (wiki,
-  // Entity:DrawModel) - see the same fix on C_BaseAnimating.
-  //
-  // HL2SB: like CBaseAnimating_DrawModel, this must NOT go through the virtual
-  // DrawModel() -- on a C_BaseScripted that re-enters ENT:Draw() and the model
-  // is never actually drawn (the cod_c4 thrown entity rendered nothing while
-  // its ENT:Draw ran every frame).  Route through InternalDrawModel, which
-  // draws the model without the script dispatch.
-  //
-  // HL2SB (2026-09-24): brush and sprite models have no studio header.
-  // gm_construct's grabbable func_reflective_glass mirror drawn through here
-  // AV'd inside the studio path (dumps/crash_20260924_231913).  Skip
-  // non-studio models: Lua callers get a 0 instead of a crash.
   C_BaseEntity *pEntity = luaL_checkentity(L, 1);
   int nFlags = luaL_optint(L, 2, STUDIO_RENDER);
 
+  // GMod lets a scripted entity draw its custom geometry on the first call.
+  // The entity's draw scope handles a nested self:DrawModel as a model draw.
+  CBaseScripted *pScripted = dynamic_cast<CBaseScripted *>( pEntity );
+  if ( pScripted != NULL )
+  {
+    lua_pushinteger( L, pScripted->DrawModel( nFlags ) );
+    return 1;
+  }
+
+  // Studio drawing cannot consume a brush or sprite model header.
   const model_t *pModel = pEntity->GetModel();
   if ( pModel == NULL || modelinfo->GetModelType( pModel ) != mod_studio )
   {

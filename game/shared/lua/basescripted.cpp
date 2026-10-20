@@ -21,6 +21,7 @@
 #include "utlstring.h"	// HL2SB: CUtlString for the client draw-probe classnames
 #ifdef CLIENT_DLL
 #include "clientleafsystem.h"	// HL2SB (2026-10-02): re-report the render group after the script class binds
+#include "model_types.h"
 #endif
 #ifndef CLIENT_DLL
 // HL2SB: gamevcollisionevent_t, for ENT:PhysicsCollide.
@@ -636,6 +637,32 @@ RenderGroup_t CBaseScripted::GetRenderGroup( void )
 int CBaseScripted::DrawModel( int flags )
 {
 #if defined( LUA_SDK ) && defined( CLIENT_DLL )
+	struct DrawState
+	{
+		CBaseScripted *entity;
+		int flags;
+	};
+	static CUtlVector<DrawState> drawStack;
+	for ( int i = 0; i < drawStack.Count(); ++i )
+	{
+		if ( drawStack[i].entity != this )
+			continue;
+
+		// A scripted Draw may request its model without re-entering Draw.
+		const model_t *pModel = GetModel();
+		if ( pModel == NULL || modelinfo->GetModelType( pModel ) != mod_studio )
+			return 0;
+		return InternalDrawModel( flags | ( drawStack[i].flags & STUDIO_SHADOWDEPTHTEXTURE ) );
+	}
+	DrawState drawState = { this, flags };
+	drawStack.AddToTail( drawState );
+	struct DrawScope
+	{
+		CUtlVector<DrawState> &stack;
+		DrawScope( CUtlVector<DrawState> &s ) : stack( s ) {}
+		~DrawScope() { stack.Remove( stack.Count() - 1 ); }
+	} drawScope( drawStack );
+
 	// HL2SB (2026-10-03): the per-entity clip plane (Entity:SetRenderClipPlane /
 	// SetRenderClipPlaneEnabled) applies for the whole draw - the portalgun's
 	// player clone must be cut at the portal plane no matter which Lua draw
@@ -733,7 +760,8 @@ int CBaseScripted::DrawModel( int flags )
 		render->SetColorModulation( flWhite );
 
 		BEGIN_LUA_CALL_ENTITY_METHOD( pszFunc );
-		END_LUA_CALL_ENTITY_METHOD( 0, 1 );
+			lua_pushinteger( L, flags );
+		END_LUA_CALL_ENTITY_METHOD( 1, 1 );
 
 		if ( !( lua_isboolean( L, -1 ) && lua_toboolean( L, -1 ) == 0 ) )
 		{

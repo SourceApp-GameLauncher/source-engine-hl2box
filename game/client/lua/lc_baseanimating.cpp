@@ -621,17 +621,12 @@ static int CBaseAnimating_DrawModel (lua_State *L) {
 
   int nResult = 0;
 
-  // HL2SB: NOT the virtual DrawModel() -- for a C_BaseScripted that virtual
-  // re-dispatches ENT:Draw(), so "ENT:Draw() { self:DrawModel() }" recursed
-  // into itself until the Lua C-stack limit aborted the chain.  Every level's
-  // pcall swallowed the abort, so the real model draw NEVER ran and the entity
-  // rendered nothing at all: the thrown cod-c4 was invisible while its red
-  // blink sprite (drawn without going through DrawModel) still flashed.
-  // GMod's Entity:DrawModel draws the model directly and never re-enters
-  // RenderOverride / ENT:Draw -- InternalDrawModel is this fork's
-  // non-dispatching path (C_BaseScripted does not override it).
-  //
-  nResult = pEntity->InternalDrawModel(luaL_optint(L, 2, STUDIO_RENDER));
+  // Use the same scripted draw scope as the Entity metatable binding.
+  int nFlags = luaL_optint( L, 2, STUDIO_RENDER );
+  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL )
+    nResult = pEntity->DrawModel( nFlags );
+  else
+    nResult = pEntity->InternalDrawModel( nFlags );
 
   if (bTinted)
     render->SetColorModulation(flPrevColor);

@@ -6,6 +6,7 @@
 //=============================================================================//
 
 #include "cbase.h"
+#include "weapon_hl2mpbasehlmpcombatweapon.h"
 #include "beam_shared.h"
 #ifndef CLIENT_DLL
 #include "player.h"
@@ -443,12 +444,12 @@ IMotionEvent::simresult_e CGravControllerPoint::Simulate( IPhysicsMotionControll
 #define CWeaponGravityGun C_WeaponGravityGun
 #endif
 
-class CWeaponGravityGun : public CBaseHLCombatWeapon
+class CWeaponGravityGun : public CBaseHL2MPCombatWeapon
 {
 	DECLARE_DATADESC();
 
 public:
-	DECLARE_CLASS( CWeaponGravityGun, CBaseHLCombatWeapon );
+	DECLARE_CLASS( CWeaponGravityGun, CBaseHL2MPCombatWeapon );
 
 	DECLARE_NETWORKCLASS();
 	DECLARE_PREDICTABLE();
@@ -541,6 +542,7 @@ public:
 	virtual void	UpdateOnRemove(void);
 	void PrimaryAttack( void );
 	void SecondaryAttack( void );
+	void PlayAttackAnimation( void );
 	void ItemPreFrame( void );
 	void ItemPostFrame( void );
 	virtual bool Holster( CBaseCombatWeapon *pSwitchingTo )
@@ -957,6 +959,13 @@ void CWeaponGravityGun::EffectUpdate( void )
 	TraceLine( &tr );
 	Vector end = tr.endpos;
 	float distance = tr.fraction * physgun_maxrange.GetFloat();
+
+	if ( m_hObject == NULL && !m_bFreezeReleaseLatch &&
+		m_flNextPrimaryAttack <= gpGlobals->curtime && tr.DidHit() &&
+		( pOwner->m_afButtonPressed & IN_ATTACK ) )
+	{
+		PlayAttackAnimation();
+	}
 
 	if ( m_hObject == NULL && !m_bFreezeReleaseLatch && tr.DidHitNonWorldEntity() )
 	{
@@ -1549,11 +1558,6 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 			END_LUA_CALL_HOOK( 2, 0 );
 		}
 
-		// HL2SB (2026-09-29, GMod reference): a successful grab fires ONE
-		// ACT_VM_PRIMARYATTACK through the weapon (server.dll 
-		// tail: the slot-translate fn +0x930 with activity 181 ==
-		// ACT_VM_PRIMARYATTACK).
-		SendWeaponAnim( ACT_VM_PRIMARYATTACK );
 
 		return;
 	}
@@ -1620,8 +1624,6 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		}
 #endif
 
-		// HL2SB: the grab twitch, same one-shot as the drag path above
-		SendWeaponAnim( ACT_VM_PRIMARYATTACK );
 	}
 	else
 	{
@@ -1646,9 +1648,37 @@ void CWeaponGravityGun::PrimaryAttack( void )
 	}
 }
 
+void CWeaponGravityGun::PlayAttackAnimation( void )
+{
+#ifdef CLIENT_DLL
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	if ( pOwner == NULL || pOwner != C_BasePlayer::GetLocalPlayer() )
+		return;
+
+	CBaseViewModel *pViewModel = pOwner->GetViewModel( m_nViewModelIndex, false );
+	if ( pViewModel == NULL )
+		return;
+
+	// The weapon's render model may be the world model, not the viewmodel.
+	const int nSequence = pViewModel->SelectWeightedSequence( ACT_VM_PRIMARYATTACK );
+	if ( nSequence != ACTIVITY_NOT_AVAILABLE )
+		pViewModel->SendViewModelMatchingSequence( nSequence );
+#else
+	SendWeaponAnim( ACT_VM_PRIMARYATTACK );
+#endif
+}
+
 void CWeaponGravityGun::SecondaryAttack( void )
 {
-#ifndef CLIENT_DLL
+#ifdef CLIENT_DLL
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	if ( pOwner == NULL || !m_hObject.Get() || m_flNextSecondaryAttack > gpGlobals->curtime )
+		return;
+
+	m_flNextPrimaryAttack = gpGlobals->curtime + 0.5f;
+	m_flNextSecondaryAttack = gpGlobals->curtime + 0.5f;
+	PlayAttackAnimation();
+#else
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 	if ( !pOwner || !m_hObject.Get() )
 		return;
@@ -1693,7 +1723,7 @@ void CWeaponGravityGun::SecondaryAttack( void )
 		if ( !bFreezeBlocked )
 		{
 			pPhys->EnableMotion( false );
-			SendWeaponAnim( ACT_VM_PRIMARYATTACK );
+			PlayAttackAnimation();
 			m_bFreezeReleaseLatch = true;
 			HL2SB_PlayerAddFrozenObject( pOwner, pObject, pPhys );
 			DetachObject();
@@ -2100,39 +2130,8 @@ void CWeaponGravityGun::ItemPostFrame( void )
 	}
 #endif
 
-	// HL2SB (2026-10-03, ONE-SHOT return-to-idle): the reference viewmodel
-	// loops its idle forever, but this engine's SendWeaponAnim is
-	// SetIdealActivity with no slot auto-recovery -- after a one-shot finishes
-	// (the deploy draw, the grab twitch, the RMB freeze) nothing ever
-	// re-selects ACT_VM_IDLE, and C_BaseViewModel::Interpolate pins a finished
-	// NON-looping sequence at cycle 0.999 forever.  That is the probe
-	// signature "vm anim: seq=4 cycle=0.999 rate=0.00/s" from deploy onward:
-	// the idle sequence never plays at all and the gun is a statue.
-	// The re-arm fires ONCE per finished one-shot, never per tick:
-	//  - m_flTimeWeaponIdle is (re)set by SetIdealActivity at the same moment
-	//    it sends a sequence (curtime + that sequence's own duration), so
-	//    HasWeaponIdleTimeElapsed() is a real finished-check that cannot go
-	//    stale -- unlike IsViewModelSequenceFinished(), which reads the server
-	//    viewmodel's m_bSequenceFinished, a field the server viewmodel never
-	//    advances (no StudioFrameAdvance pump) -- the stale-guard trap the
-	//    previous per-tick re-send fell into.
-	//  - GetActivity() != ACT_VM_IDLE keeps it a one-shot.  Re-sending the
-	//    sequence that is ALREADY playing would RESTART it:
-	//    SendViewModelMatchingSequence bumps m_nAnimationParity and zeroes
-	//    m_flCycle unconditionally, and the client resets on any parity
-	//    change -- the historical per-tick re-send that pinned frame 0,
-	//    jittered the idle and dropped the merged arms.
-	//  - Runs every frame INCLUDING while LMB is held (before the button
-	//    handling below): the reference viewmodel settles back on idle even
-	//    with the fire button down.
-	// The grab/freeze one-shots in AttachObject/freeze stay exactly as they
-	// are; this only hands the viewmodel back to the looping idle afterwards.
-#ifndef CLIENT_DLL
-	if ( GetActivity() != ACT_VM_IDLE && HasWeaponIdleTimeElapsed() )
-	{
-		SendWeaponAnim( ACT_VM_IDLE );
-	}
-#endif
+	// GMod keeps the final pose after the deploy/grab/freeze animation.
+	// ItemPostFrame does not start a looping idle animation.
 
 	// HL2SB GMod compat: SecondaryAttack (freeze)
 	if ( pOwner->m_afButtonPressed & IN_ATTACK2 )
@@ -2162,13 +2161,7 @@ void CWeaponGravityGun::ItemPostFrame( void )
 			SoundDestroy();
 		}
 
-		// HL2SB (2026-10-03): the unguarded per-tick "re-arm ACT_VM_IDLE"
-		// resend stays gone -- any re-send restarts the viewmodel sequence
-		// (arms blink, gun pops).  The guarded ONE-SHOT re-arm at the top of
-		// this function is the replacement: it fires only when the current
-		// non-idle sequence has actually run out its duration, and the
-		// GetActivity() gate makes it impossible to re-send an idle that is
-		// already the active sequence.
+
 		return;
 	}
 }
