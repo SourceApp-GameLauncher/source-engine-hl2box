@@ -573,9 +573,13 @@ const Vector CBasePlayer::GetPlayerMaxs( void ) const
 //-----------------------------------------------------------------------------
 void CBasePlayer::CacheVehicleView( void )
 {
-	// If we've calculated the view this frame, then there's no need to recalculate it
+#ifndef CLIENT_DLL
+	// The server can reuse its view within a simulation frame. On the client,
+	// GMod refreshes each query so a view read before entity interpolation
+	// cannot leave the rendered camera using an earlier vehicle transform.
 	if ( m_nVehicleViewSavedFrame == gpGlobals->framecount )
 		return;
+#endif
 
 #ifdef CLIENT_DLL
 	IClientVehicle *pVehicle = GetVehicle();
