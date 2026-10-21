@@ -27,7 +27,7 @@
 #include "view.h"					// CurrentViewOrigin - the global EyePos()
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialsystem.h"
-#include "materialsystem/materialsystemutil.h"
+#include "materialsystem/MaterialSystemUtil.h"
 #else
 #include "lbaseanimating.h"
 #include "player.h"					// HL2SB: Entity:GetViewEntity (CBasePlayer::m_hViewEntity)
