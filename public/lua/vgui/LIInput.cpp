@@ -394,7 +394,7 @@ static int input_GetKeyName (lua_State *L) {
 ** public/lua/lcdll_int.cpp:333 already exposes it as engine.Key_LookupBinding.  GMod spells
 ** it on the input library, which is why the call was a nil method here.
 **
-** ⚠️ cod_c4 reads the pick-up key with it while drawing its HUD prompt
+** cod_c4 reads the pick-up key with it while drawing its HUD prompt
 ** (addons/cod_c4/lua/entities/cod-c4/cl_init.lua:60):
 **     local useKey = input.LookupBinding( "+reload" ) or "R"
 ** As a nil method the call raised instead of returning nil, so the HUD callback died on

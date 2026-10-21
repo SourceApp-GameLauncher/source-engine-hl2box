@@ -2866,7 +2866,7 @@ static void luasrc_ResolvePendingNextBotChains (void)
 		{
 			const char *pszClass = s_PendingNextBotChains[i].Get();
 
-			// ⚠️ EVERY Lua touched below restores the stack top before any
+			// EVERY Lua touched below restores the stack top before any
 			// decision: this runs between the loader's own Lua frames, and a
 			// leaked slot here derails the caller mid-init (the map-load freeze
 			// of 2026-09-20 was exactly that -- the scripted_ents table of the
@@ -2977,7 +2977,7 @@ static void luasrc_LoadOneEntity (const char *filename, const char *className)
 			// without its ENT methods ("attempt to call a nil value (method
 			// 'SetBlockID')" on minecraft_block).
 			//
-			// ⚠️ nargs here MUST match the pushed arguments: the first version of
+			// nargs here MUST match the pushed arguments: the first version of
 			// this change raised luasrc_pcall's nargs to 3 without pushing the
 			// third value, so the traceback handler was lua_inserted at an
 			// out-of-stack index and every entity load ended in an unprotected
@@ -3064,7 +3064,7 @@ static void luasrc_LoadOneEntity (const char *filename, const char *className)
 		// was registered as a plain CBaseAnimating scripted entity: no INextBot,
 		// no locomotion, no BehaveUpdate - a bot that just stands there.
 		//
-		// ⚠️ This is also why ENT.Base matters here and not ENT.Type alone:
+		// This is also why ENT.Base matters here and not ENT.Type alone:
 		// the addon only sets Base, and Type comes from OUR base_nextbot script.
 		bool bIsNextBot = false;
 
