@@ -13,6 +13,8 @@
 #include <luamanager.h>
 #include "luasrclib.h"
 #include "vgui_controls/lPanel.h"
+#include "inputsystem/IInputSystem.h"
+#include "tier2/tier2.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -95,9 +97,18 @@ static int input_GetEnglishIMEHandle (lua_State *L) {
   return 1;
 }
 
-static int input_GetFocus (lua_State *L) {
-  lua_pushpanel(L, input()->GetFocus());
+static int input_PushPanelOrNil(lua_State *L, VPANEL panel) {
+  if (!panel) return 0;
+  lua_pushpanel(L, panel);
+  if (!lua_topanel(L, -1)) {
+    lua_pop(L, 1);
+    return 0;
+  }
   return 1;
+}
+
+static int input_GetFocus (lua_State *L) {
+  return input_PushPanelOrNil(L, input()->GetFocus());
 }
 
 static int input_GetModalSubTree (lua_State *L) {
@@ -111,8 +122,7 @@ static int input_GetMouseCapture (lua_State *L) {
 }
 
 static int input_GetMouseOver (lua_State *L) {
-  lua_pushpanel(L, input()->GetMouseOver());
-  return 1;
+  return input_PushPanelOrNil(L, input()->GetMouseOver());
 }
 
 static int input_GetShouldInvertCompositionString (lua_State *L) {
@@ -129,6 +139,16 @@ static int input_IsKeyDown (lua_State *L) {
     return 1;
   }
   lua_pushboolean(L, input()->IsKeyDown((KeyCode)iCode));
+  return 1;
+}
+
+static int input_IsShiftDown (lua_State *L) {
+  lua_pushboolean(L, input()->IsKeyDown(KEY_LSHIFT) || input()->IsKeyDown(KEY_RSHIFT));
+  return 1;
+}
+
+static int input_IsControlDown (lua_State *L) {
+  lua_pushboolean(L, input()->IsKeyDown(KEY_LCONTROL) || input()->IsKeyDown(KEY_RCONTROL));
   return 1;
 }
 
@@ -354,16 +374,15 @@ static int input_CheckKeyTrapping (lua_State *L) {
 }
 
 static int input_GetKeyName (lua_State *L) {
-  char buf[ 256 ];
-  buf[ 0 ] = '\0';
-  input()->GetKeyCodeText((KeyCode)luaL_checkint(L, 1), buf, sizeof( buf ));
+  const int code = luaL_checkint(L, 1);
+  if (code <= BUTTON_CODE_NONE || code >= BUTTON_CODE_LAST || !g_pInputSystem)
+    return 0;
 
-  if ( buf[ 0 ] == '\0' ) {
-    lua_pushnil(L);
-    return 1;
-  }
+  const char *name = g_pInputSystem->ButtonCodeToString((ButtonCode_t)code);
+  if (!name || !name[0])
+    return 0;
 
-  lua_pushstring(L, buf);
+  lua_pushstring(L, name);
   return 1;
 }
 
@@ -423,6 +442,8 @@ static const luaL_Reg inputlib[] = {
   {"GetMouseOver",   input_GetMouseOver},
   {"GetShouldInvertCompositionString",   input_GetShouldInvertCompositionString},
   {"IsKeyDown",   input_IsKeyDown},
+  {"IsShiftDown",   input_IsShiftDown},
+  {"IsControlDown",   input_IsControlDown},
   {"IsMouseDown",   input_IsMouseDown},
   {"OnChangeIME",   input_OnChangeIME},
   {"OnChangeIMEByHandle",   input_OnChangeIMEByHandle},

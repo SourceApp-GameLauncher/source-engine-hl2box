@@ -283,7 +283,10 @@ static int timer_Create (lua_State *L) {
 
 	t.m_iFuncRef = HL2SB_TimerStoreCallback( L, 4 );
 
-	g_LuaTimers.Insert( sKey, t );
+	if ( h != g_LuaTimers.InvalidHandle() )
+		g_LuaTimers[h] = t;
+	else
+		g_LuaTimers.Insert( sKey, t );
 	return 0;
 }
 

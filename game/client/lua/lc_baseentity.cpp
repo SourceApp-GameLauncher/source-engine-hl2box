@@ -17,6 +17,9 @@
 #include "particles_new.h"	// HL2SB: Entity:CreateParticleEffect (CNewParticleEffect)
 #include "particle_parse.h"	// HL2SB: ParticleAttachment_t
 #include "lnewparticle.h"	// HL2SB: HL2SB_PushNewParticleEffect
+#include <vgui/IInput.h>
+#include <vgui_controls/Controls.h>
+#include <vgui_controls/lPanel.h>
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -383,6 +386,15 @@ static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
 	// The hook answers true to swallow the press.
 	const bool bBlocked = lua_toboolean( L, -1 );
 	lua_settop( L, iTop );
+	if (!bBlocked) {
+		vgui::VPANEL target = vgui::input()->GetMouseCapture();
+		if (!target) target = vgui::input()->GetMouseOver();
+		BEGIN_LUA_CALL_HOOK("VGUIMousePressed");
+			lua_pushpanel(L, target);
+			lua_pushinteger(L, mouseCode);
+		END_LUA_CALL_HOOK(2, 0);
+		lua_settop(L, iTop);
+	}
 	return bBlocked;
 }
 

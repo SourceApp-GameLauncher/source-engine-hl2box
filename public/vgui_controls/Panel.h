@@ -240,6 +240,7 @@ public:
 
 	virtual void SetAutoDelete(bool state);		// if set to true, panel automatically frees itself when parent is deleted
 	virtual bool IsAutoDeleteSet();
+	bool IsMarkedForDeletion() const { return _flags.IsFlagSet( MARKED_FOR_DELETION ); }
 	virtual void DeletePanel();				// simply does a  { delete this; }
 
 	// messaging

@@ -638,6 +638,11 @@ bool TextEntry::NeedsEllipses( HFont font, int *pIndex )
 void TextEntry::PaintBackground()
 {
 	BaseClass::PaintBackground();
+	PaintText();
+}
+
+void TextEntry::PaintText(bool drawLanguageID)
+{
 
 	// draw background
 	Color col;
@@ -666,7 +671,7 @@ void TextEntry::PaintBackground()
 	wchar_t shortcode[ 5 ];
 	shortcode[ 0 ] = L'\0';
 
-	if ( m_bAllowNonAsciiCharacters )
+	if ( m_bAllowNonAsciiCharacters && drawLanguageID )
 	{
 		input()->GetIMELanguageShortCode( shortcode, sizeof( shortcode ) );
 

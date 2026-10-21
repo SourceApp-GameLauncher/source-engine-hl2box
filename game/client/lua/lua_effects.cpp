@@ -39,11 +39,127 @@
 #include "c_baseplayer.h"
 #include "c_baseviewmodel.h"
 #include "c_basecombatweapon.h"
+#include "vphysics_interface.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 #define HL2SB_LUA_EFFECT_TEMPLATES "__hl2sb_lua_effects"
+
+static void LuaEffect_ParentTransform(lua_State *state, matrix3x4_t &transform) {
+	lua_getfield(state, 1, "__hl2sb_parent");
+	CBaseEntity *parent = lua_toentity(state, -1);
+	lua_pop(state, 1);
+	SetIdentityMatrix(transform);
+	// World geometry already uses world coordinates.
+	if (!parent || parent->IsWorld()) return;
+	lua_getfield(state, 1, "__hl2sb_parentphys");
+	int bone = (int)lua_tointeger(state, -1);
+	lua_pop(state, 1);
+	IPhysicsObject *objects[128];
+	int count = parent->VPhysicsGetObjectList(objects, ARRAYSIZE(objects));
+	if (bone >= 0 && bone < count && objects[bone]) {
+		Vector position; QAngle angles;
+		objects[bone]->GetPosition(&position, &angles);
+		AngleMatrix(angles, position, transform);
+	} else transform = parent->EntityToWorldTransform();
+}
+
+static void LuaEffect_WorldTransform(lua_State *state, matrix3x4_t &transform) {
+	lua_getfield(state, 1, "__hl2sb_position");
+	Vector position = luaL_testudata(state, -1, LUA_VECTORLIBNAME) ? luaL_checkvector(state, -1) : vec3_origin;
+	lua_pop(state, 1);
+	lua_getfield(state, 1, "__hl2sb_angles");
+	QAngle angles = luaL_testudata(state, -1, "QAngle") ? luaL_checkangle(state, -1) : vec3_angle;
+	lua_pop(state, 1);
+	matrix3x4_t local, parent;
+	AngleMatrix(angles, position, local);
+	LuaEffect_ParentTransform(state, parent);
+	ConcatTransforms(parent, local, transform);
+}
+
+static void LuaEffect_StoreWorldTransform(lua_State *state, const matrix3x4_t &world) {
+	matrix3x4_t parent, inverse, local;
+	LuaEffect_ParentTransform(state, parent);
+	MatrixInvert(parent, inverse);
+	ConcatTransforms(inverse, world, local);
+	Vector position; QAngle angles;
+	MatrixAngles(local, angles, position);
+	lua_pushvector(state, position); lua_setfield(state, 1, "__hl2sb_position");
+	lua_pushangle(state, angles); lua_setfield(state, 1, "__hl2sb_angles");
+}
+
+static int LuaEffect_SetPos(lua_State *state) {
+	Vector position = luaL_checkvector(state, 2);
+	matrix3x4_t world;
+	LuaEffect_WorldTransform(state, world);
+	MatrixSetColumn(position, 3, world);
+	LuaEffect_StoreWorldTransform(state, world);
+	return 0;
+}
+
+static int LuaEffect_GetPos(lua_State *state) {
+	matrix3x4_t world; Vector position;
+	LuaEffect_WorldTransform(state, world);
+	MatrixGetColumn(world, 3, position);
+	lua_pushvector(state, position);
+	return 1;
+}
+
+static int LuaEffect_SetAngles(lua_State *state) {
+	QAngle angles = luaL_checkangle(state, 2);
+	matrix3x4_t world; Vector position;
+	LuaEffect_WorldTransform(state, world);
+	MatrixGetColumn(world, 3, position);
+	AngleMatrix(angles, position, world);
+	LuaEffect_StoreWorldTransform(state, world);
+	return 0;
+}
+
+static int LuaEffect_GetAngles(lua_State *state) {
+	matrix3x4_t world; QAngle angles;
+	LuaEffect_WorldTransform(state, world);
+	MatrixAngles(world, angles);
+	lua_pushangle(state, angles);
+	return 1;
+}
+
+static int LuaEffect_SetParent(lua_State *state) {
+	matrix3x4_t world;
+	LuaEffect_WorldTransform(state, world);
+	lua_pushentity(state, lua_toentity(state, 2));
+	lua_setfield(state, 1, "__hl2sb_parent");
+	LuaEffect_StoreWorldTransform(state, world);
+	return 0;
+}
+
+static int LuaEffect_SetParentPhysNum(lua_State *state) {
+	matrix3x4_t world;
+	LuaEffect_WorldTransform(state, world);
+	lua_pushinteger(state, luaL_checkint(state, 2));
+	lua_setfield(state, 1, "__hl2sb_parentphys");
+	LuaEffect_StoreWorldTransform(state, world);
+	return 0;
+}
+
+static int LuaEffect_SetModel(lua_State *state) {
+	lua_pushstring(state, luaL_checkstring(state, 2));
+	lua_setfield(state, 1, "__hl2sb_model");
+	return 0;
+}
+
+static int LuaEffect_GetModel(lua_State *state) {
+	lua_getfield(state, 1, "__hl2sb_model");
+	return 1;
+}
+
+static int LuaEffect_IsValid(lua_State *state) {
+	lua_getfield(state, 1, "__hl2sb_retired");
+	bool retired = lua_toboolean(state, -1) != 0;
+	lua_pop(state, 1);
+	lua_pushboolean(state, !retired);
+	return 1;
+}
 
 //=============================================================================
 // Engine-provided methods on the effect table.
@@ -124,7 +240,7 @@ static int LuaEffect_GetTracerShootPos( lua_State *L )
 			}
 		}
 
-		if ( pPlayer != NULL && pPlayer->IsLocalPlayer() )
+		if ( pPlayer != NULL && pPlayer->IsLocalPlayer() && !C_BasePlayer::ShouldDrawLocalPlayer() )
 		{
 			// First person: the muzzle lives on the viewmodel.
 			C_BaseViewModel *pViewModel = pPlayer->GetViewModel();
@@ -218,8 +334,15 @@ CLuaEffect::~CLuaEffect( void )
 	// CEffectsList deletes the effect when Think() says it is done, and
 	// clienteffects->Flush() deletes the rest on level change, so this is the
 	// single place the Lua registry reference is released.
-	if ( L != NULL && m_nRef >= 0 )
+	if ( L != NULL && m_nRef >= 0 ) {
+		lua_getref(L, m_nRef);
+		if (lua_istable(L, -1)) {
+			lua_pushboolean(L, true);
+			lua_setfield(L, -2, "__hl2sb_retired");
+		}
+		lua_pop(L, 1);
 		lua_unref( L, m_nRef );
+	}
 
 	m_nRef = LUA_NOREF;
 }
@@ -627,6 +750,25 @@ bool HL2SB_CreateLuaEffect( const char *pszName, const CEffectData &data )
 
 	lua_pushcfunction( L, LuaEffect_GetTracerShootPos );
 	lua_setfield( L, -2, "GetTracerShootPos" );
+
+	const luaL_Reg entityMethods[] = {
+		{"SetRenderBounds", LuaEffect_SetRenderBoundsWS},
+		{"SetCollisionBounds", LuaEffect_SetRenderBoundsWS},
+		{"SetPos", LuaEffect_SetPos}, {"GetPos", LuaEffect_GetPos},
+		{"SetAngles", LuaEffect_SetAngles}, {"GetAngles", LuaEffect_GetAngles},
+		{"SetParent", LuaEffect_SetParent}, {"SetParentPhysNum", LuaEffect_SetParentPhysNum},
+		{"SetModel", LuaEffect_SetModel}, {"GetModel", LuaEffect_GetModel},
+		{"IsValid", LuaEffect_IsValid}, {NULL, NULL}
+	};
+	for (int i = 0; entityMethods[i].name; ++i) {
+		lua_getfield(L, -1, entityMethods[i].name);
+		bool absent = lua_isnil(L, -1);
+		lua_pop(L, 1);
+		if (absent) {
+			lua_pushcfunction(L, entityMethods[i].func);
+			lua_setfield(L, -2, entityMethods[i].name);
+		}
+	}
 
 	// HL2SB GMod compat: the numeric setters a stock GMod effect script opens
 	// with -- every one of them is a CLuaParticle/effect property in GMod, and

@@ -1747,7 +1747,7 @@ static int CBaseEntity_StopSound (lua_State *L) {
 }
 
 // HL2SB GMod compat: Entity:GetParent(), LocalToWorld(), SetTrigger(),
-// ManipulateBoneAngles(), SetSpawnEffect().
+// ManipulateBoneAngles().
 //
 // The first three have real engine equivalents (GetMoveParent, a rotation into
 // world space, FSOLID_TRIGGER).  The last two do not: this fork has no bone
@@ -1842,9 +1842,81 @@ static int CBaseEntity_ManipulateBoneAngles (lua_State *L) {
   return 0;
 }
 
+// Keep the networked spawn state outside the entity layout.
+struct HL2SBSpawnEffectState { bool enabled; float created; };
+static CUtlDict<HL2SBSpawnEffectState, unsigned short> s_SpawnEffects;
+
+static HL2SBSpawnEffectState *HL2SB_SpawnEffectState(CBaseEntity *entity, bool create) {
+  if (!entity || !entity->GetRefEHandle().IsValid()) return NULL;
+  char key[32];
+  Q_snprintf(key, sizeof(key), "%u", entity->GetRefEHandle().ToInt());
+  unsigned short index = s_SpawnEffects.Find(key);
+  if (index == s_SpawnEffects.InvalidIndex()) {
+    if (!create) return NULL;
+    HL2SBSpawnEffectState initial = {false, gpGlobals->curtime};
+    index = s_SpawnEffects.Insert(key, initial);
+  }
+  return &s_SpawnEffects[index];
+}
+
+void HL2SB_RecordEntityCreation(CBaseEntity *entity) {
+  HL2SB_SpawnEffectState(entity, true);
+}
+
+bool HL2SB_GetSpawnEffect(CBaseEntity *entity) {
+  HL2SBSpawnEffectState *state = HL2SB_SpawnEffectState(entity, false);
+  return state && state->enabled;
+}
+
+float HL2SB_GetSpawnEffectTime(CBaseEntity *entity) {
+  HL2SBSpawnEffectState *state = HL2SB_SpawnEffectState(entity, false);
+  return state ? state->created : 0.0f;
+}
+
+void HL2SB_ReceiveSpawnEffect(CBaseEntity *entity, bool enabled) {
+  HL2SBSpawnEffectState *state = HL2SB_SpawnEffectState(entity, true);
+  if (state) state->enabled = enabled;
+}
+
+void HL2SB_ReceiveSpawnEffectTime(CBaseEntity *entity, float created) {
+  HL2SBSpawnEffectState *state = HL2SB_SpawnEffectState(entity, true);
+  if (state) state->created = created;
+}
+
+void HL2SB_ClearSpawnEffect(CBaseEntity *entity) {
+  if (!entity) return;
+  char key[32];
+  Q_snprintf(key, sizeof(key), "%u", entity->GetRefEHandle().ToInt());
+  s_SpawnEffects.Remove(key);
+}
+
 static int CBaseEntity_SetSpawnEffect (lua_State *L) {
-  // ( entity, enabled ) -- accepted and ignored, see the note above.
+#ifndef CLIENT_DLL
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  bool enabled = lua_toboolean(L, 2) != 0;
+  HL2SBSpawnEffectState *state = HL2SB_SpawnEffectState(entity, true);
+  if (state && state->enabled != enabled) {
+    state->enabled = enabled;
+    entity->NetworkStateChanged();
+  }
+#endif
   return 0;
+}
+
+static int CBaseEntity_GetSpawnEffect (lua_State *L) {
+  lua_pushboolean(L, HL2SB_GetSpawnEffect(luaL_checkentity(L, 1)));
+  return 1;
+}
+
+static int CBaseEntity_GetCreationTime (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  HL2SBSpawnEffectState *state = HL2SB_SpawnEffectState(entity, false);
+#ifdef CLIENT_DLL
+  lua_pushnumber(L, state ? state->created : entity->SpawnTime());
+#else
+  lua_pushnumber(L, state ? state->created : 0.0f);
+#endif
+  return 1;
 }
 
 // HL2SB GMod compat: Entity:SetBloodColor( BLOOD_COLOR ).
@@ -6018,6 +6090,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetTrigger", CBaseEntity_SetTrigger},
   {"ManipulateBoneAngles", CBaseEntity_ManipulateBoneAngles},
   {"SetSpawnEffect", CBaseEntity_SetSpawnEffect},
+  {"GetSpawnEffect", CBaseEntity_GetSpawnEffect},
+  {"GetCreationTime", CBaseEntity_GetCreationTime},
   {"SetBloodColor", CBaseEntity_SetBloodColor},
   {"IsBaseObject", CBaseEntity_IsBaseObject},
   {"IsBaseTrain", CBaseEntity_IsBaseTrain},
@@ -6116,6 +6190,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetHealth", CBaseEntity_SetHealth},
   {"SetLocalAngles", CBaseEntity_SetLocalAngles},
   {"SetLocalAngularVelocity", CBaseEntity_SetLocalAngularVelocity},
+  {"SetLocalPos", CBaseEntity_SetLocalOrigin},
   {"SetLocalOrigin", CBaseEntity_SetLocalOrigin},
   {"SetLocalVelocity", CBaseEntity_SetLocalVelocity},
   {"SetModel", CBaseEntity_SetModel},

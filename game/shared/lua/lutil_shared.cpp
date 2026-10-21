@@ -22,6 +22,7 @@
 #include "vphysics_interface.h"		// HL2SB GMod compat: surfacedata_t / IPhysicsSurfaceProps
 #include "activitylist.h"
 #include "filesystem.h"
+#include "decals.h"
 #include "tier1/lzmaDecoder.h"		// HL2SB GMod compat: CLZMA ("LZMA!" blobs)
 #include "eventlist.h"				// HL2SB GMod compat: util.GetAnimEvent*By*
 #include "ltakedamageinfo.h"		// HL2SB GMod compat: util.BlastDamageInfo
@@ -36,6 +37,7 @@
 
 #ifdef CLIENT_DLL
 #include "c_te_effect_dispatch.h"
+#include "c_pixel_visibility.h"
 // HL2SB: GMod's lua/effects/*.lua spawner (game/client/lua/lua_effects.cpp).
 // Declared here for the same reason c_te_effect_dispatch.cpp declares it: this
 // file is not compiled with game/client/lua on its include path.
@@ -636,6 +638,20 @@ static int luasrc_UTIL_DecalTrace (lua_State *L) {
   return 0;
 }
 
+static int luasrc_UTIL_DecalMaterial (lua_State *L) {
+  const char *name = luaL_checkstring(L, 1);
+  if ((unsigned char)name[0] <= ' ')
+    return 0;
+  const int index = decalsystem->GetDecalIndexForName(name);
+  if (index < 0)
+    return 0;
+  const char *material = decalsystem->GetDecalNameForIndex(index);
+  if (!material || !material[0])
+    return 0;
+  lua_pushstring(L, material);
+  return 1;
+}
+
 // HL2SB GMod compat (2026-09-23): GMod's util.Decal( name, start, end,
 // filter = NULL ) -- "Performs a trace and paints a decal to the surface hit"
 // (wiki; built-in names include ManhackCut, Impact.Concrete, Scorch, ...).
@@ -889,6 +905,26 @@ static int luasrc_util_GetModelInfo (lua_State *L) {
 ** The 4th GMod argument (ignorePrediction / CRecipientFilter) is accepted and
 ** ignored: this fork dispatches with the default filter either way.
 */
+#ifdef CLIENT_DLL
+static int luasrc_UTIL_GetPixelVisibleHandle(lua_State *L) {
+  pixelvis_handle_t *handle = (pixelvis_handle_t *)lua_newuserdata(L, sizeof(pixelvis_handle_t));
+  *handle = 0;
+  luaL_newmetatable(L, "PixelVisHandle");
+  lua_setmetatable(L, -2);
+  return 1;
+}
+
+static int luasrc_UTIL_PixelVisible(lua_State *L) {
+  Vector position = luaL_checkvector(L, 1);
+  float radius = luaL_checknumber(L, 2);
+  pixelvis_handle_t *handle = (pixelvis_handle_t *)luaL_checkudata(L, 3, "PixelVisHandle");
+  pixelvis_queryparams_t params;
+  params.Init(position, radius);
+  lua_pushnumber(L, PixelVisibility_FractionVisible(params, handle));
+  return 1;
+}
+#endif
+
 static int luasrc_UTIL_Effect (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 1);
   CEffectData data = luaL_checkeffect(L, 2);
@@ -2754,6 +2790,7 @@ static const luaL_Reg util_funcs[] = {
   {"BloodDecalTrace",  luasrc_UTIL_BloodDecalTrace},
   // {"UTIL_DecalTrace",  luasrc_UTIL_DecalTrace},
   {"DecalTrace",  luasrc_UTIL_DecalTrace},
+  {"DecalMaterial",  luasrc_UTIL_DecalMaterial},
   {"Decal",  luasrc_UTIL_Decal},
   // {"UTIL_IsSpaceEmpty",  luasrc_UTIL_IsSpaceEmpty},
   {"IsSpaceEmpty",  luasrc_UTIL_IsSpaceEmpty},
@@ -2765,6 +2802,10 @@ static const luaL_Reg util_funcs[] = {
   {"GetModelInfo",   luasrc_util_GetModelInfo},
   // HL2SB GMod effect compat (lua/effects/*.lua, sprite trails, radius damage)
   {"Effect",  luasrc_UTIL_Effect},
+#ifdef CLIENT_DLL
+  {"GetPixelVisibleHandle", luasrc_UTIL_GetPixelVisibleHandle},
+  {"PixelVisible", luasrc_UTIL_PixelVisible},
+#endif
   {"SpriteTrail",  luasrc_UTIL_SpriteTrail},
   {"BlastDamage",  luasrc_UTIL_BlastDamage},
   {"ScreenShake",  luasrc_UTIL_ScreenShake},

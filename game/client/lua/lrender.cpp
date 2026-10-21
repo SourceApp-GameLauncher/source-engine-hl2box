@@ -38,6 +38,15 @@ ConVar physgun_drawbeams( "physgun_drawbeams", "1", FCVAR_ARCHIVE, "Draw the phy
 // HL2SB: render.DynamicLight -- dlight_t layout and the IEFX allocator.
 #include "dlight.h"
 #include "iefx.h"
+class IMaterialInternal;
+class ITextureInternal;
+class CMatCallQueue;
+#include "../../../materialsystem/imatrendercontextinternal.h"
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include "../../../thirdparty/stb/stb_image_write.h"
+#include "tier1/utlbuffer.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -50,6 +59,11 @@ LUA_REGISTRATION_INIT( Renders );
 // Minifaction and magnification filter stacks
 static CUtlStack< ShaderAPITextureHandle_t > filterTextureHandlesMinification;
 static CUtlStack< ShaderAPITextureHandle_t > filterTextureHandlesMagnification;
+struct HL2SBRenderTargetState {
+    int depthAlpha;
+    bool iconAlpha;
+};
+static CUtlStack<HL2SBRenderTargetState> s_RenderTargetDepthAlpha;
 
 // HL2SB: last material bound by render.SetMaterial, so DrawBeam can pass it
 // explicitly to CBeamSegDraw::Start (relying on the bound-material path made
@@ -564,6 +578,13 @@ LUA_BINDING_BEGIN( Renders, PushRenderTarget, "library", "Pushes a render target
 {
     CMatRenderContextPtr pRenderContext( materials );
     ITexture *pTexture = LUA_BINDING_ARGUMENT( luaL_checkitexture, 1, "texture" );
+    IMatRenderContextInternal *internal = static_cast<IMatRenderContextInternal *>(pRenderContext.operator->());
+    HL2SBRenderTargetState state = {internal->GetIntRenderingParameter(INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA), lua_toboolean(L, 6) != 0};
+    s_RenderTargetDepthAlpha.Push(state);
+    if (state.iconAlpha) {
+        pRenderContext->SetIntRenderingParameter(INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA, 0);
+        pRenderContext->OverrideAlphaWriteEnable(true, true);
+    }
 
     if ( lua_isnumber( L, 2 ) && lua_isnumber( L, 3 ) && lua_isnumber( L, 4 ) && lua_isnumber( L, 5 ) )
     {
@@ -585,7 +606,59 @@ LUA_BINDING_BEGIN( Renders, PopRenderTarget, "library", "Pops a render target pu
 {
     CMatRenderContextPtr pRenderContext( materials );
     pRenderContext->PopRenderTargetAndViewport();
+    if (s_RenderTargetDepthAlpha.Count()) {
+        HL2SBRenderTargetState state = s_RenderTargetDepthAlpha.Top();
+        s_RenderTargetDepthAlpha.Pop();
+        if (state.iconAlpha) {
+            pRenderContext->SetIntRenderingParameter(INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA, state.depthAlpha);
+            bool enclosingIcon = false;
+            for (int i = 0; i < s_RenderTargetDepthAlpha.Count(); ++i)
+                enclosingIcon = enclosingIcon || s_RenderTargetDepthAlpha[i].iconAlpha;
+            pRenderContext->OverrideAlphaWriteEnable(enclosingIcon, true);
+        }
+    }
     return 0;
+}
+LUA_BINDING_END()
+
+static void HL2SB_CaptureWrite(void *context, void *data, int size)
+{
+    static_cast<CUtlBuffer *>(context)->Put(data, size);
+}
+
+LUA_BINDING_BEGIN( Renders, Capture, "library", "Captures a render target rectangle as PNG or JPEG data.", "client" )
+{
+    luaL_checktype(L, 1, LUA_TTABLE);
+    CMatRenderContextPtr context(materials);
+    int targetWidth, targetHeight;
+    context->GetRenderTargetDimensions(targetWidth, targetHeight);
+    lua_getfield(L, 1, "format");
+    const char *format = luaL_optstring(L, -1, "jpg");
+    bool png = !Q_stricmp(format, "png");
+    bool jpeg = !Q_stricmp(format, "jpg") || !Q_stricmp(format, "jpeg");
+    lua_pop(L, 1);
+    if (!png && !jpeg) return luaL_error(L, "render.Capture: unsupported image format");
+    lua_getfield(L, 1, "x"); int x = luaL_optint(L, -1, 0); lua_pop(L, 1);
+    lua_getfield(L, 1, "y"); int y = luaL_optint(L, -1, 0); lua_pop(L, 1);
+    lua_getfield(L, 1, "w"); int width = luaL_optint(L, -1, targetWidth); lua_pop(L, 1);
+    lua_getfield(L, 1, "h"); int height = luaL_optint(L, -1, targetHeight); lua_pop(L, 1);
+    lua_getfield(L, 1, "quality"); int quality = clamp(luaL_optint(L, -1, 90), 1, 100); lua_pop(L, 1);
+    lua_getfield(L, 1, "alpha"); bool alpha = png && (lua_isnil(L, -1) || lua_toboolean(L, -1)); lua_pop(L, 1);
+    if (x < 0 || y < 0 || width < 1 || height < 1 || width > 8192 || height > 8192 ||
+        x > targetWidth - width || y > targetHeight - height) {
+        lua_pushnil(L);
+        return 1;
+    }
+    int channels = alpha ? 4 : 3;
+    CUtlVector<unsigned char> pixels;
+    pixels.SetCount(width * height * channels);
+    context->ReadPixels(x, y, width, height, pixels.Base(), alpha ? IMAGE_FORMAT_RGBA8888 : IMAGE_FORMAT_RGB888);
+    CUtlBuffer output;
+    int written = png ? stbi_write_png_to_func(HL2SB_CaptureWrite, &output, width, height, channels, pixels.Base(), width * channels) :
+        stbi_write_jpg_to_func(HL2SB_CaptureWrite, &output, width, height, channels, pixels.Base(), quality);
+    if (written) lua_pushlstring(L, static_cast<const char *>(output.Base()), output.TellPut());
+    else lua_pushnil(L);
+    return 1;
 }
 LUA_BINDING_END()
 
@@ -972,6 +1045,10 @@ LUA_BINDING_BEGIN( Renders, ModelMaterialOverride, "library", "Forces a material
 }
 LUA_BINDING_END()
 
+LUA_BINDING_BEGIN( Renders, MaterialOverride, "library", "Overrides the material for model rendering (nil clears).", "client" )
+    return Renders_ModelMaterialOverride( L );
+LUA_BINDING_END()
+
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: the cam library.  cam.Start( {type="3D"/"2D", ...} )
 // mirrors the table API the content render.lua shim builds on top of.
@@ -1290,6 +1367,41 @@ directionFace:
     BOX_TOP	4	Place the light to the top
     BOX_BOTTOM	5	Place the light to the bottom
 */
+static Vector s_ModelLighting[6];
+
+static void HL2SB_ApplyModelLighting()
+{
+    Vector4D cube[6];
+    for (int i = 0; i < 6; ++i)
+        cube[i].Init(s_ModelLighting[i].x, s_ModelLighting[i].y, s_ModelLighting[i].z, 1.0f);
+    CMatRenderContextPtr context(materials);
+    context->SetAmbientLightCube(cube);
+    g_pStudioRender->SetAmbientLightColors(s_ModelLighting);
+}
+
+LUA_BINDING_BEGIN( Renders, ResetModelLighting, "library", "Sets every model lighting cube face.", "client" )
+{
+    const Vector color(luaL_checknumber(L, 1), luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+    for (int i = 0; i < 6; ++i)
+        s_ModelLighting[i] = color;
+    HL2SB_ApplyModelLighting();
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SetModelLighting, "library", "Sets one model lighting cube face.", "client" )
+{
+    const int face = luaL_checkint(L, 1);
+    const Vector color(luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4));
+    if (face >= 0 && face < 6)
+    {
+        s_ModelLighting[face] = color;
+        HL2SB_ApplyModelLighting();
+    }
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, SetAmbientLightCube, "library", "Set the ambient light cube.", "client" )
 {
     int directionFace = LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "directionFace" );
@@ -1615,6 +1727,15 @@ LUA_BINDING_BEGIN( Renders, ClearBuffers, "library", "Clear the buffers.", "clie
     CMatRenderContextPtr pRenderContext( materials );
     pRenderContext->ClearBuffers( bClearColor, bClearDepth, bClearStencil );
 
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, ClearDepth, "library", "Clears depth and optionally stencil while preserving color.", "client" )
+{
+    const bool clearStencil = lua_isnoneornil(L, 1) || lua_toboolean(L, 1);
+    CMatRenderContextPtr context(materials);
+    context->ClearBuffers(false, true, clearStencil);
     return 0;
 }
 LUA_BINDING_END()

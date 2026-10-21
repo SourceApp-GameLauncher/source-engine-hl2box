@@ -170,6 +170,9 @@ static const luaL_Reg vgui_funcs[] = {
   {NULL, NULL}
 };
 
+extern int HL2SB_LuaCreateHTML(lua_State *L);
+extern int HL2SB_LuaCreateEditablePanel(lua_State *L);
+
 /*
 ** Open vgui library
 */
@@ -188,31 +191,13 @@ LUALIB_API int luaopen_vgui (lua_State *L) {
   luaL_register(L, "vgui", vgui_funcs);
   lua_pop(L, 1);
 
-  /*
-  ** HL2SB: vgui.EditablePanel -- the constructor, not just the metatable.
-  **
-  ** luaopen_vgui_EditablePanel only builds the "EditablePanel" metatable; it
-  ** never registers a factory, so vgui.EditablePanel did not exist.  That is
-  ** exactly the class Garry's Mod bases DFrame on
-  ** (derma.DefineControl( "DFrame", "A simple window", PANEL, "EditablePanel" )),
-  ** and scriptedpanels.lua resolves it through vgui.CreateX -- so without this
-  ** Derma cannot build a single frame.
-  **
-  ** There is no scripted LEditablePanel in this tree to instantiate (the C++
-  ** vgui::EditablePanel has no Lua-table plumbing).  GMod's DFrame implements
-  ** all of its own chrome -- title bar, close button, dragging, Paint -- in Lua
-  ** and only needs a scripted panel underneath, which is precisely what the
-  ** scripted "Panel" factory provides.  So that constructor is published under
-  ** this name too.  Same reasoning the player-model menu used when it based its
-  ** own controls on "Panel".
-  */
+  // EditablePanel retains scripted callbacks and owns its keyboard subfocus.
   lua_getglobal(L, "vgui");
   if (lua_istable(L, -1)) {
-    lua_getfield(L, -1, "Panel");
-    if (lua_isfunction(L, -1))
-      lua_setfield(L, -2, "EditablePanel");
-    else
-      lua_pop(L, 1);
+    lua_pushcfunction(L, HL2SB_LuaCreateHTML);
+    lua_setfield(L, -2, "HTML");
+    lua_pushcfunction(L, HL2SB_LuaCreateEditablePanel);
+    lua_setfield(L, -2, "EditablePanel");
   }
   lua_pop(L, 1);
 

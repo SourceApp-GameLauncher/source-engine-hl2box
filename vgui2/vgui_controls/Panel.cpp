@@ -1051,7 +1051,7 @@ void Panel::SetVisible(bool state)
 
 	ipanel()->SetVisible(GetVPanel(), state);
 
-	if ( bWasVisible != state && IsDockedInParent() )
+	if ( bWasVisible != state && GetDock() != DOCK_NONE )
 	{
 		InvalidateParentLayout( false );
 	}

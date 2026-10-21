@@ -28,6 +28,10 @@ extern ConVar hl2sb_anim_debug;
 
 	#include "iclientvehicle.h"
 	#include "prediction.h"
+#ifdef LUA_SDK
+	class CViewSetup;
+	extern bool HL2SB_GetWorldClickDirection(Vector &direction, const CViewSetup *setup);
+#endif
 	#include "iinput.h"			// HL2SB: input->CAM_IsThirdPerson() in CalcVehicleView()
 	#include "c_basedoor.h"
 	#include "c_world.h"
@@ -1882,6 +1886,37 @@ void CBasePlayer::CalcView( Vector &eyeOrigin, QAngle &eyeAngles, float &zNear, 
 }
 
 
+#if defined( CLIENT_DLL ) && defined( LUA_SDK )
+static CHandle<CBasePlayer> s_HL2SBViewModelCursorPlayer;
+static QAngle s_HL2SBViewModelCursorOffset(0, 0, 0);
+static int s_HL2SBViewModelCursorFrame = -1;
+
+void HL2SB_UpdateViewModelCursorOffset(CBasePlayer *player, const QAngle &viewAngles, const CViewSetup *setup)
+{
+	if (s_HL2SBViewModelCursorPlayer.Get() != player) {
+		s_HL2SBViewModelCursorPlayer = player;
+		s_HL2SBViewModelCursorOffset.Init();
+		s_HL2SBViewModelCursorFrame = -1;
+	}
+	if (s_HL2SBViewModelCursorFrame == gpGlobals->framecount) return;
+
+	QAngle targetOffset(0, 0, 0);
+	Vector direction, up;
+	if (HL2SB_GetWorldClickDirection(direction, setup)) {
+		AngleVectors(viewAngles, NULL, NULL, &up);
+		QAngle aim;
+		VectorAngles(direction, up, aim);
+		targetOffset = aim - viewAngles;
+	}
+	Quaternion current, target, result;
+	AngleQuaternion(s_HL2SBViewModelCursorOffset, current);
+	AngleQuaternion(targetOffset, target);
+	QuaternionSlerp(current, target, gpGlobals->frametime * 4.0f, result);
+	QuaternionAngles(result, s_HL2SBViewModelCursorOffset);
+	s_HL2SBViewModelCursorFrame = gpGlobals->framecount;
+}
+#endif
+
 void CBasePlayer::CalcViewModelView( const Vector& eyeOrigin, const QAngle& eyeAngles)
 {
 	for ( int i = 0; i < MAX_VIEWMODELS; i++ )
@@ -1890,7 +1925,18 @@ void CBasePlayer::CalcViewModelView( const Vector& eyeOrigin, const QAngle& eyeA
 		if ( !vm )
 			continue;
 	
+#if defined(CLIENT_DLL) && defined(LUA_SDK)
+		QAngle offset = s_HL2SBViewModelCursorOffset;
+		if (vm->ShouldFlipViewModel()) offset.y = -offset.y;
+		Quaternion rotation, neutral, half;
+		AngleQuaternion(offset, rotation);
+		AngleQuaternion(QAngle(0, 0, 0), neutral);
+		QuaternionSlerp(rotation, neutral, 0.5f, half);
+		QuaternionAngles(half, offset);
+		vm->CalcViewModelView(this, eyeOrigin, eyeAngles + offset);
+#else
 		vm->CalcViewModelView( this, eyeOrigin, eyeAngles );
+#endif
 	}
 }
 

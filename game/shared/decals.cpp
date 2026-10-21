@@ -40,6 +40,7 @@ public:
 	virtual int			GetDecalIndexForName( char const *decalname );
 	virtual const char *GetDecalNameForIndex( int nIndex );
 	virtual char const *TranslateDecalForGameMaterial( char const *decalName, unsigned char gamematerial );
+	void AddCustomDecal( const char *name, const char *const *materials, int count );
 
 private:
 	char const		*ImpactDecalForGameMaterial( int gamematerial );
@@ -98,6 +99,39 @@ private:
 
 static CDecalEmitterSystem g_DecalSystem( "CDecalEmitterSystem" );
 IDecalEmitterSystem *decalsystem = &g_DecalSystem;
+
+void HL2SB_AddCustomDecal( const char *name, const char *const *materials, int count )
+{
+	g_DecalSystem.AddCustomDecal( name, materials, count );
+}
+
+void CDecalEmitterSystem::AddCustomDecal( const char *name, const char *const *materials, int count )
+{
+	if ( !name || !name[0] || count <= 0 )
+		return;
+
+	int index = m_Decals.Find( name );
+	if ( index == m_Decals.InvalidIndex() )
+		index = m_Decals.Insert( name );
+
+	DecalEntry &entry = m_Decals[index];
+	const int previousCount = entry.indices.Count();
+	for ( int i = 0; i < count; ++i )
+	{
+		int slot = i < previousCount ? entry.indices[i] : m_AllDecals.AddToTail();
+		DecalListEntry &item = m_AllDecals[slot];
+		item.name = m_DecalFileNames.AddString( materials[i] );
+		item.weight = 1.0f;
+#ifdef CLIENT_DLL
+		item.precache_index = effects->Draw_DecalIndexFromName( const_cast<char *>(materials[i]) );
+#else
+		item.precache_index = engine->PrecacheDecal( materials[i] );
+#endif
+		if ( i >= previousCount )
+			entry.indices.AddToTail( slot );
+	}
+	entry.indices.SetCount( count );
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: 

@@ -76,6 +76,60 @@ static ConVar cl_drawownshadow("cl_drawownshadow", "0", FCVAR_ARCHIVE, "Render t
 
 // HL2SB (2026-10-02): game.GetAmmoName reads the shared ammo def.
 #include "ammodef.h"
+#include <string>
+#include <vector>
+
+void HL2SB_AddCustomDecal( const char *name, const char *const *materials, int count );
+
+static int lua_game_GetWorld( lua_State *state )
+{
+#ifdef CLIENT_DLL
+  lua_pushentity(state, cl_entitylist->GetEnt(0));
+#else
+  lua_pushentity(state, UTIL_EntityByIndex(0));
+#endif
+  return 1;
+}
+
+static int lua_game_AddDecal( lua_State *state )
+{
+  const char *name = luaL_checkstring( state, 1 );
+  if ( lua_istable( state, 2 ) )
+  {
+    lua_pushnil( state );
+    while ( lua_next( state, 2 ) )
+    {
+      if ( !lua_isstring( state, -1 ) )
+        return luaL_error( state, "decal materials must be strings" );
+      lua_pop( state, 1 );
+    }
+  }
+  else
+  {
+    luaL_checkstring( state, 2 );
+  }
+  std::vector<std::string> materials;
+  if ( lua_istable( state, 2 ) )
+  {
+    lua_pushnil( state );
+    while ( lua_next( state, 2 ) )
+    {
+      materials.push_back( lua_tostring( state, -1 ) );
+      lua_pop( state, 1 );
+    }
+  }
+  else
+  {
+    materials.push_back( luaL_checkstring( state, 2 ) );
+  }
+
+  std::vector<const char *> paths;
+  for ( size_t i = 0; i < materials.size(); ++i )
+    paths.push_back( materials[i].c_str() );
+  if ( !paths.empty() )
+    HL2SB_AddCustomDecal( name, &paths[0], (int)paths.size() );
+  return 0;
+}
 
 
 // HL2SB: local prototype -- deliberately NOT added to luasrclib.h: a header
@@ -2873,6 +2927,240 @@ static void HL2SB_CSNormalizeDots (const char *pszIn, char *pszOut, int nOutSize
   pszOut[nOut] = '\0';
 }
 
+// UI storage uses the same KeyValues files as the Sandbox content scripts.
+static void HL2SB_UIPushKV(lua_State *L, KeyValues *pKV, int depth = 0)
+{
+  lua_newtable(L);
+  if (depth >= 64) return;
+  for (KeyValues *p = pKV->GetFirstSubKey(); p; p = p->GetNextKey()) {
+    const char *name = p->GetName();
+    char *end = NULL;
+    long index = strtol(name, &end, 10);
+    if (*name && end && !*end && index > 0) lua_pushinteger(L, index);
+    else lua_pushstring(L, name);
+    if (p->GetDataType() == KeyValues::TYPE_NONE) HL2SB_UIPushKV(L, p, depth + 1);
+    else {
+      const char *value = p->GetString();
+      double number = strtod(value, &end);
+      if (*value && end && !*end && IsFinite(number)) lua_pushnumber(L, number);
+      else lua_pushstring(L, value);
+    }
+    lua_rawset(L, -3);
+  }
+}
+
+static void HL2SB_UIBuildKV(lua_State *L, int table, KeyValues *pKV, int depth = 0)
+{
+  table = lua_absindex(L, table);
+  if (depth >= 64) return;
+  lua_pushnil(L);
+  while (lua_next(L, table)) {
+    lua_pushvalue(L, -2);
+    const char *key = lua_tostring(L, -1);
+    if (key) {
+      KeyValues *p = pKV->FindKey(key, true);
+      if (lua_istable(L, -2)) HL2SB_UIBuildKV(L, -2, p, depth + 1);
+      else if (lua_isboolean(L, -2)) p->SetInt(NULL, lua_toboolean(L, -2));
+      else if (lua_isstring(L, -2)) p->SetString(NULL, lua_tostring(L, -2));
+    }
+    lua_pop(L, 2);
+  }
+}
+
+static int HL2SB_UITableToKeyValues(lua_State *L)
+{
+  luaL_checktype(L, 1, LUA_TTABLE);
+  KeyValues *pKV = new KeyValues("TableToKeyValues");
+  HL2SB_UIBuildKV(L, 1, pKV);
+  CUtlBuffer buffer(0, 0, CUtlBuffer::TEXT_BUFFER);
+  pKV->RecursiveSaveToFile(buffer, 0, false, true);
+  lua_pushlstring(L, (const char *)buffer.Base(), buffer.TellPut());
+  pKV->deleteThis();
+  return 1;
+}
+
+static int HL2SB_UIKeyValuesToTable(lua_State *L)
+{
+  const char *text = luaL_checkstring(L, 1);
+  KeyValues *pKV = new KeyValues("TableToKeyValues");
+  if (pKV->LoadFromBuffer("lua", text)) HL2SB_UIPushKV(L, pKV);
+  else lua_pushnil(L);
+  pKV->deleteThis();
+  return 1;
+}
+
+static int HL2SB_UIPopulateSpawnlists(lua_State *L)
+{
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  for (int pass = 0; pass < 2; ++pass) {
+    int loaded = 0;
+    FileFindHandle_t handle;
+    const char *name = filesystem->FindFirstEx("settings/spawnlist/*.txt", "DEFAULT_WRITE_PATH", &handle);
+    while (name) {
+      if (!Q_strstr(name, "Copy ")) {
+        char path[MAX_PATH];
+        Q_snprintf(path, sizeof(path), "settings/spawnlist/%s", name);
+        KeyValues *pKV = new KeyValues("TableToKeyValues");
+        if (pKV->LoadFromFile(filesystem, path, "DEFAULT_WRITE_PATH") && pKV->GetInt("version") == 3) {
+          lua_pushvalue(L, 1);
+          lua_pushstring(L, path);
+          lua_pushstring(L, pKV->GetString("name", "Unnamed"));
+          HL2SB_UIPushKV(L, pKV->FindKey("contents", true));
+          lua_pushstring(L, pKV->GetString("icon"));
+          lua_pushinteger(L, pKV->GetInt("id"));
+          lua_pushinteger(L, pKV->GetInt("parentid"));
+          lua_pushstring(L, pKV->GetString("needsapp"));
+          int result = lua_pcall(L, 7, 0, 0);
+          if (result != LUA_OK) {
+            pKV->deleteThis();
+            filesystem->FindClose(handle);
+            return lua_error(L);
+          }
+          ++loaded;
+        }
+        pKV->deleteThis();
+      }
+      name = filesystem->FindNext(handle);
+    }
+    filesystem->FindClose(handle);
+    if (loaded || pass) break;
+    filesystem->CreateDirHierarchy("settings/spawnlist", "DEFAULT_WRITE_PATH");
+    name = filesystem->FindFirstEx("settings/spawnlist_default/*.txt", "GAME", &handle);
+    while (name) {
+      char source[MAX_PATH], target[MAX_PATH];
+      Q_snprintf(source, sizeof(source), "settings/spawnlist_default/%s", name);
+      Q_snprintf(target, sizeof(target), "settings/spawnlist/%s", name);
+      CUtlBuffer data;
+      if (filesystem->ReadFile(source, "GAME", data)) filesystem->WriteFile(target, "DEFAULT_WRITE_PATH", data);
+      name = filesystem->FindNext(handle);
+    }
+    filesystem->FindClose(handle);
+  }
+  return 0;
+}
+
+static void HL2SB_UIFileName(const char *name, char *out, int size)
+{
+  Q_strncpy(out, V_UnqualifiedFileName(name), size);
+  int length = Q_strlen(out);
+  if (length > 4 && !Q_stricmp(out + length - 4, ".txt")) out[length - 4] = 0;
+  for (char *p = out; *p; ++p) if (strchr("/\\:*?\"<>|", *p)) *p = '_';
+  if (!*out || !Q_strcmp(out, ".") || !Q_strcmp(out, "..")) Q_strncpy(out, "unnamed", size);
+}
+
+static int HL2SB_UISaveSpawnlists(lua_State *L)
+{
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_pushnil(L);
+  while (lua_next(L, 1)) {
+    if (lua_type(L, -2) != LUA_TSTRING || lua_type(L, -1) != LUA_TSTRING)
+      return luaL_error(L, "Spawnlists must contain filename and text pairs");
+    lua_pop(L, 1);
+  }
+  FileFindHandle_t handle;
+  const char *name = filesystem->FindFirstEx("settings/spawnlist/*.txt", "DEFAULT_WRITE_PATH", &handle);
+  while (name) {
+    char path[MAX_PATH]; Q_snprintf(path, sizeof(path), "settings/spawnlist/%s", name);
+    filesystem->RemoveFile(path, "DEFAULT_WRITE_PATH");
+    name = filesystem->FindNext(handle);
+  }
+  filesystem->FindClose(handle);
+  filesystem->CreateDirHierarchy("settings/spawnlist", "DEFAULT_WRITE_PATH");
+  lua_pushnil(L);
+  while (lua_next(L, 1)) {
+    char clean[MAX_PATH], path[MAX_PATH];
+    HL2SB_UIFileName(lua_tostring(L, -2), clean, sizeof(clean));
+    Q_snprintf(path, sizeof(path), "settings/spawnlist/%s.txt", clean);
+    size_t length; const char *text = lua_tolstring(L, -1, &length);
+    CUtlBuffer data(text, length, CUtlBuffer::READ_ONLY);
+    filesystem->WriteFile(path, "DEFAULT_WRITE_PATH", data);
+    lua_pop(L, 1);
+  }
+  return 0;
+}
+
+static int HL2SB_UILoadPresets(lua_State *L)
+{
+  lua_newtable(L);
+  FileFindHandle_t groups;
+  const char *group = filesystem->FindFirstEx("settings/presets/*", "GAME", &groups);
+  while (group) {
+    if (filesystem->FindIsDirectory(groups) && group[0] != '.') {
+      char pattern[MAX_PATH]; Q_snprintf(pattern, sizeof(pattern), "settings/presets/%s/*.txt", group);
+      lua_newtable(L);
+      FileFindHandle_t files;
+      const char *file = filesystem->FindFirstEx(pattern, "GAME", &files);
+      while (file) {
+        char path[MAX_PATH]; Q_snprintf(path, sizeof(path), "settings/presets/%s/%s", group, file);
+        KeyValues *pKV = new KeyValues("preset");
+        if (pKV->LoadFromFile(filesystem, path, "GAME")) {
+          HL2SB_UIPushKV(L, pKV);
+          lua_setfield(L, -2, pKV->GetName());
+        }
+        pKV->deleteThis();
+        file = filesystem->FindNext(files);
+      }
+      filesystem->FindClose(files);
+      lua_setfield(L, -2, group);
+    }
+    group = filesystem->FindNext(groups);
+  }
+  filesystem->FindClose(groups);
+  return 1;
+}
+
+static int HL2SB_UISavePresets(lua_State *L)
+{
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_pushnil(L);
+  while (lua_next(L, 1)) {
+    if (lua_type(L, -2) != LUA_TSTRING || !lua_istable(L, -1))
+      return luaL_error(L, "Preset groups must contain names and tables");
+    int group = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, group)) {
+      if (lua_type(L, -2) != LUA_TSTRING || !lua_istable(L, -1))
+        return luaL_error(L, "Presets must contain names and tables");
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+  }
+  lua_pushnil(L);
+  while (lua_next(L, 1)) {
+    if (lua_type(L, -2) == LUA_TSTRING && lua_istable(L, -1)) {
+      char group[MAX_PATH], directory[MAX_PATH];
+      HL2SB_UIFileName(lua_tostring(L, -2), group, sizeof(group));
+      Q_snprintf(directory, sizeof(directory), "settings/presets/%s", group);
+      filesystem->CreateDirHierarchy(directory, "DEFAULT_WRITE_PATH");
+      char pattern[MAX_PATH]; Q_snprintf(pattern, sizeof(pattern), "%s/*.txt", directory);
+      FileFindHandle_t handle;
+      const char *file = filesystem->FindFirstEx(pattern, "DEFAULT_WRITE_PATH", &handle);
+      while (file) {
+        char path[MAX_PATH]; Q_snprintf(path, sizeof(path), "%s/%s", directory, file);
+        filesystem->RemoveFile(path, "DEFAULT_WRITE_PATH");
+        file = filesystem->FindNext(handle);
+      }
+      filesystem->FindClose(handle);
+      int table = lua_gettop(L);
+      lua_pushnil(L);
+      while (lua_next(L, table)) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_istable(L, -1)) {
+          char name[MAX_PATH], path[MAX_PATH];
+          HL2SB_UIFileName(lua_tostring(L, -2), name, sizeof(name));
+          Q_snprintf(path, sizeof(path), "%s/%s.txt", directory, name);
+          KeyValues *pKV = new KeyValues(lua_tostring(L, -2));
+          HL2SB_UIBuildKV(L, -1, pKV);
+          pKV->SaveToFile(filesystem, path, "DEFAULT_WRITE_PATH", false, true);
+          pKV->deleteThis();
+        }
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+  }
+  return 0;
+}
+
 LUALIB_API void luasrc_openlibs (lua_State *L) {
   const luaL_Reg *lib = luasrclibs;
   for (; lib->func; lib++) {
@@ -2993,6 +3281,17 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
 
   /* ...and the library tables themselves can be reachable under GMod's names. */
   luasrc_install_lib_aliases(L);
+
+  lua_pushcfunction(L, HL2SB_UILoadPresets); lua_setglobal(L, "LoadPresets");
+  lua_pushcfunction(L, HL2SB_UISavePresets); lua_setglobal(L, "SavePresets");
+  lua_newtable(L);
+  lua_pushcfunction(L, HL2SB_UIPopulateSpawnlists); lua_setfield(L, -2, "PopulateFromTextFiles");
+  lua_pushcfunction(L, HL2SB_UISaveSpawnlists); lua_setfield(L, -2, "SaveToTextFiles");
+  lua_setglobal(L, "spawnmenu");
+  lua_getglobal(L, "util");
+  lua_pushcfunction(L, HL2SB_UITableToKeyValues); lua_setfield(L, -2, "TableToKeyValues");
+  lua_pushcfunction(L, HL2SB_UIKeyValuesToTable); lua_setfield(L, -2, "KeyValuesToTable");
+  lua_pop(L, 1);
 
   /* HL2SB: re-assert the realm globals LAST.
   **
@@ -3339,7 +3638,9 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   if ( lua_istable( L, -1 ) )
   {
     lua_pushcfunction( L, lua_game_AddParticles ); lua_setfield( L, -2, "AddParticles" );
+    lua_pushcfunction( L, lua_game_AddDecal );     lua_setfield( L, -2, "AddDecal" );
     lua_pushcfunction( L, lua_game_GetMap );       lua_setfield( L, -2, "GetMap" );
+    lua_pushcfunction( L, lua_game_GetWorld );     lua_setfield( L, -2, "GetWorld" );
     lua_pushcfunction( L, lua_game_SinglePlayer ); lua_setfield( L, -2, "SinglePlayer" );
     lua_pushcfunction( L, lua_game_IsDedicated );  lua_setfield( L, -2, "IsDedicated" );
     lua_pushcfunction( L, lua_game_GetAmmoName );  lua_setfield( L, -2, "GetAmmoName" );

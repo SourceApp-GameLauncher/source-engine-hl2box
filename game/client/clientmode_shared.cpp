@@ -836,6 +836,29 @@ void ClientModeShared::PostRender()
 	ParticleMgr()->PostRender();
 }
 
+// Paint overlays after the windows, with a fresh surface drawing context.
+class CHL2SBLuaOverlay : public vgui::Panel
+{
+public:
+  CHL2SBLuaOverlay(vgui::Panel *parent) : vgui::Panel(parent, "LuaOverlay")
+  {
+    SetMouseInputEnabled(false);
+    SetKeyBoardInputEnabled(false);
+    SetPaintBackgroundEnabled(false);
+    SetPaintBorderEnabled(false);
+    SetVisible(false);
+  }
+
+protected:
+  virtual void Paint()
+  {
+#if defined(LUA_SDK)
+    BEGIN_LUA_CALL_HOOK("DrawOverlay");
+    END_LUA_CALL_HOOK(0, 0);
+#endif
+  }
+};
+
 void ClientModeShared::PostRenderVGui()
 {
 #if defined( LUA_SDK )
@@ -847,6 +870,13 @@ void ClientModeShared::PostRenderVGui()
 		extern bool g_bRenderingReflection;
 		if ( L != NULL && !g_bRenderingReflection && engine->IsInGame() )
 		{
+			static vgui::DHANDLE<CHL2SBLuaOverlay> overlay;
+			if (!overlay.Get()) overlay = new CHL2SBLuaOverlay(VGui_GetClientLuaRootPanel());
+			overlay->SetBounds(0, 0, ScreenWidth(), ScreenHeight());
+			overlay->SetVisible(true);
+			vgui::surface()->SolveTraverse(overlay->GetVPanel());
+			vgui::surface()->PaintTraverseEx(overlay->GetVPanel(), false);
+			overlay->SetVisible(false);
 			BEGIN_LUA_CALL_HOOK( "PostRenderVGUI" );
 			END_LUA_CALL_HOOK( 0, 0 );
 		}

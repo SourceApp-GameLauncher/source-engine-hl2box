@@ -12,11 +12,18 @@
 #include <vgui_controls/lPanel.h>
 
 #include <scripted_controls/lPanel.h>
+#include <vgui/IPanel.h>
+#include <vgui_controls/EditablePanel.h>
+#include <vgui_controls/FocusNavGroup.h>
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include <tier0/memdbgon.h>
 
 using namespace vgui;
+
+extern bool HL2SB_LuaPanelBeginPaint(lua_State *state, vgui::Panel *panel);
+extern void HL2SB_LuaPanelEndPaint(bool previous);
+extern void HL2SB_LuaPanelSetHovered(lua_State *state, vgui::Panel *panel, bool hovered);
 
 #ifdef LUA_SDK
 // HL2SB (2026-09-27): shared Think/OnThink probe lives in luamanager.h
@@ -75,6 +82,8 @@ LPanel::LPanel(Panel *parent, const char *panelName, lua_State *L) : Panel(paren
 LPanel::~LPanel()
 {
 #if defined( LUA_SDK )
+	BEGIN_LUA_CALL_PANEL_METHOD("OnRemove");
+	END_LUA_CALL_PANEL_METHOD(0, 0);
 	HL2SB_LuaPanelUntrack( this );
 	HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
 	/* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
@@ -224,6 +233,7 @@ void LPanel::PaintBackground()
 void LPanel::Paint()
 {
 #ifdef LUA_SDK
+	bool previousClip = HL2SB_LuaPanelBeginPaint(m_lua_State, this);
 	// HL2SB: GMod passes ( w, h ) to the scripted Paint; this pushed none, so
 	// every Derma skin saw nil dimensions and died in derma_gwen's nine-slice
 	// arithmetic on a nil 'w'.  Panels are the majority of Derma -- DPanel,
@@ -232,6 +242,7 @@ void LPanel::Paint()
 		lua_pushinteger( m_lua_State, GetWide() );
 		lua_pushinteger( m_lua_State, GetTall() );
 	END_LUA_CALL_PANEL_METHOD( 2, 0 );
+	HL2SB_LuaPanelEndPaint(previousClip);
 #endif
 }
 
@@ -241,6 +252,7 @@ void LPanel::Paint()
 void LPanel::PostChildPaint()
 {
 #ifdef LUA_SDK
+	bool previousClip = HL2SB_LuaPanelBeginPaint(m_lua_State, this);
 	// HL2SB: the Lua name is GMod's PaintOver, and it is handed ( w, h ) exactly
 	// like Paint above (GMod: `function PANEL:PaintOver( w, h )`).  The engine
 	// spelling of this hook -- PostChildPaint -- is dispatched nowhere in this
@@ -254,6 +266,7 @@ void LPanel::PostChildPaint()
 		lua_pushinteger( m_lua_State, GetWide() );
 		lua_pushinteger( m_lua_State, GetTall() );
 	END_LUA_CALL_PANEL_METHOD( 2, 0 );
+	HL2SB_LuaPanelEndPaint(previousClip);
 #endif
 }
 
@@ -295,7 +308,7 @@ void LPanel::OnChildAdded(VPANEL child)
 	// at all.  For DDragBase/DListLayout -- the controls whose OnChildAdded does
 	// `child:Dock( TOP )` -- that is exactly why a list layout's rows were never
 	// docked and the layout kept its 64x24 default height.
-	BEGIN_LUA_CALL_PANEL_METHOD( "OnChildAdded" );
+	BEGIN_LUA_CALL_PANEL_METHOD( "__hl2sb_PreparedOnChildAdded" );
 		lua_pushpanel( m_lua_State, child );
 	END_LUA_CALL_PANEL_METHOD( 1, 1 );
 
@@ -363,6 +376,7 @@ void LPanel::OnCursorMoved(int x, int y)
 void LPanel::OnCursorEntered()
 {
 #ifdef LUA_SDK
+	HL2SB_LuaPanelSetHovered(m_lua_State, this, true);
 	BEGIN_LUA_CALL_PANEL_METHOD( "OnCursorEntered" );
 	END_LUA_CALL_PANEL_METHOD( 0, 0 );
 #endif
@@ -371,6 +385,7 @@ void LPanel::OnCursorEntered()
 void LPanel::OnCursorExited()
 {
 #ifdef LUA_SDK
+	HL2SB_LuaPanelSetHovered(m_lua_State, this, false);
 	BEGIN_LUA_CALL_PANEL_METHOD( "OnCursorExited" );
 	END_LUA_CALL_PANEL_METHOD( 0, 0 );
 #endif
@@ -388,6 +403,10 @@ void LPanel::OnMousePressed(MouseCode code)
 void LPanel::OnMouseDoublePressed(MouseCode code)
 {
 #ifdef LUA_SDK
+	if (!HL2SB_PanelHasMethod(this, "OnMouseDoublePressed")) {
+		OnMousePressed(code);
+		return;
+	}
 	BEGIN_LUA_CALL_PANEL_METHOD( "OnMouseDoublePressed" );
 		lua_pushinteger( m_lua_State, code );
 	END_LUA_CALL_PANEL_METHOD( 1, 0 );
@@ -503,10 +522,7 @@ void LPanel::OnRequestFocus(VPANEL subFocus, VPANEL defaultPanel)
 	RETURN_LUA_PANEL_NONE();
 #endif
 
-	// HL2SB: BaseClass::OnRequestFocus() access-violates in vgui for this
-	// Panel-in-Frame hierarchy (focus navigation bookkeeping), so it is skipped.
-	// Panel::RequestFocus() still marks the panel focused internally, so the
-	// panel receives keyboard events without this vgui focus-nav call.
+	BaseClass::OnRequestFocus(subFocus, defaultPanel);
 }
 
 //-----------------------------------------------------------------------------
@@ -666,6 +682,55 @@ void LPanel::OnDelete()
 #endif
 
 	BaseClass::OnDelete();
+}
+
+// Lua windows need a focus owner in addition to scripted painting and input.
+class LEditablePanel : public LPanel
+{
+public:
+  LEditablePanel(Panel *parent, const char *name, lua_State *state)
+    : LPanel(parent, name, state), m_Focus(this) {}
+
+  FocusNavGroup &FocusGroup() { return m_Focus; }
+
+  virtual VPANEL GetCurrentKeyFocus()
+  {
+    Panel *focus = m_Focus.GetCurrentFocus();
+    if (!focus || focus == this || focus->IsPopup() || !focus->HasParent(GetVPanel())) return 0;
+    if (!focus->IsVisible() || !focus->IsEnabled() || !focus->IsKeyBoardInputEnabled()) return 0;
+    VPANEL child = focus->GetCurrentKeyFocus();
+    return child ? child : focus->GetVPanel();
+  }
+
+  virtual bool RequestFocusNext(VPANEL panel = NULL) { return m_Focus.RequestFocusNext(panel); }
+  virtual bool RequestFocusPrev(VPANEL panel = NULL) { return m_Focus.RequestFocusPrev(panel); }
+
+protected:
+  virtual void OnRequestFocus(VPANEL subFocus, VPANEL defaultPanel)
+  {
+    if (subFocus && !ipanel()->IsPopup(subFocus))
+      defaultPanel = m_Focus.SetCurrentFocus(subFocus, defaultPanel);
+    LPanel::OnRequestFocus(GetVPanel(), defaultPanel);
+  }
+
+private:
+  FocusNavGroup m_Focus;
+};
+
+FocusNavGroup *HL2SB_LuaPanelFocusGroup(Panel *panel)
+{
+  LEditablePanel *editable = dynamic_cast<LEditablePanel *>(panel);
+  if (editable) return &editable->FocusGroup();
+  EditablePanel *nativeEditable = dynamic_cast<EditablePanel *>(panel);
+  return nativeEditable ? &nativeEditable->FocusGroup() : NULL;
+}
+
+int HL2SB_LuaCreateEditablePanel(lua_State *state)
+{
+  Panel *root = state == LGameUI ? VGui_GetGameUIPanel() : VGui_GetClientLuaRootPanel();
+  Panel *panel = new LEditablePanel(luaL_optpanel(state, 1, root), luaL_optstring(state, 2, "EditablePanel"), state);
+  lua_pushpanel(state, panel);
+  return 1;
 }
 
 static int luasrc_Panel (lua_State *L) {

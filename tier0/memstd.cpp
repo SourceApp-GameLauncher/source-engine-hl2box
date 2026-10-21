@@ -606,6 +606,9 @@ bool CSmallBlockPool::IsOwner( void *p )
 
 void *CSmallBlockPool::Alloc()
 	{
+	// Compaction can rewind the allocation cursor and release committed pages.
+	// Hold the same lock until a returned block is excluded from reclamation.
+	AUTO_LOCK( m_CommitMutex );
 	void *pResult = m_FreeList.Pop();
 		if ( !pResult )
 		{
@@ -686,6 +689,7 @@ int CSmallBlockPool::CountAllocatedBlocks()
 
 int CSmallBlockPool::Compact()
 {
+	AUTO_LOCK( m_CommitMutex );
 	int nBytesFreed = 0;
 	if ( m_FreeList.Count() )
 {

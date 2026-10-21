@@ -64,6 +64,8 @@ CScriptedClientLuaPanel::CScriptedClientLuaPanel() : vgui::EditablePanel( NULL, 
 	DisableMouseInputForThisPanel( true );
 
 	SetProportional( true );
+	SetBounds( 0, 0, ScreenWidth(), ScreenHeight() );
+	SetAutoResize( PIN_TOPLEFT, AUTORESIZE_DOWNANDRIGHT, 0, 0, 0, 0 );
 }
 
 void CScriptedClientLuaPanel::CreateDefaultPanels( void )
@@ -91,6 +93,11 @@ void CScriptedClientLuaPanel::Start( IGameUIFuncs *pGameUIFuncs, IGameEventManag
 void CScriptedClientLuaPanel::SetParent(vgui::VPANEL parent)
 {
 	EditablePanel::SetParent( parent );
+	// Parenting inherits input flags, but this root must keep its children interactive.
+	SetMouseInputEnabled( true );
+	SetKeyBoardInputEnabled( true );
+	DisableMouseInputForThisPanel( true );
+	SetBounds( 0, 0, ScreenWidth(), ScreenHeight() );
 	// force ourselves to be proportional - when we set our parent above, if our new
 	// parent happened to be non-proportional (such as the vgui root panel), we got
 	// slammed to be nonproportional

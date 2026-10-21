@@ -1984,12 +1984,6 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	luasrc_LoadGamemode( gamemode.GetString() );
 	luasrc_SetGamemode( gamemode.GetString() );
 
-	BEGIN_LUA_CALL_HOOK( "OnGamemodeLoaded" );
-	END_LUA_CALL_HOOK( 0, 0 );
-
-	BEGIN_LUA_CALL_HOOK( "PostGamemodeLoaded" );
-	END_LUA_CALL_HOOK( 0, 0 );
-
 	luasrc_LoadWeapons();
 	luasrc_LoadEntities();
 	// HL2SB: GMod's effects/ stage -- the loader was written but never called, so
@@ -2001,6 +1995,12 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	// HL2SB: scripted_ents.OnLoaded() -- see the server call site; the registry
 	// has to be built after the whole loader sequence, not before it.
 	luasrc_RunEntsOnLoaded();
+
+	// Sandbox builds its menu here, after SWEPs have registered their tools.
+	BEGIN_LUA_CALL_HOOK( "OnGamemodeLoaded" );
+	END_LUA_CALL_HOOK( 0, 0 );
+	BEGIN_LUA_CALL_HOOK( "PostGamemodeLoaded" );
+	END_LUA_CALL_HOOK( 0, 0 );
 
 	BEGIN_LUA_CALL_HOOK( "LevelInitPreEntity" );
 		lua_pushstring( L, pMapName );

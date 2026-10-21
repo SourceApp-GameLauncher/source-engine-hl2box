@@ -10,6 +10,9 @@
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "mathlib/lvector.h"
+#include "filesystem.h"
+#include <string>
+#include <vector>
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -112,18 +115,103 @@ static int engine_GetDXSupportLevel (lua_State *L) {
   return 1;
 }
 
-// HL2SB (2026-10-11): GMod's engine.GetAddons() -- the workshop subscription
-// list, each entry a table with title/wsid/mounted fields.  This fork mounts
-// local addon folders only and has no workshop backend, so the honest answer
-// is an empty sequential table: consumer scripts (addon probes like
-// "for _, v in ipairs( engine.GetAddons() ) do if v.wsid == ... and
-// v.mounted ...", the duplicator's save filter, workshop_files.lua) only ever
-// ask whether a SPECIFIC subscription is present and mounted, and no workshop
-// subscription ever is here.  The entry being absent made the call answer nil
-// and killed every addon script that probed it at load time (the same failure
-// shape util.lua's IsMounted guard answers).
+// Enumerate mounted local addon content for the original content browser.
 static int engine_GetAddons (lua_State *L) {
+  struct Addon { std::string title, path; int models; };
+  static std::string previousPaths;
+  static std::vector<Addon> addons;
+  char paths[32768]; filesystem->GetSearchPath("GAME", true, paths, sizeof(paths));
+  if (previousPaths != paths) {
+    previousPaths = paths; addons.clear();
+    const char *position = paths;
+    while (*position) {
+      const char *end = strchr(position, ';'); if (!end) end = position + strlen(position);
+      std::string path(position, end - position);
+      for (size_t i = 0; i < path.size(); ++i) if (path[i] == '\\') path[i] = '/';
+      while (!path.empty() && path[path.size() - 1] == '/') path.resize(path.size() - 1);
+      const char *marker = Q_stristr(path.c_str(), "/addons/");
+      if (marker && filesystem->IsDirectory(path.c_str())) {
+        std::string title = path.substr(path.find_last_of('/') + 1);
+        bool duplicate = false;
+        for (size_t i = 0; i < addons.size(); ++i) if (addons[i].path == path) duplicate = true;
+        if (!duplicate) {
+          filesystem->AddSearchPath(path.c_str(), title.c_str(), PATH_ADD_TO_TAIL);
+          Addon entry = { title, path, 0 };
+          std::vector<std::string> directories; directories.push_back("models");
+          for (size_t i = 0; i < directories.size(); ++i) {
+            FileFindHandle_t handle;
+            std::string pattern = directories[i] + "/*";
+            const char *file = filesystem->FindFirstEx(pattern.c_str(), title.c_str(), &handle);
+            while (file) {
+              if (file[0] != '.') {
+                if (filesystem->FindIsDirectory(handle)) directories.push_back(directories[i] + "/" + file);
+                else {
+                  const char *extension = V_GetFileExtension(file);
+                  if (extension && !Q_stricmp(extension, "mdl")) ++entry.models;
+                }
+              }
+              file = filesystem->FindNext(handle);
+            }
+            filesystem->FindClose(handle);
+          }
+          addons.push_back(entry);
+        }
+      }
+      position = *end ? end + 1 : end;
+    }
+  }
   lua_newtable(L);
+  for (size_t i = 0; i < addons.size(); ++i) {
+    lua_newtable(L);
+    lua_pushstring(L, addons[i].title.c_str()); lua_setfield(L, -2, "title");
+    lua_pushstring(L, "0"); lua_setfield(L, -2, "wsid");
+    lua_pushboolean(L, true); lua_setfield(L, -2, "mounted");
+    lua_pushboolean(L, true); lua_setfield(L, -2, "downloaded");
+    lua_pushinteger(L, addons[i].models); lua_setfield(L, -2, "models");
+    lua_pushinteger(L, 0); lua_setfield(L, -2, "timeadded");
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
+
+static int engine_GetGames(lua_State *L) {
+  struct Game { const char *folder, *title, *match; int depot; };
+  const Game games[] = {
+    { "hl2", "Half-Life 2", "/hl2/", 220 },
+    { "episodic", "Half-Life 2: Episode One", "/episodic/", 380 },
+    { "ep2", "Half-Life 2: Episode Two", "/ep2/", 420 },
+    { "lostcoast", "Half-Life 2: Lost Coast", "/lostcoast/", 340 },
+    { "cstrike", "Counter-Strike: Source", "content_cstrike", 240 },
+    { "portal", "Portal", "/portal/", 400 },
+    { "tf", "Team Fortress 2", "/tf/", 440 },
+    { "dod", "Day of Defeat: Source", "/dod/", 300 }
+  };
+  char paths[32768]; filesystem->GetSearchPath("GAME", true, paths, sizeof(paths));
+  V_FixSlashes(paths, '/');
+  lua_newtable(L);
+  int count = 0;
+  for (int i = 0; i < ARRAYSIZE(games); ++i) {
+    bool mounted = false;
+    std::string folderMatch = std::string("/") + games[i].folder + "/";
+    const char *position = paths;
+    while (*position) {
+      const char *end = strchr(position, ';'); if (!end) end = position + strlen(position);
+      std::string path(position, end - position);
+      if (Q_stristr(path.c_str(), games[i].match) || Q_stristr(path.c_str(), folderMatch.c_str())) {
+        mounted = true;
+        filesystem->AddSearchPath(path.c_str(), games[i].folder, PATH_ADD_TO_TAIL);
+      }
+      position = *end ? end + 1 : end;
+    }
+    lua_newtable(L);
+    lua_pushstring(L, games[i].folder); lua_setfield(L, -2, "folder");
+    lua_pushstring(L, games[i].title); lua_setfield(L, -2, "title");
+    lua_pushinteger(L, games[i].depot); lua_setfield(L, -2, "depot");
+    lua_pushboolean(L, mounted); lua_setfield(L, -2, "mounted");
+    lua_pushboolean(L, mounted); lua_setfield(L, -2, "installed");
+    lua_pushboolean(L, mounted); lua_setfield(L, -2, "owned");
+    lua_rawseti(L, -2, ++count);
+  }
   return 1;
 }
 
@@ -495,6 +583,7 @@ static const luaL_Reg enginelib[] = {
   {"GetAppID",   engine_GetAppID},
   {"GetDXSupportLevel", engine_GetDXSupportLevel},
   {"GetAddons", engine_GetAddons},
+  {"GetGames", engine_GetGames},
   {"GetEngineBuildNumber",   engine_GetEngineBuildNumber},
   {"GetGameDirectory", engine_GetGameDirectory},
   {"GetLastTimeStamp", engine_GetLastTimeStamp},

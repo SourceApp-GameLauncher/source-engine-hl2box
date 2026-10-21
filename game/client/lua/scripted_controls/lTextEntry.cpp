@@ -6,6 +6,7 @@
 #include <lColor.h>
 #include <tier1/LKeyValues.h>
 #include <vgui/LVGUI.h>
+#include <vgui/ISurface.h>
 
 #include <scripted_controls/lTextEntry.h>
 #include "scripted_controls/lPanel.h"
@@ -44,6 +45,7 @@ LTextEntry::LTextEntry( Panel *parent, const char *panelName, lua_State *L /* = 
 LTextEntry::~LTextEntry()
 {
 #if defined( LUA_SDK )
+    HL2SB_CallLuaTextEntryMethod("OnRemove");
     HL2SB_LuaPanelUntrack( this );
     HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
     /* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
@@ -51,6 +53,37 @@ LTextEntry::~LTextEntry()
     ** back to lua_getref (see lua_isrefvalid in lua_compat.cpp). */
     m_nTableReference = LUA_NOREF;
 #endif
+}
+
+void LTextEntry::DrawNativeText(const Color &text, const Color &highlight, const Color &cursor)
+{
+    SetFgColor(text);
+    SetSelectionBgColor(highlight);
+    SetSelectionUnfocusedBgColor(highlight);
+    m_DrawCursorColor = cursor;
+    const char *font = "DermaDefault";
+    if (lua_isrefvalid(m_lua_State, m_nTableReference)) {
+        lua_getref(m_lua_State, m_nTableReference);
+        lua_getfield(m_lua_State, -1, "m_FontName");
+        if (lua_isstring(m_lua_State, -1)) font = lua_tostring(m_lua_State, -1);
+        m_DrawFontTall = surface()->GetFontTall(LuaFont_ResolveByName(m_lua_State, font));
+        lua_pop(m_lua_State, 2);
+    } else m_DrawFontTall = surface()->GetFontTall(LuaFont_ResolveByName(m_lua_State, font));
+    m_bDrawCustomCursor = true;
+    BaseClass::PaintText(false);
+    m_bDrawCustomCursor = false;
+}
+
+bool LTextEntry::DrawCursor(int x, int y)
+{
+    bool drawn = BaseClass::DrawCursor(x, y);
+    if (drawn && m_bDrawCustomCursor) {
+        int cx, cy;
+        CursorToPixelSpace(GetCaretPos(), cx, cy);
+        surface()->DrawSetColor(m_DrawCursorColor);
+        surface()->DrawFilledRect(cx, cy, cx + 1, cy + m_DrawFontTall);
+    }
+    return drawn;
 }
 
 
@@ -693,6 +726,9 @@ LUA_BINDING_END()
 //     return 1;
 // }
 
+extern int HL2SB_LuaPanelGeometryIndex(lua_State *L);
+extern bool HL2SB_LuaPanelGeometryWrite(lua_State *L);
+
 LUA_BINDING_BEGIN( TextEntry, __index, "class", "Metamethod called when a non-existent field is indexed" )
 {
     TextEntry *pTextEntry = LUA_BINDING_ARGUMENT( lua_totextentry, 1, "textEntry" );
@@ -702,6 +738,7 @@ LUA_BINDING_BEGIN( TextEntry, __index, "class", "Metamethod called when a non-ex
     // const char *field = LUA_BINDING_ARGUMENT( luaL_checkstring, 2, "field" );
 
     LTextEntry *plTextEntry = dynamic_cast< LTextEntry * >( pTextEntry );
+    if (HL2SB_LuaPanelGeometryIndex(L)) return 1;
     LUA_METATABLE_INDEX_CHECK_REF_TABLE( L, plTextEntry );
 
     if ( lua_getmetatable( L, 1 ) )
@@ -739,6 +776,7 @@ LUA_BINDING_BEGIN( TextEntry, __newindex, "class", "Metamethod called when a new
     LTextEntry *plTextEntry = dynamic_cast< LTextEntry * >( pTextEntry );
 
     LUA_GET_REF_TABLE( L, plTextEntry );
+    if (HL2SB_LuaPanelGeometryWrite(L)) { lua_pop(L, 1); return 0; }
     lua_pushvalue( L, 3 );
     lua_setfield( L, -2, LUA_BINDING_ARGUMENT( luaL_checkstring, 2, "field" ) );
     lua_pop( L, 1 );

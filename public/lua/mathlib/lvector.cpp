@@ -466,7 +466,10 @@ static int Vector___newindex (lua_State *L) {
 }
 
 static int Vector___tostring (lua_State *L) {
-  lua_pushfstring(L, "Vector: %s", VecToString( luaL_checkvector(L, 1) ));
+  const Vector &value = luaL_checkvector(L, 1);
+  char text[128];
+  Q_snprintf(text, sizeof(text), "%.3f %.3f %.3f", value.x, value.y, value.z);
+  lua_pushstring(L, text);
   return 1;
 }
 

@@ -6,6 +6,7 @@
 #include <lColor.h>
 
 #include <scripted_controls/lLabel.h>
+#include <vgui_controls/TextImage.h>
 #include "scripted_controls/lPanel.h"
 #include <scripted_controls/lButton.h>
 #include <vgui/LVGUI.h>
@@ -25,6 +26,9 @@
 */
 
 using namespace vgui;
+
+extern int HL2SB_LuaPanelSetText(lua_State *L);
+extern int HL2SB_LuaLabelAlignment(int alignment, bool toNative);
 
 //-----------------------------------------------------------------------------
 // Purpose: Constructor
@@ -46,6 +50,7 @@ LLabel::LLabel( Panel *parent, const char *panelName, const char *text, lua_Stat
     HL2SB_LuaPanelTrack( this, L );
 
     HL2SB_ApplyTextDefaults( this );
+    SetPostChildPaintEnabled(true);
 #endif
 }
 
@@ -79,6 +84,8 @@ void HL2SB_ApplyTextDefaults( Label *pLabel )
 LLabel::~LLabel()
 {
 #if defined( LUA_SDK )
+    LUA_CALL_PANEL_METHOD_BEGIN("OnRemove");
+    LUA_CALL_PANEL_METHOD_END(0, 0);
     HL2SB_LuaPanelUntrack( this );
     HL2SB_LuaPanelUnref( m_lua_State, m_nTableReference );
     /* HL2SB (2026-10-06): luaL_unref leaves a tombstone number in the freed
@@ -86,6 +93,47 @@ LLabel::~LLabel()
     ** back to lua_getref (see lua_isrefvalid in lua_compat.cpp). */
     m_nTableReference = LUA_NOREF;
 #endif
+}
+
+void LLabel::PostChildPaint()
+{
+    bool previousClip = HL2SB_LuaPanelBeginPaint(m_lua_State, this);
+    BaseClass::PostChildPaint();
+    LUA_CALL_PANEL_METHOD_BEGIN("PaintOver");
+      lua_pushinteger(m_lua_State, GetWide());
+      lua_pushinteger(m_lua_State, GetTall());
+    LUA_CALL_PANEL_METHOD_END(2, 0);
+    HL2SB_LuaPanelEndPaint(previousClip);
+}
+
+void LLabel::PaintTextShadow()
+{
+    if (!m_lua_State || (m_lua_State != ::L && m_lua_State != LGameUI) ||
+        !lua_isrefvalid(m_lua_State, m_nTableReference)) return;
+    lua_checkstack(m_lua_State, 8);
+    lua_getref(m_lua_State, m_nTableReference);
+    lua_getfield(m_lua_State, -1, "m_iExpensiveShadowOffset");
+    int offset = lua_tointeger(m_lua_State, -1);
+    lua_pop(m_lua_State, 1);
+    lua_getfield(m_lua_State, -1, "m_colExpensiveShadow");
+    if (offset && lua_istable(m_lua_State, -1)) {
+        int components[] = { 0, 0, 0, 200 };
+        const char *fields[] = { "r", "g", "b", "a" };
+        for (int i = 0; i < 4; ++i) {
+            lua_pushstring(m_lua_State, fields[i]); lua_rawget(m_lua_State, -2);
+            double value = lua_tonumber(m_lua_State, -1);
+            if (lua_isnumber(m_lua_State, -1) && IsFinite(value)) components[i] = (int)clamp(value, 0.0, 255.0);
+            lua_pop(m_lua_State, 1);
+        }
+        Color shadow(components[0], components[1], components[2], components[3]);
+        if (TextImage *image = GetTextImage()) {
+            int x, y; image->GetPos(x, y);
+            Color color = image->GetColor();
+            image->SetPos(x + offset, y + offset); image->SetColor(shadow); image->Paint();
+            image->SetPos(x, y); image->SetColor(color);
+        }
+    }
+    lua_pop(m_lua_State, 2);
 }
 
 /*
@@ -191,8 +239,9 @@ LUA_BINDING_END()
 LUA_BINDING_BEGIN( Label, SetContentAlignment, "class", "Sets the content alignment of the label" )
 {
     lua_Label *label = LUA_BINDING_ARGUMENT( luaL_checklabel, 1, "label" );
-    vgui::Label::Alignment alignment = LUA_BINDING_ARGUMENT_ENUM( vgui::Label::Alignment, 2, "alignment" );
-    label->SetContentAlignment( alignment );
+    const int alignment = HL2SB_LuaLabelAlignment(luaL_checkint(L, 2), true);
+    if (alignment >= 0)
+        label->SetContentAlignment((vgui::Label::Alignment)alignment);
     return 0;
 }
 LUA_BINDING_END()
@@ -201,7 +250,7 @@ LUA_BINDING_BEGIN( Label, GetContentAlignment, "class", "Gets the content alignm
 {
     lua_Label *label = LUA_BINDING_ARGUMENT( luaL_checklabel, 1, "label" );
     vgui::Label::Alignment alignment = label->GetContentAlignment();
-    lua_pushinteger( L, alignment );
+    lua_pushinteger( L, HL2SB_LuaLabelAlignment(alignment, false) );
     return 1;
 }
 LUA_BINDING_END( "integer", "The content alignment of the label" )
@@ -234,9 +283,7 @@ LUA_BINDING_END( "string", "The text of the label" )
 
 LUA_BINDING_BEGIN( Label, SetText, "class", "Sets the text of the label" )
 {
-    lua_Label *label = LUA_BINDING_ARGUMENT( luaL_checklabel, 1, "label" );
-    label->SetText( LUA_BINDING_ARGUMENT( luaL_checkstring, 2, "text" ) );
-    return 0;
+    return HL2SB_LuaPanelSetText(L);
 }
 LUA_BINDING_END()
 
@@ -407,11 +454,15 @@ LUA_BINDING_BEGIN( Label, SetCenterWrap, "class", "Sets the center wrap of the l
 }
 LUA_BINDING_END()
 
+extern int HL2SB_LuaPanelGeometryIndex(lua_State *L);
+extern bool HL2SB_LuaPanelGeometryWrite(lua_State *L);
+
 LUA_BINDING_BEGIN( Label, __index, "class", "Metamethod that is called when a non-existant field is indexed" )
 {
     lua_Label *pLabel = LUA_BINDING_ARGUMENT( lua_tolabel, 1, "label" );
     LUA_METATABLE_INDEX_CHECK_VALID( L, PanelIsValid );
     LUA_METATABLE_INDEX_CHECK( L, pLabel );
+    if (HL2SB_LuaPanelGeometryIndex(L)) return 1;
 
     // const char *field = LUA_BINDING_ARGUMENT( luaL_checkstring, 2, "field" );
 
@@ -454,6 +505,7 @@ LUA_BINDING_BEGIN( Label, __newindex, "class", "Metamethod that is called when a
 
     if ( plLabel )
     {
+        if (HL2SB_LuaPanelGeometryWrite(L)) return 0;
         LUA_GET_REF_TABLE( L, plLabel );
         lua_pushvalue( L, 3 );
         lua_setfield( L, -2, luaL_checkstring( L, 2 ) );

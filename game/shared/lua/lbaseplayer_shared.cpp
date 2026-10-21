@@ -17,6 +17,8 @@
 #include "iinput.h"	// HL2SB: input->GetButtonBits (live-command fallback)
 // HL2SB: raw per-frame mouse deltas from CInput::MouseMove (in_mouse.cpp)
 void HL2SB_GetLastMouseDeltas( int &dx, int &dy );
+class CViewSetup;
+extern bool HL2SB_GetWorldClickDirection( Vector &direction, const CViewSetup *setup );
 #endif
 #include "luamanager.h"
 #include "luasrclib.h"
@@ -416,7 +418,12 @@ static int CBasePlayer_GetShootPos (lua_State *L) {
 
 // HL2SB GMod SWEP compat: aim direction (GMod Owner:GetAimVector()).
 static int CBasePlayer_GetAimVector (lua_State *L) {
-  Vector v = luaL_checkplayer(L, 1)->GetAutoaimVector(luaL_optnumber(L, 2, 0.0f));
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  Vector v;
+#ifdef CLIENT_DLL
+  if (player != C_BasePlayer::GetLocalPlayer() || !HL2SB_GetWorldClickDirection(v, NULL))
+#endif
+    player->EyeVectors(&v);
   lua_pushvector(L, v);
   return 1;
 }
@@ -516,10 +523,14 @@ static int CBasePlayer_GetVehicle (lua_State *L) {
 // Mask: GMod's Lua GetEyeTrace/GetEyeTraceNoCursor traces through
 // util.GetPlayerTrace, whose table carries no "mask" key, so the engine
 // default MASK_SOLID applies (reference behaviour, not MASK_SHOT).
-static int CBasePlayer_GetEyeTrace (lua_State *L) {
+static int CBasePlayer_EyeTraceInternal (lua_State *L, bool cursor) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
   Vector vForward;
   pPlayer->EyeVectors(&vForward, NULL, NULL);
+#ifdef CLIENT_DLL
+  if (cursor && pPlayer == C_BasePlayer::GetLocalPlayer())
+    HL2SB_GetWorldClickDirection(vForward, NULL);
+#endif
   Vector vecEye = pPlayer->EyePosition();
   Vector vecEnd = vecEye + vForward * MAX_TRACE_LENGTH;
 
@@ -529,13 +540,17 @@ static int CBasePlayer_GetEyeTrace (lua_State *L) {
   return 1;
 }
 
+static int CBasePlayer_GetEyeTrace (lua_State *L) {
+  return CBasePlayer_EyeTraceInternal(L, true);
+}
+
 // HL2SB GMod compat: Player:GetEyeTraceNoCursor() (wiki: shared; the cursor is
 // a clientside-only concept, so serverside GMod's version traces the same eye
 // ray).  scp173 reads victim:GetEyeTraceNoCursor().Normal every think to build
 // its vision cone; with the method nil the think coroutine errored each tick
 // and the statue froze mid-game.
 static int CBasePlayer_GetEyeTraceNoCursor (lua_State *L) {
-  return CBasePlayer_GetEyeTrace( L );
+  return CBasePlayer_EyeTraceInternal( L, false );
 }
 
 static int CBasePlayer_FindUseEntity (lua_State *L) {

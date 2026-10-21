@@ -9,6 +9,7 @@
 
 #include "cbase.h"
 #include "vgui/ISurface.h"
+#include "VGuiMatSurface/IMatSystemSurface.h"
 #include "vgui/ISystem.h"   // HL2SB: gui.OpenURL -> ISystem::ShellExecute
 #include "vgui/ILocalize.h"
 #include "vgui_controls/Controls.h"
@@ -363,6 +364,15 @@ static int surface_DrawPrintText (lua_State *L) {
   HL2SB_FrameStats_AddSurfaceDraw();
   HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_SURF_TEXTPRINT );
   const char *sz = luaL_checkstring(L, 1);
+  if (sz[0] == '#')
+  {
+    const wchar_t *phrase = g_pVGuiLocalize->Find(sz + 1);
+    if (phrase)
+    {
+      surface()->DrawPrintText(phrase, wcslen(phrase), (FontDrawType_t)luaL_optint(L, 3, FONT_DRAW_DEFAULT));
+      return 0;
+    }
+  }
   int bufSize = (strlen( sz ) + 1 ) * sizeof(wchar_t);
   wchar_t *wbuf = static_cast<wchar_t *>( _alloca( bufSize ) );
   if ( wbuf )
@@ -413,12 +423,8 @@ static int surface_DrawSetTexture (lua_State *L) {
 // following DrawTexturedRect* calls.  That is how the Derma skin
 // (lua/derma/derma_gwen.lua -> GWEN.CreateTextureBorder) and killicon.lua draw.
 //
-// ISurface has no DrawSetTextureMaterial() in this engine's public interface (it
-// lives on IMatSystemSurface, and extending the ISurface vtable would break the
-// prebuilt engine.dll), so bind by name: DrawSetTextureFile() resolves the name
-// through FindMaterial() and hands the dictionary slot the very material we were
-// passed.  One slot is reused for the life of the process, so painting every
-// frame does not leak texture ids.
+// Obtain IMatSystemSurface from the active surface instance. Runtime materials
+// must be bound by pointer because they have no material file to load by name.
 // HL2SB: the vgui texture slot used by surface.SetMaterial is created in
 // luaopen_surface(), NOT here: creating it lazily means doing it mid-frame while
 // a Derma panel paints (the undo notice is the first one that paints through the
@@ -437,38 +443,27 @@ static int s_nMaterialDrawTextureID = -1;
 // stays for the uncached fallback path.
 struct HL2SB_MaterialTextureCacheEntry_t
 {
-	char m_szName[ 128 ];
+	IMaterial *m_pMaterial;
 	int  m_nTextureID;
 };
 static CUtlVector< HL2SB_MaterialTextureCacheEntry_t > s_MaterialTextureCache;
 
 static int HL2SB_CachedMaterialTexture( IMaterial *pMaterial )
 {
-	const char *pName = pMaterial->GetName();
-
 	FOR_EACH_VEC( s_MaterialTextureCache, i )
 	{
-		if ( Q_stricmp( s_MaterialTextureCache[ i ].m_szName, pName ) == 0 )
+		if ( s_MaterialTextureCache[ i ].m_pMaterial == pMaterial )
 			return s_MaterialTextureCache[ i ].m_nTextureID;
 	}
 
-	if ( s_MaterialTextureCache.Count() >= 256 )
-	{
-		// Pathological material count: fall back to the original per-call
-		// resolve on the shared id rather than skipping the bind.
-		if ( s_nMaterialDrawTextureID == -1 )
-			s_nMaterialDrawTextureID = surface()->CreateNewTextureID();
-		surface()->DrawSetTextureFile( s_nMaterialDrawTextureID, pName, true, false );
-		return s_nMaterialDrawTextureID;
-	}
-
-	// Each cached material binds its OWN texture id: sharing one id would let
-	// the next DrawSetTextureFile overwrite the previous material's binding.
 	int nTextureID = surface()->CreateNewTextureID();
-	surface()->DrawSetTextureFile( nTextureID, pName, true, false );
+	if (IMatSystemSurface *materialSurface = dynamic_cast<IMatSystemSurface *>(surface()))
+		materialSurface->DrawSetTextureMaterial(nTextureID, pMaterial);
+	else
+		surface()->DrawSetTextureFile(nTextureID, pMaterial->GetName(), true, false);
 
 	HL2SB_MaterialTextureCacheEntry_t &entry = s_MaterialTextureCache[ s_MaterialTextureCache.AddToTail() ];
-	Q_strncpy( entry.m_szName, pName, sizeof( entry.m_szName ) );
+	entry.m_pMaterial = pMaterial;
 	entry.m_nTextureID = nTextureID;
 	return nTextureID;
 }
@@ -478,13 +473,6 @@ static int surface_SetMaterial (lua_State *L) {
 
   IMaterial *pMaterial = luaL_checkmaterial(L, 1);
 
-  // NOTE: IMatSystemSurface::DrawSetTextureMaterial would be the direct call, but
-  // going through the g_pMatSystemSurface global from client.dll access-violates
-  // this fork (the deployed vgui2/MatSystemSurface is an older interface version,
-  // so the virtual slot does not match) -- verified with a minidump.  Bind by
-  // name instead: DrawSetTextureFile resolves the material through FindMaterial
-  // and hands that very material to the dictionary slot.  The resolution is
-  // cached per material name (see HL2SB_CachedMaterialTexture above).
   int nMaterialDrawTextureID = HL2SB_CachedMaterialTexture( pMaterial );
   if ( nMaterialDrawTextureID == -1 )
     return 0;
@@ -501,21 +489,29 @@ static int surface_SetMaterial (lua_State *L) {
 //     self.tex.Shadow( -4, -4, w + 10, h + 10 )
 //     DisableClipping( wasEnabled )
 //
-// so the return value matters.  The engine side of this is
-// IMatSystemSurface::DisableClipping, and reaching it through the
-// g_pMatSystemSurface global from client.dll access-violates (older interface
-// version in the deployed vgui2 -- same crash as DrawSetTextureMaterial above),
-// so the state is tracked here and reported back faithfully.  The only casualty
-// is that the 10px shadow bleed gets clipped at the frame's bounds.
+// Query the active surface instance so clipping changes and reads share state.
 static int HL2SB_DisableClipping (lua_State *L) {
-  static bool s_bClippingDisabled = false;
-
   bool bDisable = luaL_checkboolean(L, 1);
-  bool bWasDisabled = s_bClippingDisabled;
-
-  s_bClippingDisabled = bDisable;
+  bool bWasDisabled = true;
+  if (IMatSystemSurface *pSurface = dynamic_cast<IMatSystemSurface *>(surface())) {
+    int left, top, right, bottom;
+    pSurface->GetClippingRect(left, top, right, bottom, bWasDisabled);
+    pSurface->DisableClipping(bDisable);
+  }
   lua_pushboolean(L, bWasDisabled ? 1 : 0);
   return 1;
+}
+
+static int surface_GetScissorRect(lua_State *L) {
+  int left = 0, top = 0, right = 0, bottom = 0;
+  bool disabled = true;
+  surface()->GetScreenSize(right, bottom);
+  if (IMatSystemSurface *pSurface = dynamic_cast<IMatSystemSurface *>(surface()))
+    pSurface->GetClippingRect(left, top, right, bottom, disabled);
+  lua_pushboolean(L, !disabled);
+  lua_pushinteger(L, left); lua_pushinteger(L, top);
+  lua_pushinteger(L, right); lua_pushinteger(L, bottom);
+  return 5;
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +901,15 @@ static int surface_GetTextSize (lua_State *L) {
   const char *sz = luaL_checkstring(L, 2);
   int wide = 0;
   int tall = 0;
+  HFont font = luaL_checkfont(L, 1);
+  const wchar_t *phrase = sz[0] == '#' ? g_pVGuiLocalize->Find(sz + 1) : NULL;
+  if (phrase)
+  {
+    surface()->GetTextSize(font, phrase, wide, tall);
+    lua_pushinteger(L, wide);
+    lua_pushinteger(L, tall);
+    return 2;
+  }
   int bufSize = (strlen( sz ) + 1 ) * sizeof(wchar_t);
   wchar_t *wbuf = static_cast<wchar_t *>( _alloca( bufSize ) );
   if ( wbuf )
@@ -914,7 +919,7 @@ static int surface_GetTextSize (lua_State *L) {
 	  // layout that measures text (the kill feed especially) was positioned
 	  // from those bogus values.
 	  g_pVGuiLocalize->ConvertANSIToUnicode( sz, wbuf, bufSize );
-	  surface()->GetTextSize(luaL_checkfont(L, 1), wbuf, wide, tall);
+	  surface()->GetTextSize(font, wbuf, wide, tall);
   }
   lua_pushinteger(L, wide);
   lua_pushinteger(L, tall);
@@ -1203,6 +1208,7 @@ static const luaL_Reg surfacelib[] = {
   {"PaintTraverse",   surface_PaintTraverse},
   {"PaintTraverseEx",   surface_PaintTraverseEx},
   {"PlaySound",   surface_PlaySound},
+  {"GetScissorRect", surface_GetScissorRect},
   {"PopMakeCurrent",   surface_PopMakeCurrent},
   {"RunFrame",   surface_RunFrame},
   {"SetAllowHTMLJavaScript",   surface_SetAllowHTMLJavaScript},

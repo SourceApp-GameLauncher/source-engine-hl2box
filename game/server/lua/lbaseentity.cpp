@@ -155,6 +155,19 @@ static int CBaseEntity_RemoveDeferred (lua_State *L) {
   return 0;
 }
 
+static int CBaseEntity_Input (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  CBaseEntity *activator = lua_toentity(L, 3);
+  CBaseEntity *caller = lua_toentity(L, 4);
+  variant_t value;
+  if (lua_type(L, 5) == LUA_TNUMBER) value.SetFloat((float)lua_tonumber(L, 5));
+  else if (lua_type(L, 5) == LUA_TBOOLEAN) value.SetBool(lua_toboolean(L, 5) != 0);
+  else value.SetString(AllocPooledString(luaL_optstring(L, 5, "")));
+  lua_pushboolean(L, entity->AcceptInput(name, activator, caller, value, 0));
+  return 1;
+}
+
 static int CBaseEntity_AcceptInput (lua_State *L) {
   variant_t emptyVariant;
   lua_pushboolean(L, luaL_checkentity(L, 1)->AcceptInput(luaL_checkstring(L, 2), lua_toentity(L, 3), lua_toentity(L, 4), emptyVariant, luaL_checkint(L, 5)));
@@ -979,6 +992,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"HasSpawnFlags", CBaseEntity_HasSpawnFlags},
   {"MakeDormant", CBaseEntity_MakeDormant},
   {"RemoveDeferred", CBaseEntity_RemoveDeferred},
+  {"Input", CBaseEntity_Input},
   {"AcceptInput", CBaseEntity_AcceptInput},
   // HL2SB GMod compat: Player:PrintMessage( type, message ) (see the definition).
   {"PrintMessage", CBaseEntity_PrintMessage},

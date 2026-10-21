@@ -331,72 +331,44 @@ static void LuaMakeRelative (char *pszPath, int nSize) {
 }
 
 static int luasrc_include (lua_State *L) {
-  lua_Debug ar1;
-  lua_getstack(L, 1, &ar1);
-  lua_getinfo(L, "f", &ar1);
-  lua_Debug ar2;
-  lua_getinfo(L, ">S", &ar2);
+  const char *name = luaL_checkstring(L, 1);
+  char filename[MAX_PATH] = { 0 }, normalized[MAX_PATH];
+  bool found = false;
 
-  // HL2SB (2026-10-08): skip C frames between include() and the script that
-  // actually asked.  The protected form pcall( include, "file.lua" ) resolves
-  // level 1 as pcall itself - a C frame, whose source is "[C]"; Q_StripFilename
-  // turns a separator-less string into "" and the relative candidate collapses
-  // to "/file.lua", which never exists.  gamemodes/base/gamemode/shared.lua
-  // wraps its player_shd include exactly that way, so player_shd had NEVER
-  // loaded (ds_debug.log: "[Lua] FAILED /player_shd.lua ...").  GMod's
-  // contract is "relative to the file that called include", and the file that
-  // called is the nearest LUA frame however many C frames sit between - so
-  // walk up until a Lua frame answers.  No Lua frame found keeps the original
-  // level-1 result (engine-internal calls have nothing better to offer).
-  if ( ar2.what != NULL && Q_strcmp( ar2.what, "C" ) == 0 ) {
-    lua_Debug arWalk;
-    for ( int iLevel = 2; iLevel < 64; ++iLevel ) {
-      if ( lua_getstack( L, iLevel, &arWalk ) == 0 )
-        break;
-      lua_getinfo( L, "f", &arWalk );
-      lua_getinfo( L, ">S", &arWalk );
-      if ( arWalk.what != NULL && Q_strcmp( arWalk.what, "C" ) != 0 ) {
-        ar2 = arWalk;
-        break;
-      }
+  // A helper such as vgui.RegisterFile can call include for its caller.
+  // Search Lua frames until the relative file exists, skipping C frames.
+  for (int level = 1; level < 64; ++level) {
+    lua_Debug frame;
+    if (!lua_getstack(L, level, &frame)) break;
+    lua_getinfo(L, "S", &frame);
+    if (!frame.source || frame.source[0] != '@') continue;
+    char directory[MAX_PATH], candidate[MAX_PATH];
+    Q_strncpy(directory, frame.source + 1, sizeof(directory));
+    Q_StripFilename(directory);
+    Q_snprintf(candidate, sizeof(candidate), "%s/%s", directory, name);
+    LuaNormalizeDots(candidate, normalized, sizeof(normalized));
+    LuaMakeRelative(normalized, sizeof(normalized));
+    if (LuaFileExists(normalized)) {
+      Q_strncpy(filename, normalized, sizeof(filename));
+      found = true;
+      break;
     }
   }
-
-  int iLength = Q_strlen( ar2.source );
-  char source[MAX_PATH];
-  Q_StrRight( ar2.source, iLength-1, source, sizeof( source ) );
-  Q_StripFilename( source );
-
-  const char *pszName = luaL_checkstring(L, 1);
-
-  // 1. relative to the calling file (Team Sandbox / existing HL2SB scripts).
-  char filename[MAX_PATH];
-  char normalized[MAX_PATH];
-  Q_snprintf( filename, sizeof( filename ), "%s/%s", source, pszName );
-  LuaNormalizeDots( filename, normalized, sizeof( normalized ) );
-  Q_strncpy( filename, normalized, sizeof( filename ) );
-  LuaMakeRelative( filename, sizeof( filename ) );
-
-  if ( !LuaFileExists( filename ) )
-  {
-    // 2. GMod's roots.  lua/ is the one GMod's own engine defaults to; the
-    //    includes/ entry keeps an include() inside lua/includes/ working when
-    //    the caller is nested deeper than the file it wants.
-    static const char *s_pRoots[] = { "lua/%s", "lua/includes/%s", "%s" };
-    for ( int i = 0; i < ARRAYSIZE( s_pRoots ); ++i )
-    {
+  if (!found) {
+    const char *roots[] = { "lua/%s", "lua/includes/%s", "%s" };
+    for (int i = 0; i < ARRAYSIZE(roots); ++i) {
       char candidate[MAX_PATH];
-      Q_snprintf( candidate, sizeof( candidate ), s_pRoots[i], pszName );
-      LuaNormalizeDots( candidate, normalized, sizeof( normalized ) );
-      LuaMakeRelative( normalized, sizeof( normalized ) );
-      if ( LuaFileExists( normalized ) )
-      {
-        Q_strncpy( filename, normalized, sizeof( filename ) );
+      Q_snprintf(candidate, sizeof(candidate), roots[i], name);
+      LuaNormalizeDots(candidate, normalized, sizeof(normalized));
+      LuaMakeRelative(normalized, sizeof(normalized));
+      if (LuaFileExists(normalized)) {
+        Q_strncpy(filename, normalized, sizeof(filename));
+        found = true;
         break;
       }
     }
   }
-
+  if (!found) Q_strncpy(filename, name, sizeof(filename));
   luasrc_dofile(L, filename);
   return 0;
 }
@@ -3723,6 +3695,7 @@ bool luasrc_SetGamemode (const char *gamemode) {
 	    Q_snprintf( baseLoadPath, sizeof( baseLoadPath ), "%s/", baseContentSearchPath );
 	    luasrc_LoadWeapons( baseLoadPath );
 	    luasrc_LoadEntities( baseLoadPath );
+	    luasrc_LoadEffects( baseLoadPath );
 	  }
 
 	  Q_snprintf( contentSearchPath, sizeof( contentSearchPath ), "gamemodes/%s/content", gamemode );

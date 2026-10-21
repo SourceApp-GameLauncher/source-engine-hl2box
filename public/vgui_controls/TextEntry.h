@@ -236,6 +236,7 @@ public:
 	void SetSelectionUnfocusedBgColor( const Color& clr );
 
 	void SetUseFallbackFont( bool bState, HFont hFallback );
+	void PaintText(bool drawLanguageID = true);
 
 protected:
 	virtual void ResetCursorBlink();

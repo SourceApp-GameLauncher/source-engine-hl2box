@@ -66,6 +66,9 @@
 void ToolFramework_AdjustEngineViewport( int& x, int& y, int& width, int& height );
 bool ToolFramework_SetupEngineView( Vector &origin, QAngle &angles, float &fov );
 bool ToolFramework_SetupEngineMicrophone( Vector &origin, QAngle &angles );
+#ifdef LUA_SDK
+extern void HL2SB_UpdateViewModelCursorOffset( CBasePlayer *player, const QAngle &viewAngles, const CViewSetup *setup );
+#endif
 
 
 extern ConVar default_fov;
@@ -786,6 +789,9 @@ void CViewRender::SetUpViews()
 	if ( bCalcViewModelView )
 	{
 		Assert ( pPlayer != NULL );
+#ifdef LUA_SDK
+		HL2SB_UpdateViewModelCursorOffset( pPlayer, ViewModelAngles, &m_View );
+#endif
 		pPlayer->CalcViewModelView ( ViewModelOrigin, ViewModelAngles );
 	}
 

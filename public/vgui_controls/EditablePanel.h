@@ -117,6 +117,7 @@ public:
 	KeyValues *GetDialogVariables();
 
 	bool ShouldSkipAutoResize() const { return m_bShouldSkipAutoResize; }
+	FocusNavGroup &FocusGroup() { return GetFocusNavGroup(); }
 protected:
 	virtual void PaintBackground();
 

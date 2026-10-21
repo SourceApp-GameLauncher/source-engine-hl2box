@@ -14,6 +14,8 @@
 
 // Declared before the class: LTextEntry::PushLuaInstanceSafe below forwards to it.
 LUA_API void lua_pushtextentry ( lua_State *L, vgui::TextEntry *pTextEntry );
+extern bool HL2SB_LuaPanelBeginPaint(lua_State *state, vgui::Panel *panel);
+extern void HL2SB_LuaPanelEndPaint(bool previous);
 
 namespace vgui
 {
@@ -49,7 +51,13 @@ class LTextEntry : public TextEntry
     int                 m_nTableReference;
 #endif
 
+    void DrawNativeText(const Color &text, const Color &highlight, const Color &cursor);
+
     protected:
+    virtual bool DrawCursor(int x, int y);
+    Color m_DrawCursorColor;
+    int m_DrawFontTall = 0;
+    bool m_bDrawCustomCursor = false;
     virtual void ApplySchemeSettings( vgui::IScheme *pScheme )
     {
         /*
@@ -106,6 +114,7 @@ class LTextEntry : public TextEntry
     */
     virtual void Paint()
     {
+        bool previousClip = HL2SB_LuaPanelBeginPaint(m_lua_State, this);
         // 1. Lua first: GMod's Derma skin draws the field chrome and the placeholder
         //    from here (lua/vgui/DTextEntry.lua:195).
         HL2SB_CallLuaTextEntryMethod( "Paint", 2, GetWide(), GetTall() );
@@ -116,7 +125,9 @@ class LTextEntry : public TextEntry
         //    Panel::PaintTraverse() runs PaintBackground() BEFORE Paint()
         //    (Panel.cpp:1217-1229).  Without this the Lua skin would be painted on top of
         //    the text and the user would see an empty box.
-        BaseClass::PaintBackground();
+        if (!HL2SB_LuaPanelHasMethod(m_lua_State, m_nTableReference, "Paint"))
+            BaseClass::PaintBackground();
+        HL2SB_LuaPanelEndPaint(previousClip);
     }
 
     virtual void PerformLayout()
@@ -241,7 +252,8 @@ class LTextEntry : public TextEntry
         // This fork's TextEntry keeps _sendNewLines private, so the multiline
         // + send-new-lines case cannot be queried here: OnEnter fires for
         // single-line entries only (GMod's default contract).
-        if ( code == KEY_ENTER && !IsMultiline() )
+        if ( code == KEY_ENTER && !IsMultiline() &&
+             !HL2SB_LuaPanelHasMethod(m_lua_State, m_nTableReference, "OnKeyCodeTyped") )
             HL2SB_CallLuaTextEntryMethodText( "OnEnter" );
 
         BaseClass::OnKeyCodeTyped( code );

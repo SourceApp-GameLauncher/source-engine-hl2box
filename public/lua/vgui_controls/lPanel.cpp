@@ -19,18 +19,37 @@
 #include <Color.h>
 #include <vgui/Cursor.h>
 #include <vgui_controls/Label.h>
+#include <vgui_controls/TextImage.h>
 #include <vgui_controls/TextEntry.h>
 #include <vgui_controls/Frame.h>
+#include <vgui_controls/FocusNavGroup.h>
 #include "panelmetaclassmgr.h"
 #include <vgui_controls/PHandle.h>
 #include "luamanager.h"
 #include "vgui_int.h"
 #include "lPanel.h"
 #include <scripted_controls/lPanel.h>
+#include <scripted_controls/lLabel.h>
+#include <scripted_controls/lTextEntry.h>
+#include <scripted_controls/lButton.h>
+#include <scripted_controls/lCheckButton.h>
+#include <scripted_controls/lFrame.h>
+#include <scripted_controls/lModelPanel.h>
+#include <scripted_controls/lPropertyPage.h>
+#include <scripted_controls/lPropertyDialog.h>
 #include "lColor.h"
+#include "vgui/LVGUI.h"
+#include "vgui_controls/HTML.h"
+#include "VGuiMatSurface/IMatSystemSurface.h"
+#include "filesystem.h"
+#include "iviewrender.h"
+#include "view_shared.h"
+#include <string>
+#include <vector>
 
 using namespace vgui;
 
+extern FocusNavGroup *HL2SB_LuaPanelFocusGroup(Panel *panel);
 
 /*
 ** access functions (stack -> C)
@@ -52,6 +71,14 @@ LUA_API lua_Panel *lua_topanel (lua_State *L, int idx) {
 
 
 LUA_API void lua_pushpanel (lua_State *L, Panel *pPanel) {
+  if (LCheckButton *p = dynamic_cast<LCheckButton *>(pPanel)) { lua_pushcheckbutton(L, p); return; }
+  if (LButton *p = dynamic_cast<LButton *>(pPanel)) { lua_pushbutton(L, p); return; }
+  if (LLabel *p = dynamic_cast<LLabel *>(pPanel)) { lua_pushlabel(L, p); return; }
+  if (LTextEntry *p = dynamic_cast<LTextEntry *>(pPanel)) { lua_pushtextentry(L, p); return; }
+  if (LFrame *p = dynamic_cast<LFrame *>(pPanel)) { lua_pushframe(L, p); return; }
+  if (LModelPanel *p = dynamic_cast<LModelPanel *>(pPanel)) { lua_pushmodelpanel(L, p); return; }
+  if (LPropertyPage *p = dynamic_cast<LPropertyPage *>(pPanel)) { lua_pushpropertypage(L, p); return; }
+  if (LPropertyDialog *p = dynamic_cast<LPropertyDialog *>(pPanel)) { lua_pushpropertydialog(L, p); return; }
   LPanel *plPanel = dynamic_cast<LPanel *>(pPanel);
   if (plPanel)
     ++plPanel->m_nRefCount;
@@ -63,10 +90,9 @@ LUA_API void lua_pushpanel (lua_State *L, Panel *pPanel) {
 
 
 LUA_API void lua_pushpanel (lua_State *L, VPANEL panel) {
-  PHandle *phPanel = (PHandle *)lua_newuserdata(L, sizeof(PHandle));
-  phPanel->Set(ivgui()->PanelToHandle(panel));
-  luaL_getmetatable(L, "Panel");
-  lua_setmetatable(L, -2);
+  PHandle handle;
+  handle.Set(ivgui()->PanelToHandle(panel));
+  lua_pushpanel(L, handle.Get());
 }
 
 
@@ -236,7 +262,8 @@ static int Panel_GetChildren (lua_State *L) {
 }
 
 static int Panel_GetClassName (lua_State *L) {
-  lua_pushstring(L, luaL_checkpanel(L, 1)->GetClassName());
+  Panel *panel = luaL_checkpanel(L, 1);
+  lua_pushstring(L, dynamic_cast<EditablePanel *>(panel) ? "EditablePanel" : panel->GetClassName());
   return 1;
 }
 
@@ -355,7 +382,9 @@ static int Panel_GetPanelClassName (lua_State *L) {
 }
 
 static int Panel_GetParent (lua_State *L) {
-  lua_pushpanel(L, luaL_checkpanel(L, 1)->GetParent());
+  Panel *parent = luaL_checkpanel(L, 1)->GetParent();
+  if (!parent) return 0;
+  lua_pushpanel(L, parent);
   return 1;
 }
 
@@ -426,24 +455,71 @@ static void luaDropPanelRefTable ( lua_State *L, Panel *pPanel )
   lua_rawset( L, LUA_REGISTRYINDEX );
 }
 
+template<class T> static bool Panel_PushOwnedTable(lua_State *L, Panel *pPanel) {
+  T *p = dynamic_cast<T *>(pPanel);
+  if (!p) return false;
+  if (p->m_lua_State != L) { lua_pushnil(L); return true; }
+  if (!lua_isrefvalid(L, p->m_nTableReference)) {
+    lua_newtable(L);
+    p->m_nTableReference = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  lua_getref(L, p->m_nTableReference);
+  return true;
+}
+
+static void Panel_PushTable(lua_State *L, Panel *p) {
+  // GetTable, script lookup and native callbacks must share one instance table.
+  if (!Panel_PushOwnedTable<LPanel>(L, p) &&
+      !Panel_PushOwnedTable<LLabel>(L, p) &&
+      !Panel_PushOwnedTable<LTextEntry>(L, p) &&
+      !Panel_PushOwnedTable<LButton>(L, p) &&
+      !Panel_PushOwnedTable<LCheckButton>(L, p) &&
+      !Panel_PushOwnedTable<LFrame>(L, p) &&
+      !Panel_PushOwnedTable<LModelPanel>(L, p) &&
+      !Panel_PushOwnedTable<LPropertyPage>(L, p) &&
+      !Panel_PushOwnedTable<LPropertyDialog>(L, p))
+    luaPushPanelRefTable(L, p, true);
+}
+
 static int Panel_GetRefTable (lua_State *L) {
-  LPanel *plPanel = dynamic_cast<LPanel *>(luaL_checkpanel(L, 1));
-  if (plPanel) {
-    /* HL2SB (2026-10-06): isrefvalid, not just != LUA_NOREF -- a freed and
-    ** recycled slot number must be rebuilt, never handed to Lua (see
-    ** Panel___index). */
-    if (!lua_isrefvalid( L, plPanel->m_nTableReference )) {
-      lua_newtable(L);
-      plPanel->m_nTableReference = luaL_ref(L, LUA_REGISTRYINDEX);
-    }
-    lua_getref(L, plPanel->m_nTableReference);
-  }
-  else
-  {
-    /* HL2SB: not an LPanel -- see luaPushPanelRefTable. */
-    luaPushPanelRefTable( L, luaL_checkpanel( L, 1 ), true );
-  }
+  Panel_PushTable(L, luaL_checkpanel(L, 1));
   return 1;
+}
+
+void HL2SB_LuaPanelSetHovered(lua_State *state, Panel *panel, bool hovered)
+{
+  if (!state || (state != ::L && state != LGameUI)) return;
+  Panel_PushTable(state, panel);
+  if (lua_istable(state, -1)) {
+    lua_pushboolean(state, hovered);
+    lua_setfield(state, -2, "Hovered");
+  }
+  lua_pop(state, 1);
+}
+
+bool HL2SB_LuaPanelBeginPaint(lua_State *state, Panel *panel)
+{
+  IMatSystemSurface *s = dynamic_cast<IMatSystemSurface *>(surface());
+  bool disabled = true;
+  if (!s) return disabled;
+  int left, top, right, bottom;
+  s->GetClippingRect(left, top, right, bottom, disabled);
+  if (state && (state == ::L || state == LGameUI)) {
+    lua_checkstack(state, 8);
+    Panel_PushTable(state, panel);
+    if (lua_istable(state, -1)) {
+      lua_getfield(state, -1, "__hl2sb_NoClipping");
+      if (lua_toboolean(state, -1)) s->DisableClipping(true);
+      lua_pop(state, 1);
+    }
+    lua_pop(state, 1);
+  }
+  return disabled;
+}
+
+void HL2SB_LuaPanelEndPaint(bool previous)
+{
+  if (IMatSystemSurface *s = dynamic_cast<IMatSystemSurface *>(surface())) s->DisableClipping(previous);
 }
 
 static int Panel_GetResizeOffset (lua_State *L) {
@@ -662,21 +738,71 @@ static int Panel_IsVisible (lua_State *L) {
   return 1;
 }
 
-// HL2SB (2026-09-22): GMod Panel:IsWorldClicker() -- whether the panel passes
-// clicks through into the game world.  This engine's vgui has no world-clicker
-// concept, so the honest answer is always "no".  properties.lua's hover-halo
-// hook calls this on the hovered panel EVERY FRAME; without the binding it
-// died on the missing method ~4500 times per session, each failure feeding
-// the hook error reporter.
+static bool Panel_IsWorldClickerValue(lua_State *state, Panel *panel) {
+  if (!state || !panel) return false;
+  Panel_PushTable(state, panel);
+  bool result = false;
+  if (lua_istable(state, -1)) {
+    lua_pushliteral(state, "m_bWorldClicker");
+    lua_rawget(state, -2);
+    result = lua_toboolean(state, -1) != 0;
+    lua_pop(state, 1);
+  }
+  lua_pop(state, 1);
+  return result;
+}
+
 static int Panel_IsWorldClicker (lua_State *L) {
-  luaL_checkpanel(L, 1);
-  lua_pushboolean(L, 0);
+  lua_pushboolean(L, Panel_IsWorldClickerValue(L, luaL_checkpanel(L, 1)));
   return 1;
+}
+
+static int Panel_SetWorldClicker (lua_State *L) {
+  Panel_PushTable(L, luaL_checkpanel(L, 1));
+  if (lua_istable(L, -1)) {
+    lua_pushboolean(L, lua_toboolean(L, 2));
+    lua_setfield(L, -2, "m_bWorldClicker");
+  }
+  lua_pop(L, 1);
+  return 0;
+}
+
+// Use the actual input target; a button or captured control blocks world aiming.
+bool HL2SB_GetWorldClickDirection(Vector &direction, const CViewSetup *setup) {
+  if (!::L || !input() || !surface() || !ipanel() || !surface()->IsCursorVisible()) return false;
+  if (enginevgui && enginevgui->IsGameUIVisible()) return false;
+  VPANEL target = input()->GetMouseCapture();
+  if (!target) target = input()->GetMouseOver();
+  Panel *panel = target ? ipanel()->GetPanel(target, GetControlsModuleName()) : NULL;
+  if (!panel || !panel->IsVisible() || !Panel_IsWorldClickerValue(::L, panel)) return false;
+  const CViewSetup *camera = setup ? setup : (view ? view->GetViewSetup() : NULL);
+  if (!camera || camera->width <= 0 || camera->height <= 0 || camera->fov <= 0.0f) return false;
+  int x, y;
+  input()->GetCursorPos(x, y);
+  Vector forward, right, up;
+  AngleVectors(camera->angles, &forward, &right, &up);
+  const float halfWidth = camera->width * 0.5f;
+  const float halfHeight = camera->height * 0.5f;
+  direction = forward * (halfWidth / tanf(DEG2RAD(camera->fov) * 0.5f)) +
+    right * (x - camera->x - halfWidth) + up * (camera->y + halfHeight - y);
+  return VectorNormalize(direction) > 0.0f;
 }
 
 static int Panel_IsWithin (lua_State *L) {
   lua_pushboolean(L, luaL_checkpanel(L, 1)->IsWithin(luaL_checkint(L, 2), luaL_checkint(L, 3)));
   return 1;
+}
+
+static int Panel_DrawFilledRect (lua_State *L) {
+  Panel *panel = luaL_checkpanel(L, 1);
+  surface()->DrawFilledRect(0, 0, panel->GetWide(), panel->GetTall());
+  return 0;
+}
+
+static int Panel_DrawOutlinedRect (lua_State *L) {
+  Panel *panel = luaL_checkpanel(L, 1);
+  surface()->DrawOutlinedRect(0, 0, panel->GetWide(), panel->GetTall());
+  return 0;
 }
 
 static int Panel_IsWithinTraverse (lua_State *L) {
@@ -719,6 +845,11 @@ static int Panel_MakePopup (lua_State *L) {
 static int Panel_MakeReadyForUse (lua_State *L) {
   luaL_checkpanel(L, 1)->MakeReadyForUse();
   return 0;
+}
+
+static int Panel_IsMarkedForDeletion (lua_State *L) {
+  lua_pushboolean(L, luaL_checkpanel(L, 1)->IsMarkedForDeletion());
+  return 1;
 }
 
 static int Panel_MarkForDeletion (lua_State *L) {
@@ -1084,36 +1215,8 @@ static int Panel_SetPaintEnabled (lua_State *L) {
 }
 
 static int Panel_SetParent (lua_State *L) {
-  // HL2SB: the parent argument must accept nil, exactly as GMod does.
-  //
-  // luaL_checkpanel() maps BOTH nil and an invalid handle to NULL and reports
-  // them identically -- "Panel expected, got INVALID_PANEL" -- so the message
-  // below hid the fact that the argument was simply *absent*.  GMod's Lua
-  // detaches panels with it (lua/vgui/dtooltip.lua:129
-  // `self.Contents:SetParent( nil )`), and GMod's own DScrollPanel depends on it
-  // in a subtler way:
-  //
-  //   lua/vgui/dscrollpanel.lua:5   AccessorFunc( PANEL, "pnlCanvas", "Canvas" )
-  //   lua/vgui/dscrollpanel.lua:9   self.pnlCanvas = vgui.Create( "Panel", self )
-  //   lua/vgui/dscrollpanel.lua:35  pnl:SetParent( self:GetCanvas() )   <- AddItem
-  //   lua/vgui/dscrollpanel.lua:39  OnChildAdded -> self:AddItem( child )
-  //
-  // The engine fires OnChildAdded *during* vgui.Create (vgui2's
-  // VPanel::SetParent -> Client()->OnChildAdded), i.e. BEFORE the assignment on
-  // line 9 completes -- so GetCanvas() is still nil and AddItem hands nil to
-  // SetParent.  In GMod that is a harmless detach; here it threw, twice, on
-  // every DScrollPanel-derived control (DCategoryList, DIconBrowser, DTree,
-  // DMenu ...):
-  //
-  //   lua/vgui/DScrollPanel.lua:35: bad argument #1 to 'SetParent'
-  //       (Panel expected, got INVALID_PANEL)
-  //   ...
-  //   spawnmenu/toolpanel.lua:48: in method 'Init'
-  //
-  // luaL_optpanel returns the default without invoking the checker when the
-  // argument is absent/nil, so nil now becomes Panel::SetParent(NULL) -- the
-  // engine's own "no parent" (detach) semantics.
-  luaL_checkpanel(L, 1)->SetParent(luaL_optpanel(L, 2, NULL));
+  Panel *root = L == LGameUI ? VGui_GetGameUIPanel() : VGui_GetClientLuaRootPanel();
+  luaL_checkpanel(L, 1)->SetParent(luaL_optpanel(L, 2, root));
   return 0;
 }
 
@@ -1137,47 +1240,11 @@ static int Panel_SetPinCorner (lua_State *L) {
 ** panel -- precisely the case where it does not matter.
 */
 static void Panel_SyncLuaGeometry (lua_State *L, Panel *pPanel) {
-  if (pPanel == NULL)
-    return;
-
-  int x = 0, y = 0;
-  pPanel->GetPos(x, y);
-
-  int w = 0, h = 0;
-  pPanel->GetSize(w, h);
-
-  /* HL2SB (2026-10-07): write the table Panel___index actually serves.
-     __index answers geometry from m_nTableReference for LPanel panels
-     and from the registry table only for the rest; this used to always
-     write the registry table, so every panel that had ANY Lua field
-     assigned (Paint/OnMouseWheeled handlers - which creates the ref
-     table) read its geometry back as (0,0,0,0) and HL2SB_MenuLayout's
-     walk slammed it to the frame origin (the collapsed main-menu
-     dialogs). */
-  LPanel *plPanelSync = dynamic_cast<LPanel *>(pPanel);
-  if (plPanelSync != NULL && plPanelSync->m_lua_State == L) {
-    if (!lua_isrefvalid( L, plPanelSync->m_nTableReference )) {
-      lua_newtable( L );
-      plPanelSync->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
-    }
-    lua_getref( L, plPanelSync->m_nTableReference );
-  } else {
-    luaPushPanelRefTable( L, pPanel, true );
+  Panel_GetRefTable(L);
+  if (lua_istable(L, -1)) {
+    const char *fields[] = { "x", "y", "w", "h" };
+    for (int i = 0; i < 4; ++i) { lua_pushnil(L); lua_setfield(L, -2, fields[i]); }
   }
-  if (!lua_istable(L, -1)) {
-    lua_pop(L, 1);
-    return;
-  }
-
-  lua_pushinteger(L, x);
-  lua_setfield(L, -2, "x");
-  lua_pushinteger(L, y);
-  lua_setfield(L, -2, "y");
-  lua_pushinteger(L, w);
-  lua_setfield(L, -2, "w");
-  lua_pushinteger(L, h);
-  lua_setfield(L, -2, "h");
-
   lua_pop(L, 1);
 }
 
@@ -1248,7 +1315,7 @@ static int Panel_SetTriplePressAllowed (lua_State *L) {
 }
 
 static int Panel_SetVisible (lua_State *L) {
-  luaL_checkpanel(L, 1)->SetVisible(luaL_checkboolean(L, 2));
+  luaL_checkpanel(L, 1)->SetVisible(lua_toboolean(L, 2) != 0);
   return 0;
 }
 
@@ -1282,14 +1349,13 @@ static int Panel_SetZPos (lua_State *L) {
 ** ===========================================================================
 */
 
-// GMod's name; the engine call behind it is ISurface::SetTopLevelFocus( VPANEL ).
+// Keep tab navigation inside this editable window.
 static int Panel_SetFocusTopLevel (lua_State *L) {
   Panel *pPanel = luaL_checkpanel(L, 1);
   bool bTopLevel = luaL_optboolean(L, 2, 1);
 
-  if ( vgui::surface() ) {
-    vgui::surface()->SetTopLevelFocus(bTopLevel ? pPanel->GetVPanel() : (VPANEL)0);
-  }
+  if (FocusNavGroup *focus = HL2SB_LuaPanelFocusGroup(pPanel))
+    focus->SetFocusTopLevel(bTopLevel);
 
   return 0;
 }
@@ -1306,6 +1372,9 @@ static HCursor Panel_CursorFromName (const char *pName) {
   if ( !V_stricmp(pName, "sizens") )    return vgui::dc_sizens;
   if ( !V_stricmp(pName, "text") )      return vgui::dc_ibeam;
   if ( !V_stricmp(pName, "ibeam") )     return vgui::dc_ibeam;
+  if ( !V_stricmp(pName, "beam") )      return vgui::dc_ibeam;
+  if ( !V_stricmp(pName, "none") )      return vgui::dc_none;
+  if ( !V_stricmp(pName, "blank") )     return vgui::dc_blank;
   if ( !V_stricmp(pName, "hourglass") ) return vgui::dc_hourglass;
   if ( !V_stricmp(pName, "wait") )      return vgui::dc_hourglass;
   if ( !V_stricmp(pName, "crosshair") ) return vgui::dc_crosshair;
@@ -1355,8 +1424,8 @@ static int Panel_Remove (lua_State *L) {
 // for entities and players).  Reaching this method at all means the userdata
 // resolved to a live panel.
 static int Panel_IsValid (lua_State *L) {
-  Panel *pPanel = luaL_checkpanel(L, 1);
-  lua_pushboolean(L, pPanel != NULL && pPanel->GetVPanel() != 0);
+  Panel *pPanel = lua_topanel(L, 1);
+  lua_pushboolean(L, pPanel != NULL && pPanel->GetVPanel() != 0 && !pPanel->IsMarkedForDeletion());
   return 1;
 }
 
@@ -1415,160 +1484,66 @@ static int Panel_StringToKeyCode (lua_State *L) {
   return 1;
 }
 
+int HL2SB_LuaPanelGeometryIndex(lua_State *L) {
+  Panel *p = lua_topanel(L, 1);
+  const char *field = lua_tostring(L, 2);
+  if (!p || !field || field[1]) return 0;
+  int x, y; p->GetPos(x, y);
+  switch (*field) {
+    case 'x': lua_pushinteger(L, x); return 1;
+    case 'y': lua_pushinteger(L, y); return 1;
+    case 'w': lua_pushinteger(L, p->GetWide()); return 1;
+    case 'h': lua_pushinteger(L, p->GetTall()); return 1;
+  }
+  return 0;
+}
+
+bool HL2SB_LuaPanelGeometryWrite(lua_State *L) {
+  Panel *p = lua_topanel(L, 1);
+  const char *field = lua_tostring(L, 2);
+  if (!p || !field || !*field || field[1] || !strchr("xywh", *field)) return false;
+  int value = luaL_checkint(L, 3), x, y; p->GetPos(x, y);
+  if (*field == 'x') p->SetPos(value, y);
+  if (*field == 'y') p->SetPos(x, value);
+  if (*field == 'w') p->SetWide(value);
+  if (*field == 'h') p->SetTall(value);
+  return true;
+}
+
 static int Panel___index (lua_State *L) {
-  Panel *pPanel = lua_topanel(L, 1);
-  if (pPanel == NULL) {  /* avoid extra test when d is not 0 */
-    lua_Debug ar1;
-    lua_getstack(L, 1, &ar1);
-    lua_getinfo(L, "fl", &ar1);
-    lua_Debug ar2;
-    lua_getinfo(L, ">S", &ar2);
-	/* HL2SB: indexing a deleted panel yields nil, the way GMod's engine behaves.
-      GMod's own IsValid() (lua/includes/util.lua:314-322) is
-      `local isvalid = object.IsValid` -- and a panel that has been marked for
-      deletion reaches exactly that read.  Raising here turned every such check
-      into an error (7221 lines in one run) and blanked the Derma UI. */
-      lua_pushnil(L);
-      return 1;
+  Panel *p = lua_topanel(L, 1);
+  if (!p) { lua_pushnil(L); return 1; }
+  if (HL2SB_LuaPanelGeometryIndex(L)) return 1;
+  Panel_GetRefTable(L);
+  if (lua_istable(L, -1)) {
+    lua_pushvalue(L, 2); lua_rawget(L, -2);
+    if (!lua_isnil(L, -1)) return 1;
+    lua_pop(L, 1);
   }
-  LPanel *plPanel = dynamic_cast<LPanel *>(pPanel);
-  /* HL2SB (2026-10-06): m_nTableReference is a ref into the panel's OWN
-  ** lua_State.  A panel can outlive that state (luasrc_shutdown lua_close()s L
-  ** on every map load while parented vgui panels survive) and a panel built in
-  ** one realm can be handed to the other (vgui.GetHoveredPanel() returns
-  ** menu-realm controls to the client state).  Resolving the number in any
-  ** other registry -- or in this one after luaL_unref freed it and luaL_ref
-  ** recycled the slot -- reads some other system's value, and lua_gettable on
-  ** that raised "attempt to index a function value" from this C frame with no
-  ** file:line (the per-frame PreDrawHalos spam, 2026-10-06 engine.log).  Same
-  ** guard as BEGIN_LUA_CALL_PANEL_METHOD: only consult the table while it
-  ** belongs to the executing state and the slot still holds a table; anything
-  ** else takes the metatable fallbacks below, which is what a foreign panel
-  ** should answer anyway. */
-  bool bHaveRefTable = plPanel != NULL
-    && plPanel->m_lua_State == L
-    && lua_isrefvalid( L, plPanel->m_nTableReference );
-  if (bHaveRefTable) {
-    lua_getref(L, plPanel->m_nTableReference);
-    lua_pushvalue(L, 2);
-    lua_gettable(L, -2);
-    if (lua_isnil(L, -1)) {
-      lua_pop(L, 2);
-      lua_getmetatable(L, 1);
-      lua_pushvalue(L, 2);
-      lua_gettable(L, -2);
-
-      // HL2SB: fall back to the Panel metatable here TOO.
-      //
-      // The fallback below (in the non-LPanel branch) was added because every Panel
-      // method was unreachable there - SetPos, SetSize, SetVisible, MakePopup were
-      // all nil.  This branch has the same hole and was never given the same fix:
-      // it only ever consults the panel's OWN metatable, so as soon as a panel
-      // carries a class metatable that does not itself list the method, the read
-      // answers nil.
-      //
-      // That is the whole of the "the panel has no class" failure in the Lua spawn
-      // menu: a row built while the engine was dispatching input came back without
-      // SetText, without SetSize and without OnMousePressed - so it could be drawn
-      // but never clicked, and the next rebuild died on it.
-      if (lua_isnil(L, -1)) {
-        lua_pop(L, 2);
-        luaL_getmetatable(L, "Panel");
-        lua_pushvalue(L, 2);
-        lua_gettable(L, -2);
-      }
-    }
-  } else {
-    /* HL2SB: non-LPanel controls keep their table in the registry. */
-    luaPushPanelRefTable( L, pPanel, false );
-    if ( !lua_isnil( L, -1 ) )
-    {
-      lua_pushvalue( L, 2 );
-      lua_gettable( L, -2 );
-      if ( !lua_isnil( L, -1 ) )
-        return 1;
-      lua_pop( L, 2 );
-    }
-    else
-    {
-      lua_pop( L, 1 );
-    }
-
-    lua_getmetatable(L, 1);
-    lua_pushvalue(L, 2);
-    lua_gettable(L, -2);
-
-    // HL2SB: fall back to the Panel metatable.
-    //
-    // The branch above only runs for an LPanel.  LLabel and LTextEntry derive from
-    // vgui::Label / vgui::TextEntry instead -- that is what Experiment does, and the
-    // ported bindings follow -- so they always land here, where the lookup only ever
-    // sees their own metatable.  Every Panel method was therefore unreachable on
-    // them: GetRefTable came back nil, which broke vgui.register's
-    // `table.merge( panel:GetRefTable(), helper )` and, with it, every GMod
-    // vgui.Create.  SetPos, SetSize, SetVisible and MakePopup were nil for the same
-    // reason -- which is why a console vgui.Label(...) looked fine (GetText is a
-    // Label method) while anything touching the panel API did not.
-    if (lua_isnil(L, -1)) {
-      lua_pop(L, 2);
-      luaL_getmetatable(L, "Panel");
-      lua_pushvalue(L, 2);
-      lua_gettable(L, -2);
-    }
-  }
+  lua_pop(L, 1);
+  lua_getmetatable(L, 1);
+  lua_pushvalue(L, 2); lua_rawget(L, -2);
+  if (!lua_isnil(L, -1)) return 1;
+  lua_pop(L, 2);
+  luaL_getmetatable(L, "Panel");
+  lua_pushvalue(L, 2); lua_rawget(L, -2);
   return 1;
 }
 
 static int Panel___newindex (lua_State *L) {
-  Panel *pPanel = lua_topanel(L, 1);
-  if (pPanel == NULL) {  /* avoid extra test when d is not 0 */
-    lua_Debug ar1;
-    lua_getstack(L, 1, &ar1);
-    lua_getinfo(L, "fl", &ar1);
-    lua_Debug ar2;
-    lua_getinfo(L, ">S", &ar2);
-    /* HL2SB: indexing a deleted panel yields nil, the way GMod's engine behaves.
-      GMod's own IsValid() (lua/includes/util.lua:314-322) is
-      `local isvalid = object.IsValid` -- and a panel that has been marked for
-      deletion reaches exactly that read.  Raising here turned every such check
-      into an error (7221 lines in one run) and blanked the Derma UI. */
-      lua_pushnil(L);
-      return 1;
-  }
-  LPanel *plPanel = dynamic_cast<LPanel *>(pPanel);
-  if (plPanel) {
-    /* HL2SB (2026-10-06): see Panel___index -- the reference belongs to the
-    ** panel's own state, and a freed-then-recycled slot number must not be
-    ** written through either.  A panel from another realm silently ignores
-    ** field writes here: its fields live in that other state, so storing them
-    ** here could never be read back, and GMod has no cross-realm panel access
-    ** at all. */
-    if (plPanel->m_lua_State != L) {
-      return 0;
+  Panel *p = lua_topanel(L, 1);
+  if (!p) return 0;
+  const char *field = luaL_checkstring(L, 2);
+  if (HL2SB_LuaPanelGeometryWrite(L)) return 0;
+  Panel_GetRefTable(L);
+  if (lua_istable(L, -1)) {
+    lua_pushvalue(L, 3); lua_setfield(L, -2, field);
+    if (!Q_strcmp(field, "OnChildAdded")) {
+      lua_pushvalue(L, 3); lua_setfield(L, -2, "__hl2sb_PreparedOnChildAdded");
     }
-    if (!lua_isrefvalid( L, plPanel->m_nTableReference )) {
-      lua_newtable(L);
-      plPanel->m_nTableReference = luaL_ref(L, LUA_REGISTRYINDEX);
-    }
-    lua_getref(L, plPanel->m_nTableReference);
-    lua_pushvalue(L, 3);
-    lua_setfield(L, -2, luaL_checkstring(L, 2));
-	lua_pop(L, 1);
-    return 0;
-  } else {
-    /*
-    ** HL2SB: non-LPanel controls -- LLabel and LTextEntry -- used to raise
-    ** "attempt to index a non-scripted panel" here, so nothing could be assigned to
-    ** them at all.  Garry's Mod code assigns fields to controls constantly
-    ** (label.UpdateColours = function ... , entry.OnTextChanged = ...), so they get the
-    ** registry-backed table luaPushPanelRefTable hands out instead.
-    */
-    luaPushPanelRefTable( L, pPanel, true );
-    lua_pushvalue( L, 3 );
-    lua_setfield( L, -2, luaL_checkstring( L, 2 ) );
-    lua_pop( L, 1 );
-    return 0;
   }
+  lua_pop(L, 1);
+  return 0;
 }
 
 // HL2SB: a dying Lua handle must NOT destroy the C++ panel.
@@ -1693,6 +1668,13 @@ static int Panel_GetDockMargin (lua_State *L) {
 //=============================================================================
 static int Panel_SizeToChildren (lua_State *L) {
   luaL_checkpanel(L, 1)->SizeToChildren(lua_toboolean(L, 2) != 0, lua_toboolean(L, 3) != 0);
+  return 0;
+}
+
+static int Panel_SizeToContents (lua_State *L) {
+  Panel *panel = luaL_checkpanel(L, 1);
+  if (Label *label = dynamic_cast<Label *>(panel))
+    label->SizeToContents();
   return 0;
 }
 
@@ -1857,15 +1839,91 @@ static int Panel_GetBGColor (lua_State *L) {
 ** that actually own text show an effect.
 ** ===========================================================================
 */
+static int Panel_DrawTextEntryText (lua_State *L) {
+  if (LTextEntry *p = dynamic_cast<LTextEntry *>(luaL_checkpanel(L, 1)))
+    p->DrawNativeText(luaL_checkcolor(L, 2), luaL_checkcolor(L, 3), luaL_checkcolor(L, 4));
+  return 0;
+}
+
+static int Panel_KillFocus(lua_State *L) {
+  Panel *p = luaL_checkpanel(L, 1);
+  if (FocusNavGroup *focus = HL2SB_LuaPanelFocusGroup(p))
+    focus->SetCurrentFocus(0, 0);
+  else if (Panel *parent = p->GetParent())
+    parent->RequestFocus();
+  return 0;
+}
+
+static int Panel_NoClipping(lua_State *L) {
+  Panel_GetRefTable(L);
+  if (lua_istable(L, -1)) {
+    lua_pushboolean(L, lua_toboolean(L, 2)); lua_setfield(L, -2, "__hl2sb_NoClipping");
+  }
+  lua_pop(L, 1);
+  return 0;
+}
+
+static int Panel_SetTextSelectionColors(lua_State *L) {
+  if (TextEntry *p = dynamic_cast<TextEntry *>(luaL_checkpanel(L, 1))) {
+    p->SetSelectionTextColor(luaL_checkcolor(L, 2));
+    p->SetSelectionBgColor(luaL_checkcolor(L, 3));
+  }
+  return 0;
+}
+
+static int Panel_Prepare (lua_State *L) {
+  Panel_GetRefTable(L);
+  if (lua_istable(L, -1)) {
+    // Class tables are merged directly. Publish the child callback only after
+    // Init, so a scroll panel can create its own canvas without reparenting it.
+    lua_pushstring(L, "OnChildAdded");
+    lua_rawget(L, -2);
+    if (!lua_isfunction(L, -1)) {
+      lua_pop(L, 1);
+      lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "__hl2sb_PreparedOnChildAdded");
+  }
+  lua_pop(L, 1);
+  return 0;
+}
+
+static int Panel_SetFontInternal (lua_State *L) {
+  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
+  HFont hFont = luaL_checkfont(L, 2);
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+    pLabel->SetFont(hFont);
+  else if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
+    pEntry->SetFont(hFont);
+  return 0;
+}
+
 static int Panel_SetText (lua_State *L) {
   vgui::Panel *pPanel = luaL_checkpanel(L, 1);
   const char *pszText = luaL_checkstring(L, 2);
 
-  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+  if (Label *pLabel = dynamic_cast<Label *>(pPanel)) {
+    int top = lua_gettop(L);
+    if (pszText[0] == '#') {
+      lua_getglobal(L, "language");
+      if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "GetPhrase");
+        if (lua_isfunction(L, -1)) {
+          lua_pushstring(L, pszText);
+          if (lua_pcall(L, 1, 1, 0) == LUA_OK && lua_isstring(L, -1)) pszText = lua_tostring(L, -1);
+        }
+      }
+    }
     pLabel->SetText(pszText);
+    lua_settop(L, top);
+  }
   else if (TextEntry *pEntry = dynamic_cast<TextEntry *>(pPanel))
     pEntry->SetText(pszText);
   return 0;
+}
+
+int HL2SB_LuaPanelSetText(lua_State *L) {
+  return Panel_SetText(L);
 }
 
 static int Panel_GetText (lua_State *L) {
@@ -1894,12 +1952,32 @@ static int Panel_GetContentSize (lua_State *L) {
   return 2;
 }
 
+static int Panel_GetTextSize (lua_State *L) {
+  Label *label = dynamic_cast<Label *>(luaL_checkpanel(L, 1));
+  if (!label || !label->GetTextImage()) return 0;
+  int wide = 0, tall = 0;
+  label->GetTextImage()->GetContentSize(wide, tall);
+  lua_pushinteger(L, wide);
+  lua_pushinteger(L, tall);
+  return 2;
+}
+
+int HL2SB_LuaLabelAlignment(int alignment, bool toNative) {
+  if (toNative) {
+    if (alignment < 1 || alignment > 9) return -1;
+    return ((9 - alignment) / 3) * 3 + (alignment - 1) % 3;
+  }
+  if (alignment < 0 || alignment > 8) return 4;
+  return (2 - alignment / 3) * 3 + alignment % 3 + 1;
+}
+
 static int Panel_SetContentAlignment (lua_State *L) {
   vgui::Panel *pPanel = luaL_checkpanel(L, 1);
-  int alignment = luaL_checkint(L, 2);
+  int alignment = HL2SB_LuaLabelAlignment(luaL_checkint(L, 2), true);
 
-  if (Label *pLabel = dynamic_cast<Label *>(pPanel))
-    pLabel->SetContentAlignment((Label::Alignment)alignment);
+  if (alignment >= 0)
+    if (Label *pLabel = dynamic_cast<Label *>(pPanel))
+      pLabel->SetContentAlignment((Label::Alignment)alignment);
   return 0;
 }
 
@@ -1932,6 +2010,13 @@ static int Panel_HasParent (lua_State *L) {
   // name, and the direction GMod's own IsOurChild() relies on
   // (child:HasParent( self )).
   lua_pushboolean(L, pPanel->HasParent(luaL_checkvpanel(L, 2)));
+  return 1;
+}
+
+static int Panel_IsOurChild(lua_State *L) {
+  Panel *panel = luaL_checkpanel(L, 1);
+  Panel *child = lua_topanel(L, 2);
+  lua_pushboolean(L, child && child->HasParent(panel->GetVPanel()));
   return 1;
 }
 
@@ -2044,9 +2129,286 @@ static int Panel_FocusPrevious (lua_State *L) {
 }
 
 
+extern int luasrc_UTIL_JSONToTable(lua_State *L);
+extern int luasrc_UTIL_TableToJSON(lua_State *L);
+
+static std::string HL2SB_HTMLQuote(const char *text)
+{
+  std::string result = "\"";
+  for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+    if (*p == '\\' || *p == '"') result += '\\';
+    if (*p < 32 || *p == '<') {
+      char escaped[8]; Q_snprintf(escaped, sizeof(escaped), "\\u%04x", *p);
+      result += escaped;
+    } else result += (char)*p;
+  }
+  return result + "\"";
+}
+
+class CHL2SBLuaHTML : public vgui::HTML
+{
+  typedef vgui::HTML BaseClass;
+public:
+  lua_State *m_lua_State;
+  int m_nTableReference;
+  bool m_loading;
+  std::vector<std::string> m_bridges;
+  std::string m_tempFile;
+
+  CHL2SBLuaHTML(Panel *parent, const char *name, lua_State *state)
+    : HTML(parent, name, true), m_lua_State(state), m_loading(true)
+  {
+    luaPushPanelRefTable(state, this, true);
+    m_nTableReference = luaL_ref(state, LUA_REGISTRYINDEX);
+    HL2SB_LuaPanelTrack(this, state);
+  }
+
+  virtual ~CHL2SBLuaHTML()
+  {
+    HL2SB_LuaPanelUntrack(this);
+    if (Live()) luaDropPanelRefTable(m_lua_State, this);
+    HL2SB_LuaPanelUnref(m_lua_State, m_nTableReference);
+    if (!m_tempFile.empty()) filesystem->RemoveFile(m_tempFile.c_str(), "DEFAULT_WRITE_PATH");
+  }
+
+  bool Live() const { return m_lua_State && (m_lua_State == ::L || m_lua_State == LGameUI); }
+
+  std::string BridgeScript() const
+  {
+    std::string script =
+      "window.IN_ENGINE=true;window.__hl2sbHTMLCallbacks=window.__hl2sbHTMLCallbacks||{};"
+      "window.__hl2sbHTMLNext=window.__hl2sbHTMLNext||0;"
+      "window.__hl2sbHTMLReply=function(id,args){var cb=window.__hl2sbHTMLCallbacks[id];"
+      "delete window.__hl2sbHTMLCallbacks[id];if(cb)cb.apply(null,args||[]);};";
+    for (size_t i = 0; i < m_bridges.size(); ++i) script += m_bridges[i];
+    return script;
+  }
+
+  void AddObject(const char *name)
+  {
+    std::string key = HL2SB_HTMLQuote(name);
+    std::string script = "window[" + key + "]=window[" + key + "]||{};";
+    m_bridges.push_back(script);
+    if (!m_loading) RunJavascript(script.c_str());
+  }
+
+  void AddCallback(const char *object, const char *function)
+  {
+    std::string script = "window[" + HL2SB_HTMLQuote(object) + "][" + HL2SB_HTMLQuote(function) + "]=function(){"
+      "var args=Array.prototype.slice.call(arguments),cb=null;"
+      "if(typeof args[args.length-1]==='function')cb=args.pop();"
+      "var id=++window.__hl2sbHTMLNext;if(cb)window.__hl2sbHTMLCallbacks[id]=cb;"
+      "var f=document.createElement('iframe');f.style.display='none';"
+      "f.src='https://hl2sb.invalid/?'+encodeURIComponent(JSON.stringify([" +
+      HL2SB_HTMLQuote(object) + "," + HL2SB_HTMLQuote(function) + ",id,args]));"
+      "document.documentElement.appendChild(f);setTimeout(function(){f.remove();},1000);};";
+    m_bridges.push_back(script);
+    if (!m_loading) RunJavascript(script.c_str());
+  }
+
+  virtual bool OnStartRequest(const char *url, const char *target, const char *post, bool redirect)
+  {
+    const char *prefix = "https://hl2sb.invalid/?";
+    if (!Q_strnicmp(url, prefix, Q_strlen(prefix))) {
+      std::string data;
+      for (const char *p = url + Q_strlen(prefix); *p; ++p) {
+        if (*p == '%' && p[1] && p[2]) {
+          char hex[3] = {p[1], p[2], 0};
+          data += (char)strtol(hex, NULL, 16); p += 2;
+        } else data += *p;
+      }
+      if (Live()) {
+        lua_State *state = m_lua_State;
+        int top = lua_gettop(state);
+        lua_checkstack(state, 32);
+        lua_pushcfunction(state, luasrc_UTIL_JSONToTable);
+        lua_pushlstring(state, data.data(), data.size());
+        if (lua_pcall(state, 1, 1, 0) == LUA_OK && lua_istable(state, -1)) {
+          int message = lua_gettop(state);
+          lua_rawgeti(state, message, 3); int id = lua_tointeger(state, -1); lua_pop(state, 1);
+          lua_getref(state, m_nTableReference); lua_getfield(state, -1, "OnCallback"); lua_remove(state, -2);
+          if (lua_isfunction(state, -1)) {
+            lua_pushpanel(state, this);
+            lua_rawgeti(state, message, 1); lua_rawgeti(state, message, 2); lua_rawgeti(state, message, 4);
+            int first = lua_gettop(state) - 4;
+            if (lua_pcall(state, 4, LUA_MULTRET, 0) == LUA_OK) {
+              lua_checkstack(state, 16);
+              int count = lua_gettop(state) - first + 1;
+              lua_newtable(state);
+              for (int i = 0; i < count; ++i) { lua_pushvalue(state, first + i); lua_rawseti(state, -2, i + 1); }
+              lua_pushcfunction(state, luasrc_UTIL_TableToJSON); lua_insert(state, -2);
+              if (lua_pcall(state, 1, 1, 0) == LUA_OK && lua_isstring(state, -1)) {
+                char call[64]; Q_snprintf(call, sizeof(call), "window.__hl2sbHTMLReply(%d,", id);
+                std::string reply = std::string(call) + lua_tostring(state, -1) + ");";
+                RunJavascript(reply.c_str());
+              }
+            } else luasrc_LuaWarnMsgF("HTML callback: %s\n", lua_tostring(state, -1));
+          }
+        }
+        lua_settop(state, top);
+      }
+      return false;
+    }
+    return BaseClass::OnStartRequest(url, target, post, redirect);
+  }
+
+  virtual void OnFinishRequest(const char *url, const char *title, const CUtlMap<CUtlString, CUtlString> &headers)
+  {
+    m_loading = false;
+    RunJavascript(BridgeScript().c_str());
+    BEGIN_LUA_CALL_PANEL_METHOD("OnFinishLoadingDocument");
+      lua_pushstring(m_lua_State, url);
+    END_LUA_CALL_PANEL_METHOD(1, 0);
+    BEGIN_LUA_CALL_PANEL_METHOD("OnDocumentReady");
+      lua_pushstring(m_lua_State, url);
+    END_LUA_CALL_PANEL_METHOD(1, 0);
+  }
+
+  virtual void OnThink()
+  {
+    BaseClass::OnThink();
+    BEGIN_LUA_CALL_PANEL_METHOD("Think");
+    END_LUA_CALL_PANEL_METHOD(0, 0);
+  }
+
+  virtual void OnURLChanged(const char *url, const char *post, bool redirect)
+  {
+    BEGIN_LUA_CALL_PANEL_METHOD("OnChangeAddressBar");
+      lua_pushstring(m_lua_State, url);
+    END_LUA_CALL_PANEL_METHOD(1, 0);
+  }
+
+  virtual void OnSetHTMLTitle(const char *title)
+  {
+    BEGIN_LUA_CALL_PANEL_METHOD("OnChangeTitle");
+      lua_pushstring(m_lua_State, title);
+    END_LUA_CALL_PANEL_METHOD(1, 0);
+  }
+
+  void LoadMarkup(const char *markup)
+  {
+    m_loading = true;
+    std::string document = "<script>" + BridgeScript() + "</script>" + markup;
+    char temporary[MAX_PATH], full[MAX_PATH];
+    Q_snprintf(temporary, sizeof(temporary), "data/html/hl2sb_%p.html", this);
+    filesystem->CreateDirHierarchy("data/html", "DEFAULT_WRITE_PATH");
+    CUtlBuffer data(document.data(), document.size(), CUtlBuffer::READ_ONLY);
+    if (filesystem->WriteFile(temporary, "DEFAULT_WRITE_PATH", data) &&
+        filesystem->RelativePathToFullPath(temporary, "DEFAULT_WRITE_PATH", full, sizeof(full))) {
+      m_tempFile = temporary; V_FixSlashes(full, '/');
+      BaseClass::OpenURL((std::string("file:///") + full).c_str(), NULL);
+    }
+  }
+
+  void LoadURL(const char *url)
+  {
+    m_loading = true;
+    BEGIN_LUA_CALL_PANEL_METHOD("OnBeginLoadingDocument");
+      lua_pushstring(m_lua_State, url);
+    END_LUA_CALL_PANEL_METHOD(1, 0);
+    std::string target = url;
+    const char *asset = "asset://garrysmod/";
+    if (!Q_strnicmp(url, asset, Q_strlen(asset))) {
+      const char *relative = url + Q_strlen(asset);
+      char full[MAX_PATH];
+      if (filesystem->RelativePathToFullPath(relative, "GAME", full, sizeof(full))) {
+        CUtlBuffer data;
+        if (filesystem->ReadFile(relative, "GAME", data)) {
+          char directory[MAX_PATH]; Q_strncpy(directory, full, sizeof(directory));
+          V_StripFilename(directory); V_FixSlashes(directory, '/');
+          std::string document = "<base href=\"file:///" + std::string(directory) + "/\"><script>" + BridgeScript() + "</script>";
+          document.append((const char *)data.Base(), data.TellPut());
+          char temporary[MAX_PATH]; Q_snprintf(temporary, sizeof(temporary), "data/html/hl2sb_%p.html", this);
+          filesystem->CreateDirHierarchy("data/html", "DEFAULT_WRITE_PATH");
+          CUtlBuffer output(document.data(), document.size(), CUtlBuffer::READ_ONLY);
+          if (filesystem->WriteFile(temporary, "DEFAULT_WRITE_PATH", output) &&
+              filesystem->RelativePathToFullPath(temporary, "DEFAULT_WRITE_PATH", full, sizeof(full))) {
+            m_tempFile = temporary; V_FixSlashes(full, '/');
+            target = std::string("file:///") + full;
+          }
+        }
+      }
+    }
+    BaseClass::OpenURL(target.c_str(), NULL);
+  }
+};
+
+int HL2SB_LuaCreateHTML(lua_State *L)
+{
+  CHL2SBLuaHTML *panel = new CHL2SBLuaHTML(luaL_optpanel(L, 1, VGui_GetClientLuaRootPanel()), luaL_optstring(L, 2, "HTML"), L);
+  lua_pushpanel(L, panel);
+  return 1;
+}
+
+static int Panel_HTMLOpenURL(lua_State *L) {
+  if (CHL2SBLuaHTML *p = dynamic_cast<CHL2SBLuaHTML *>(luaL_checkpanel(L, 1))) p->LoadURL(luaL_checkstring(L, 2));
+  return 0;
+}
+static int Panel_HTMLJavascript(lua_State *L) {
+  if (HTML *p = dynamic_cast<HTML *>(luaL_checkpanel(L, 1))) p->RunJavascript(luaL_checkstring(L, 2));
+  return 0;
+}
+static int Panel_HTMLIsLoading(lua_State *L) {
+  CHL2SBLuaHTML *p = dynamic_cast<CHL2SBLuaHTML *>(luaL_checkpanel(L, 1));
+  lua_pushboolean(L, p && p->m_loading); return 1;
+}
+static int Panel_HTMLNewObject(lua_State *L) {
+  if (CHL2SBLuaHTML *p = dynamic_cast<CHL2SBLuaHTML *>(luaL_checkpanel(L, 1))) p->AddObject(luaL_checkstring(L, 2));
+  return 0;
+}
+static int Panel_HTMLNewCallback(lua_State *L) {
+  if (CHL2SBLuaHTML *p = dynamic_cast<CHL2SBLuaHTML *>(luaL_checkpanel(L, 1))) p->AddCallback(luaL_checkstring(L, 2), luaL_checkstring(L, 3));
+  return 0;
+}
+static int Panel_HTMLSetHTML(lua_State *L) {
+  if (CHL2SBLuaHTML *p = dynamic_cast<CHL2SBLuaHTML *>(luaL_checkpanel(L, 1))) p->LoadMarkup(luaL_checkstring(L, 2));
+  return 0;
+}
+static int Panel_HTMLScrollbars(lua_State *L) {
+  if (HTML *p = dynamic_cast<HTML *>(luaL_checkpanel(L, 1))) p->SetScrollbarsEnabled(lua_toboolean(L, 2));
+  return 0;
+}
+static int Panel_HTMLStop(lua_State *L) {
+  if (CHL2SBLuaHTML *p = dynamic_cast<CHL2SBLuaHTML *>(luaL_checkpanel(L, 1))) { p->StopLoading(); p->m_loading = false; }
+  return 0;
+}
+static int Panel_HTMLRefresh(lua_State *L) {
+  if (HTML *p = dynamic_cast<HTML *>(luaL_checkpanel(L, 1))) p->Refresh();
+  return 0;
+}
+static int Panel_HTMLBack(lua_State *L) {
+  if (HTML *p = dynamic_cast<HTML *>(luaL_checkpanel(L, 1))) p->GoBack();
+  return 0;
+}
+static int Panel_HTMLForward(lua_State *L) {
+  if (HTML *p = dynamic_cast<HTML *>(luaL_checkpanel(L, 1))) p->GoForward();
+  return 0;
+}
+static int Panel_HTMLUpdate(lua_State *L) {
+  if (HTML *p = dynamic_cast<HTML *>(luaL_checkpanel(L, 1))) p->Repaint();
+  return 0;
+}
+
 static const luaL_Reg Panelmeta[] = {
+  {"OpenURL", Panel_HTMLOpenURL},
+  {"RunJavascript", Panel_HTMLJavascript},
+  {"IsLoading", Panel_HTMLIsLoading},
+  {"NewObject", Panel_HTMLNewObject},
+  {"NewObjectCallback", Panel_HTMLNewCallback},
+  {"SetHTML", Panel_HTMLSetHTML},
+  {"SetScrollbarsEnabled", Panel_HTMLScrollbars},
+  {"StopLoading", Panel_HTMLStop},
+  {"Refresh", Panel_HTMLRefresh},
+  {"GoBack", Panel_HTMLBack},
+  {"GoForward", Panel_HTMLForward},
+  {"UpdateHTMLTexture", Panel_HTMLUpdate},
   // HL2SB: text family on the shared table (see the block above).
   {"GetContentSize", Panel_GetContentSize},
+  {"GetTextSize", Panel_GetTextSize},
+  {"DrawTextEntryText", Panel_DrawTextEntryText},
+  {"KillFocus", Panel_KillFocus},
+  {"NoClipping", Panel_NoClipping},
+  {"SetTextSelectionColors", Panel_SetTextSelectionColors},
   {"GetText", Panel_GetText},
   {"GetTextInset", Panel_GetTextInset},
   {"GetValue", Panel_GetText},
@@ -2056,12 +2418,14 @@ static const luaL_Reg Panelmeta[] = {
   {"HasParent", Panel_HasParent},
   {"HasHierarchicalFocus", Panel_HasHierarchicalFocus},
   {"PaintAt", Panel_PaintAt},
+  {"Prepare", Panel_Prepare},
   {"FocusPrevious", Panel_FocusPrevious},
   {"IsMultiline", Panel_IsMultiline},
   {"SelectAllText", Panel_SelectAllText},
   {"SetAllowNonAsciiCharacters", Panel_SetAllowNonAsciiCharacters},
   {"SetMultiline", Panel_SetMultiline},
   {"SetContentAlignment", Panel_SetContentAlignment},
+  {"SetFontInternal", Panel_SetFontInternal},
   {"SetText", Panel_SetText},
   {"SetTextInset", Panel_SetTextInset},
   // HL2SB (2026-09-27): GMod's shared-panel-meta names this engine lacked --
@@ -2091,6 +2455,7 @@ static const luaL_Reg Panelmeta[] = {
   {"SetDockMargin", Panel_SetDockMargin},
   {"GetDockMargin", Panel_GetDockMargin},
   {"SizeToChildren", Panel_SizeToChildren},
+  {"SizeToContents", Panel_SizeToContents},
   {"GetChildrenSize", Panel_GetChildrenSize},
   {"ChildrenSize", Panel_GetChildrenSize},
   {"InvalidateParentLayout", Panel_InvalidateParentLayout},
@@ -2198,6 +2563,9 @@ static const luaL_Reg Panelmeta[] = {
   {"IsValidKeyBindingsContext", Panel_IsValidKeyBindingsContext},
   {"IsVisible", Panel_IsVisible},
   {"IsWorldClicker", Panel_IsWorldClicker},
+  {"SetWorldClicker", Panel_SetWorldClicker},
+  {"DrawFilledRect", Panel_DrawFilledRect},
+  {"DrawOutlinedRect", Panel_DrawOutlinedRect},
   // HL2SB: GMod spells this IsHovered - DButton and DPanel call self:IsHovered()
   // throughout derma - but this fork only ever bound IsCursorOver, so every such
   // call died on a nil method.  Same function, GMod's name.
@@ -2210,6 +2578,8 @@ static const luaL_Reg Panelmeta[] = {
   {"LocalToScreen", Panel_LocalToScreen},
   {"MakePopup", Panel_MakePopup},
   {"MakeReadyForUse", Panel_MakeReadyForUse},
+  {"IsMarkedForDeletion", Panel_IsMarkedForDeletion},
+  {"IsOurChild", Panel_IsOurChild},
   {"MarkForDeletion", Panel_MarkForDeletion},
   {"MoveToBack", Panel_MoveToBack},
   {"FocusNext", Panel_FocusNext},

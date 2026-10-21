@@ -14,6 +14,9 @@
 
 // Declared before the class: LLabel::PushLuaInstanceSafe below forwards to it.
 LUA_API void lua_pushlabel ( lua_State *L, vgui::Label *pLabel );
+extern bool HL2SB_LuaPanelBeginPaint(lua_State *state, vgui::Panel *panel);
+extern void HL2SB_LuaPanelEndPaint(bool previous);
+extern void HL2SB_LuaPanelSetHovered(lua_State *state, vgui::Panel *panel, bool hovered);
 
 namespace vgui
 {
@@ -105,12 +108,15 @@ class LLabel : public Label
     */
     virtual void Paint()
     {
+        bool previousClip = HL2SB_LuaPanelBeginPaint(m_lua_State, this);
         LUA_CALL_PANEL_METHOD_BEGIN( "Paint" );
             lua_pushinteger( m_lua_State, GetWide() );
             lua_pushinteger( m_lua_State, GetTall() );
         LUA_CALL_PANEL_METHOD_END( 2, 0 );
 
+        PaintTextShadow();
         BaseClass::Paint();
+        HL2SB_LuaPanelEndPaint(previousClip);
     }
 
     virtual void PerformLayout()
@@ -135,9 +141,15 @@ class LLabel : public Label
     {
         BaseClass::OnThink();
 
-        LUA_CALL_PANEL_METHOD_BEGIN( "OnThink" );
+        const char *method = HL2SB_LuaPanelHasMethod(m_lua_State, m_nTableReference, "Think") ? "Think" : "OnThink";
+        LUA_CALL_PANEL_METHOD_BEGIN( method );
+        LUA_CALL_PANEL_METHOD_END( 0, 0 );
+        LUA_CALL_PANEL_METHOD_BEGIN( "AnimationThink" );
         LUA_CALL_PANEL_METHOD_END( 0, 0 );
     }
+
+    virtual void PostChildPaint();
+    void PaintTextShadow();
 
     virtual void OnMousePressed( MouseCode code )
     {
@@ -189,6 +201,7 @@ class LLabel : public Label
 
     virtual void OnCursorEntered()
     {
+        HL2SB_LuaPanelSetHovered(m_lua_State, this, true);
         BaseClass::OnCursorEntered();
 
         LUA_CALL_PANEL_METHOD_BEGIN( "OnCursorEntered" );
@@ -197,6 +210,7 @@ class LLabel : public Label
 
     virtual void OnCursorExited()
     {
+        HL2SB_LuaPanelSetHovered(m_lua_State, this, false);
         BaseClass::OnCursorExited();
 
         LUA_CALL_PANEL_METHOD_BEGIN( "OnCursorExited" );

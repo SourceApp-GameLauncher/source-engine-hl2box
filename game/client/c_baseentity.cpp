@@ -421,6 +421,17 @@ void RecvProxy_EffectFlags( const CRecvProxyData *pData, void *pStruct, void *pO
 	((C_BaseEntity*)pStruct)->SetEffects( pData->m_Value.m_Int );
 }
 
+#ifdef LUA_SDK
+extern void HL2SB_ReceiveSpawnEffect(C_BaseEntity *entity, bool enabled);
+extern void HL2SB_ReceiveSpawnEffectTime(C_BaseEntity *entity, float created);
+extern void HL2SB_ClearSpawnEffect(C_BaseEntity *entity);
+static void RecvProxy_SpawnEffect(const CRecvProxyData *data, void *entity, void *) {
+	HL2SB_ReceiveSpawnEffect((C_BaseEntity *)entity, data->m_Value.m_Int != 0);
+}
+static void RecvProxy_SpawnEffectTime(const CRecvProxyData *data, void *entity, void *) {
+	HL2SB_ReceiveSpawnEffectTime((C_BaseEntity *)entity, data->m_Value.m_Float);
+}
+#endif
 
 BEGIN_RECV_TABLE_NOBASE( C_BaseEntity, DT_AnimTimeMustBeFirst )
 	RecvPropInt( RECVINFO(m_flAnimTime), 0, RecvProxy_AnimTime ),
@@ -454,6 +465,10 @@ BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
 #endif
 
 	RecvPropInt(RECVINFO(m_fEffects), 0, RecvProxy_EffectFlags ),
+#ifdef LUA_SDK
+	RecvPropInt("m_bSpawnEffect", 0, sizeof(int), 0, RecvProxy_SpawnEffect),
+	RecvPropFloat("m_flSpawnEffectCreationTime", 0, sizeof(float), 0, RecvProxy_SpawnEffectTime),
+#endif
 	RecvPropInt(RECVINFO(m_nRenderMode)),
 	RecvPropInt(RECVINFO(m_nRenderFX)),
 	RecvPropInt(RECVINFO(m_clrRender)),
@@ -2603,17 +2618,6 @@ void C_BaseEntity::PostDataUpdate( DataUpdateType_t updateType )
 	PREDICTION_TRACKVALUECHANGESCOPE_ENTITY( this, "postdataupdate" );
 
 #ifdef LUA_SDK
-	// HL2SB GMod compat (2026-10-21): the reference client raises the
-	// "NetworkEntityCreated" hook when a networked entity is created; the
-	// hook is answered with the entity.  The point of creation on this side
-	// is the first data update of the entity.
-	if ( updateType == DATA_UPDATE_CREATED && L != NULL )
-	{
-		BEGIN_LUA_CALL_HOOK( "NetworkEntityCreated" );
-			lua_pushentity( L, this );
-		END_LUA_CALL_HOOK( 1, 0 );
-	}
-
 	// HL2SB: probe.  The client builds exactly one C++ class per networked entity,
 	// and a Lua nextbot has to come out of this as C_NextBotCombatCharacter --
 	// that is where the RenderGroup/DrawModel hooks live.  Every probe placed
@@ -3419,6 +3423,13 @@ void C_BaseEntity::OnDataChanged( DataUpdateType_t type )
 	if ( type == DATA_UPDATE_CREATED )
 	{
 		UpdateVisibility();
+#ifdef LUA_SDK
+		if (L != NULL) {
+			BEGIN_LUA_CALL_HOOK("NetworkEntityCreated");
+				lua_pushentity(L, this);
+			END_LUA_CALL_HOOK(1, 0);
+		}
+#endif
 	}
 }
 
@@ -5299,6 +5310,9 @@ bool HL2SB_RenderMatrix_Build( C_BaseEntity *pEntity, const matrix3x4_t *pSource
 //-----------------------------------------------------------------------------
 void C_BaseEntity::UpdateOnRemove( void )
 {
+#ifdef LUA_SDK
+	HL2SB_ClearSpawnEffect(this);
+#endif
 	VPhysicsDestroyObject(); 
 
 	Assert( !GetMoveParent() );

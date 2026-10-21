@@ -266,6 +266,19 @@ void SendProxy_Angles( const SendProp *pProp, const void *pStruct, const void *p
 	pOut->m_Vector[ 2 ] = anglemod( a->z );
 }
 
+#ifdef LUA_SDK
+extern void HL2SB_RecordEntityCreation(CBaseEntity *entity);
+extern bool HL2SB_GetSpawnEffect(CBaseEntity *entity);
+extern float HL2SB_GetSpawnEffectTime(CBaseEntity *entity);
+extern void HL2SB_ClearSpawnEffect(CBaseEntity *entity);
+static void SendProxy_SpawnEffect(const SendProp *, const void *entity, const void *, DVariant *out, int, int) {
+	out->m_Int = HL2SB_GetSpawnEffect((CBaseEntity *)entity);
+}
+static void SendProxy_SpawnEffectTime(const SendProp *, const void *entity, const void *, DVariant *out, int, int) {
+	out->m_Float = HL2SB_GetSpawnEffectTime((CBaseEntity *)entity);
+}
+#endif
+
 // This table encodes the CBaseEntity data.
 IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropDataTable( "AnimTimeMustBeFirst", 0, &REFERENCE_SEND_TABLE(DT_AnimTimeMustBeFirst), SendProxy_ClientSideAnimation ),
@@ -283,6 +296,10 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropInt		(SENDINFO(m_nRenderFX),		8, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_nRenderMode),	8, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_fEffects),		EF_MAX_BITS, SPROP_UNSIGNED),
+#ifdef LUA_SDK
+	SendPropInt("m_bSpawnEffect", 0, sizeof(int), 1, SPROP_UNSIGNED, SendProxy_SpawnEffect),
+	SendPropFloat("m_flSpawnEffectCreationTime", 0, sizeof(float), 0, SPROP_NOSCALE, 0, HIGH_DEFAULT, SendProxy_SpawnEffectTime),
+#endif
 	SendPropInt		(SENDINFO(m_clrRender),	32, SPROP_UNSIGNED),
 	SendPropInt		(SENDINFO(m_iTeamNum),		TEAMNUM_NUM_BITS, 0),
 	SendPropInt		(SENDINFO(m_CollisionGroup), 5, SPROP_UNSIGNED),
@@ -527,6 +544,9 @@ void CBaseEntity::PostConstructor( const char *szClassname )
 		}
 	}
 
+#ifdef LUA_SDK
+	HL2SB_RecordEntityCreation(this);
+#endif
 	CheckHasThinkFunction( false );
 	CheckHasGamePhysicsSimulation();
 }
@@ -2151,6 +2171,9 @@ extern bool g_bReceivedChainedUpdateOnRemove;
 //-----------------------------------------------------------------------------
 void CBaseEntity::UpdateOnRemove( void )
 {
+#ifdef LUA_SDK
+	HL2SB_ClearSpawnEffect(this);
+#endif
 	g_bReceivedChainedUpdateOnRemove = true;
 
 	// Virtual call to shut down any looping sounds.

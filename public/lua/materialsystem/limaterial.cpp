@@ -16,6 +16,8 @@
 #include "limaterial.h"
 #include "lColor.h"
 #include "mathlib/lvector.h"
+#include "filesystem.h"
+#include "tier1/KeyValues.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -365,6 +367,16 @@ static int IMaterial_SetString (lua_State *L) {
   return 0;
 }
 
+static int IMaterial_GetString (lua_State *L) {
+  IMaterial *material = luaL_checkmaterial(L, 1);
+  bool found = false;
+  IMaterialVar *value = material->FindVar(luaL_checkstring(L, 2), &found, false);
+  const char *text = found && value ? value->GetStringValue() : NULL;
+  if (text && text[0] != '<') lua_pushstring(L, text);
+  else lua_pushnil(L);
+  return 1;
+}
+
 static const luaL_Reg IMaterialmeta[] = {
   {"AddRef", IMaterial_AddRef},
   {"AlphaModulate", IMaterial_AlphaModulate},
@@ -381,6 +393,7 @@ static const luaL_Reg IMaterialmeta[] = {
   {"GetMaterialVarFlag", IMaterial_GetMaterialVarFlag},
   {"GetMorphFormat", IMaterial_GetMorphFormat},
   {"GetName", IMaterial_GetName},
+  {"GetString", IMaterial_GetString},
   {"GetNumAnimationFrames", IMaterial_GetNumAnimationFrames},
   {"GetNumPasses", IMaterial_GetNumPasses},
   {"GetPropertyFlag", IMaterial_GetPropertyFlag},
@@ -449,6 +462,46 @@ static int luasrc_Material_server_GetName (lua_State *L) {
   return 1;
 }
 
+static bool HL2SB_MaterialString(const char *path, const char *key, char *result, int size, int depth) {
+  if (depth > 8) return false;
+  char filename[MAX_PATH];
+  Q_snprintf(filename, sizeof(filename), "materials/%s", path);
+  Q_DefaultExtension(filename, ".vmt", sizeof(filename));
+  KeyValues *values = new KeyValues("Material");
+  bool found = false;
+  if (values->LoadFromFile(filesystem, filename, "GAME")) {
+    KeyValues *value = values->FindKey(key, false);
+    if (value) {
+      Q_strncpy(result, value->GetString(), size);
+      found = true;
+    } else if (!Q_stricmp(values->GetName(), "patch")) {
+      const char *include = values->GetString("include", "");
+      if (include[0]) found = HL2SB_MaterialString(include, key, result, size, depth + 1);
+      const char *sections[] = {"insert", "replace"};
+      for (int i = 0; i < ARRAYSIZE(sections); ++i) {
+        KeyValues *section = values->FindKey(sections[i], false);
+        value = section ? section->FindKey(key, false) : NULL;
+        if (value && (i == 1 || !found)) {
+          Q_strncpy(result, value->GetString(), size);
+          found = true;
+        }
+      }
+    }
+  }
+  values->deleteThis();
+  return found;
+}
+
+static int luasrc_Material_server_GetString (lua_State *L) {
+  const char *key = luaL_checkstring(L, 2);
+  lua_getfield(L, 1, "__path");
+  const char *path = lua_tostring(L, -1);
+  char result[4096];
+  if (path && HL2SB_MaterialString(path, key, result, sizeof(result), 0)) lua_pushstring(L, result);
+  else lua_pushnil(L);
+  return 1;
+}
+
 static int luasrc_Material_server_IsError (lua_State *L) {
   lua_pushboolean(L, false);
   return 1;
@@ -487,6 +540,9 @@ static int luasrc_Material_server (lua_State *L) {
 
   lua_pushcfunction(L, luasrc_Material_server_GetName);
   lua_setfield(L, -2, "GetName");
+
+  lua_pushcfunction(L, luasrc_Material_server_GetString);
+  lua_setfield(L, -2, "GetString");
 
   lua_pushcfunction(L, luasrc_Material_server_IsError);
   lua_setfield(L, -2, "IsError");
