@@ -141,81 +141,49 @@ ConVar hl2sb_physgun_beamdebug( "hl2sb_physgun_beamdebug", "0", FCVAR_NONE, "Phy
 
 IPhysicsObject *GetPhysObjFromPhysicsBone( CBaseEntity *pEntity, short physicsbone )
 {
-	if( pEntity->IsNPC() )
-	{
+	if ( pEntity == NULL || physicsbone < 0 )
+		return NULL;
+	if ( pEntity->IsNPC() )
 		return pEntity->VPhysicsGetObject();
-	}
 
-	CBaseAnimating *pModel = static_cast< CBaseAnimating * >( pEntity );
-	if ( pModel != NULL )
+	IPhysicsObject *pList[VPHYSICS_MAX_OBJECT_LIST_COUNT];
+	int count = pEntity->VPhysicsGetObjectList( pList, ARRAYSIZE( pList ) );
+	if ( physicsbone >= count || physicsbone >= ARRAYSIZE( pList ) )
+		return NULL;
+	return pList[physicsbone];
+}
+
+#ifdef CLIENT_DLL
+extern bool HL2SB_GetRagdollPhysicsBoneMatrix( C_BaseAnimating *pEntity, int physicsbone, matrix3x4_t &matrix );
+#endif
+
+bool HL2SB_PhysgunGetPhysicsBoneMatrix( CBaseEntity *pEntity, int physicsbone, matrix3x4_t &matrix )
+{
+	if ( pEntity == NULL || physicsbone < 0 || physicsbone > SHRT_MAX )
+		return false;
+#ifdef CLIENT_DLL
+	C_BaseAnimating *pAnimating = pEntity->GetBaseAnimating();
+	if ( pAnimating != NULL && HL2SB_GetRagdollPhysicsBoneMatrix( pAnimating, physicsbone, matrix ) )
+		return true;
+#endif
+	IPhysicsObject *pObject = GetPhysObjFromPhysicsBone( pEntity, (short)physicsbone );
+	if ( pObject == NULL )
 	{
-		IPhysicsObject	*pPhysicsObject = NULL;
-
-		//Find the real object we hit.
-		if( physicsbone >= 0 )
-		{
 #ifdef CLIENT_DLL
-			if ( pModel->m_pRagdoll )
-			{
-				CRagdoll *pCRagdoll = dynamic_cast < CRagdoll * > ( pModel->m_pRagdoll );
+		MatrixCopy( pEntity->EntityToWorldTransform(), matrix );
+		return true;
 #else
-				// Affect the object
-				CRagdollProp *pCRagdoll = dynamic_cast<CRagdollProp*>( pEntity );
+		return false;
 #endif
-				if ( pCRagdoll )
-				{
-					ragdoll_t *pRagdollT = pCRagdoll->GetRagdoll();
-
-					// HL2SB (2026-10-03): the trace's physicsbone is a STUDIO bone
-					// index; the ragdoll's list[] is ELEMENT-indexed and only solid
-					// bones have elements.  The old direct list[physicsbone] read was
-					// wrong twice: a finger-box hit (bone >= listCount) answered NULL
-					// and the grab fell into the teleport-drag path, which a ragdoll's
-					// physics never follows ("can't grab ragdolls"); a low bone index
-					// answered the WRONG element.  ragdoll_t.boneIndex[] is the
-					// element->bone map - walk it for the exact element, then up the
-					// studio bone parents for the nearest solid ancestor (grab a
-					// hand, hold the forearm).
-					int iElement = -1;
-					for ( int i = 0; i < pRagdollT->listCount; ++i )
-					{
-						if ( pRagdollT->boneIndex[i] == physicsbone )
-						{
-							iElement = i;
-							break;
-						}
-					}
-					if ( iElement < 0 )
-					{
-						// both realms' GetModelPtr answer a CStudioHdr*
-						CStudioHdr *pHdr = pModel->GetModelPtr();
-						int bone = physicsbone;
-						while ( pHdr != NULL && bone > 0 && iElement < 0 && pHdr->IsValid() )
-						{
-							bone = pHdr->pBone( bone )->parent;
-							for ( int i = 0; i < pRagdollT->listCount; ++i )
-							{
-								if ( pRagdollT->boneIndex[i] == bone )
-								{
-									iElement = i;
-									break;
-								}
-							}
-						}
-					}
-					if ( iElement >= 0 )
-					{
-						pPhysicsObject = pRagdollT->list[iElement].pObject;
-					}
-					return pPhysicsObject;
-				}
-#ifdef CLIENT_DLL
-			}
-#endif
-		}
 	}
+	pObject->GetPositionMatrix( &matrix );
+	return true;
+}
 
-	return pEntity->VPhysicsGetObject();
+static bool HL2SB_PhysgunIsRagdoll( CBaseEntity *pEntity )
+{
+	CBaseAnimating *pAnimating = pEntity != NULL ? pEntity->GetBaseAnimating() : NULL;
+	return pAnimating != NULL && pAnimating->IsRagdoll();
 }
 
 class CGravControllerPoint : public IMotionEvent
@@ -230,26 +198,8 @@ public:
 
 	bool UpdateObject( CBasePlayer *pPlayer, CBaseEntity *pEntity );
 
-	void SetTargetPosition( const Vector &target, const QAngle &targetOrientation )
-	{
-		m_shadow.targetPosition = target;
-		m_shadow.targetRotation = targetOrientation;
-
-		CBaseEntity *pAttached = m_attachedEntity;
-		if ( pAttached )
-		{
-			IPhysicsObject *pObj = pAttached->VPhysicsGetObject();
-
-			if ( pObj != NULL )
-			{
-				pObj->Wake();
-			}
-			else
-			{
-				DetachEntity();
-			}
-		}
-	}
+	void SetTargetPosition( const Vector &target, const QAngle &targetOrientation );
+	bool IsAttachedObjectValid( void ) const;
 	QAngle TransformAnglesToPlayerSpace( const QAngle &anglesIn, CBasePlayer *pPlayer );
 	QAngle TransformAnglesFromPlayerSpace( const QAngle &anglesIn, CBasePlayer *pPlayer );
 
@@ -267,6 +217,7 @@ public:
 	float			m_timeToArrive;
 
 	IPhysicsMotionController *m_controller;
+	IPhysicsObject *m_pAttachedObject;
 
 private:
 	hlshadowcontrol_params_t	m_shadow;
@@ -302,6 +253,12 @@ CGravControllerPoint::CGravControllerPoint( void )
 	m_shadow.maxDampAngular = m_shadow.maxAngular*2;
 	m_attachedEntity = NULL;
 	m_attachedPhysicsBone = 0;
+	m_controller = NULL;
+	m_pAttachedObject = NULL;
+	m_saveMass = -1.0f;
+	m_localPosition = vec3_origin;
+	m_targetPosition = vec3_origin;
+	m_targetRotation = vec3_angle;
 }
 
 CGravControllerPoint::~CGravControllerPoint( void )
@@ -327,71 +284,74 @@ QAngle CGravControllerPoint::TransformAnglesFromPlayerSpace( const QAngle &angle
 	return TransformAnglesToWorldSpace( anglesIn, test );
 }
 
+bool CGravControllerPoint::IsAttachedObjectValid( void ) const
+{
+	return m_pAttachedObject != NULL &&
+		GetPhysObjFromPhysicsBone( m_attachedEntity, m_attachedPhysicsBone ) == m_pAttachedObject;
+}
+
+void CGravControllerPoint::SetTargetPosition( const Vector &target, const QAngle &targetOrientation )
+{
+	if ( !IsAttachedObjectValid() || !target.IsValid() || !targetOrientation.IsValid() )
+		return;
+
+	Vector worldGrab, origin;
+	m_pAttachedObject->LocalToWorld( &worldGrab, m_localPosition );
+	m_pAttachedObject->GetPosition( &origin, NULL );
+	m_targetPosition = target;
+	m_shadow.targetPosition = target - ( worldGrab - origin );
+	m_shadow.targetRotation = targetOrientation;
+	m_pAttachedObject->Wake();
+}
+
 void CGravControllerPoint::AttachEntity( CBasePlayer *pPlayer, CBaseEntity *pEntity, IPhysicsObject *pPhys, short physicsbone, const Vector &vGrabPosition )
 {
+	DetachEntity();
 	m_attachedEntity = pEntity;
 	m_attachedPhysicsBone = physicsbone;
+	m_pAttachedObject = pPhys;
 	pPhys->WorldToLocal( &m_localPosition, vGrabPosition );
 	m_worldPosition = vGrabPosition;
-	pPhys->GetDamping( NULL, &m_saveDamping );
 	m_saveMass = pPhys->GetMass();
-	float damping = 2;
-	pPhys->SetDamping( NULL, &damping );
 
-	// GMod reference: set mass to 45678.0f to prevent controller droop and oscillation.
-	// Vehicles (prop_vehicle_jeep or any server vehicle) preserve their native mass (savedMass = -1).
-	bool bIsVehicle = false;
-#ifndef CLIENT_DLL
-	if ( pEntity && ( FClassnameIs( pEntity, "prop_vehicle_jeep" ) || pEntity->GetServerVehicle() != NULL ) )
-		bIsVehicle = true;
-#else
-	if ( pEntity && FClassnameIs( pEntity, "prop_vehicle_jeep" ) )
-		bIsVehicle = true;
-#endif
-	if ( bIsVehicle )
-	{
+	// Preserve ragdoll body masses and existing heavy or vehicle bodies.
+	bool bPreserveMass = HL2SB_PhysgunIsRagdoll( pEntity ) || m_saveMass > 45678.0f ||
+		FClassnameIs( pEntity, "prop_vehicle_jeep" ) ||
+		FClassnameIs( pEntity, "prop_vehicle_apc" ) ||
+		FClassnameIs( pEntity, "prop_vehicle_jeep_old" );
+	if ( bPreserveMass )
 		m_saveMass = -1.0f;
-	}
-	else
-	{
+	else if ( m_saveMass != 45678.0f )
 		pPhys->SetMass( 45678.0f );
-	}
 
+	pPhys->EnableMotion( true );
+	pPhys->Wake();
 	m_controller = physenv->CreateMotionController( this );
 	m_controller->AttachObject( pPhys, true );
-	Vector position;
+	m_controller->SetPriority( IPhysicsMotionController::HIGH_PRIORITY );
 	QAngle angles;
-	pPhys->GetPosition( &position, &angles );
+	pPhys->GetPosition( NULL, &angles );
 	SetTargetPosition( vGrabPosition, angles );
 	m_targetRotation = TransformAnglesToPlayerSpace( angles, pPlayer );
 }
 
 void CGravControllerPoint::DetachEntity( void )
 {
-	CBaseEntity *pEntity = m_attachedEntity;
-	if ( pEntity )
+	// A rebuilt ragdoll can reuse the same element number for a different body.
+	// Never restore mass through a pointer that is no longer in that slot.
+	if ( IsAttachedObjectValid() )
 	{
-		IPhysicsObject *pPhys = GetPhysObjFromPhysicsBone( pEntity, m_attachedPhysicsBone );
-		if ( pPhys )
-		{
-			// on the odd chance that it's gone to sleep while under anti-gravity
-			pPhys->Wake();
-			pPhys->SetDamping( NULL, &m_saveDamping );
-			if ( m_saveMass > 0.0f )
-			{
-				pPhys->SetMass( m_saveMass );
-			}
-		}
+		m_pAttachedObject->Wake();
+		if ( m_saveMass > 0.0f && m_saveMass != 45678.0f )
+			m_pAttachedObject->SetMass( m_saveMass );
 	}
+	if ( physenv != NULL && m_controller != NULL )
+		physenv->DestroyMotionController( m_controller );
+	m_controller = NULL;
+	m_pAttachedObject = NULL;
 	m_attachedEntity = NULL;
 	m_attachedPhysicsBone = 0;
-	if ( physenv )
-	{
-		physenv->DestroyMotionController( m_controller );
-	}
-	m_controller = NULL;
-
-	// UNDONE: Does this help the networking?
+	m_saveMass = -1.0f;
 	m_targetPosition = vec3_origin;
 	m_worldPosition = vec3_origin;
 }
@@ -406,6 +366,12 @@ void AxisAngleQAngle( const Vector &axis, float angle, QAngle &outAngles )
 
 IMotionEvent::simresult_e CGravControllerPoint::Simulate( IPhysicsMotionController *pController, IPhysicsObject *pObject, float deltaTime, Vector &linear, AngularImpulse &angular )
 {
+	linear.Init();
+	angular.Init();
+	if ( !IsAttachedObjectValid() || pObject != m_pAttachedObject ||
+		!m_shadow.targetPosition.IsValid() || !m_shadow.targetRotation.IsValid() ||
+		!IsFinite( deltaTime ) || deltaTime <= 0.0f )
+		return SIM_NOTHING;
 	hlshadowcontrol_params_t shadowParams = m_shadow;
 #ifndef CLIENT_DLL
 	// HL2SB GMod compat: the controller follows the physgun_* convars every
@@ -617,6 +583,7 @@ public:
 private:
 	CNetworkVar( int, m_active );
 	bool		m_useDown;
+	bool		m_bDetaching;
 	// HL2SB GMod compat: RMB freeze releases the object; while LMB is STILL
 	// held this latch stops the per-frame scan from instantly re-grabbing the
 	// just-frozen body (AttachObject unfreezes on grab, so the re-grab made
@@ -662,6 +629,28 @@ private:
 
 	DECLARE_ACTTABLE();
 };
+
+#ifndef CLIENT_DLL
+extern bool PlayerPickupControllerIsHoldingEntity( CBaseEntity *pController, CBaseEntity *pEntity );
+extern CBaseEntity *PhysCannonGetHeldEntity( CBaseCombatWeapon *pWeapon );
+
+static bool HL2SB_PhysgunHeldByOtherPlayer( CBaseEntity *pEntity, CBasePlayer *pOwner )
+{
+	for ( int i = 1; i <= gpGlobals->maxClients; ++i )
+	{
+		CBasePlayer *pOther = UTIL_PlayerByIndex( i );
+		if ( pOther == NULL || pOther == pOwner )
+			continue;
+		if ( PlayerPickupControllerIsHoldingEntity( pOther->GetUseEntity(), pEntity ) ||
+			PhysCannonGetHeldEntity( pOther->GetActiveWeapon() ) == pEntity )
+			return true;
+		CWeaponGravityGun *pGun = dynamic_cast<CWeaponGravityGun *>( pOther->GetActiveWeapon() );
+		if ( pGun != NULL && pGun->GetHeldEntity() == pEntity )
+			return true;
+	}
+	return false;
+}
+#endif
 
 IMPLEMENT_NETWORKCLASS_ALIASED( WeaponGravityGun, DT_WeaponGravityGun )
 
@@ -782,6 +771,7 @@ CWeaponGravityGun::CWeaponGravityGun()
 	m_bInWeapon1 = false;
 	m_bInWeapon2 = false;
 	m_bFreezeReleaseLatch = false;
+	m_bDetaching = false;
 #ifndef CLIENT_DLL
 	m_flLastReloadPress = 0.0f;
 	m_bDraggingNPC = false;
@@ -819,14 +809,7 @@ void CWeaponGravityGun::UpdateOnRemove(void)
 // want to add an angles modifier key
 bool CGravControllerPoint::UpdateObject( CBasePlayer *pPlayer, CBaseEntity *pEntity )
 {
-	IPhysicsObject *pPhysics = GetPhysObjFromPhysicsBone( pEntity, m_attachedPhysicsBone );
-	if ( !pEntity || !pPhysics )
-	{
-		return false;
-	}
-	SetTargetPosition( m_targetPosition, m_targetRotation );
-
-	return true;
+	return pEntity != NULL && IsAttachedObjectValid();
 }
 
 //=========================================================
@@ -856,6 +839,7 @@ void CWeaponGravityGun::OnRestore( void )
 
 	if ( m_gravCallback.m_controller )
 	{
+		m_gravCallback.m_pAttachedObject = GetPhysObjFromPhysicsBone( m_hObject, m_physicsBone );
 		m_gravCallback.m_controller->SetEventHandler( &m_gravCallback );
 	}
 }
@@ -1117,6 +1101,7 @@ void CWeaponGravityGun::EffectUpdate( void )
 		QAngle angles = m_gravCallback.TransformAnglesFromPlayerSpace( m_gravCallback.m_targetRotation, pOwner );
 #endif
 
+#ifndef CLIENT_DLL
 		// HL2SB (2026-09-26): GMod pushes/pulls at a CONSTANT 100 u/s toward
 		// physgun_maxrange / physgun_minrange while E is held (reference:
 		// Approach(maxrange, dist, frametime*100) -- the old exponential
@@ -1149,10 +1134,6 @@ void CWeaponGravityGun::EffectUpdate( void )
 			}
 
 			Vector newPosition = start + forward * m_distance;
-			Vector offset;
-			pPhys->LocalToWorld( &offset, m_worldPosition );
-			Vector vecOrigin;
-			pPhys->GetPosition( &vecOrigin, NULL );
 			// HL2SB (2026-10-03, server-side reference correction): the sweep
 			// gate (the 0x400B trace cluster) exists ONLY on the teleport-drag
 			// path (NPCs / body-less script ents).  A physics object rides the
@@ -1164,6 +1145,7 @@ void CWeaponGravityGun::EffectUpdate( void )
 			Vector dir = (newPosition - pObject->GetLocalOrigin());
 			m_movementLength = dir.Length();
 		}
+#endif
 	}
 	else
 	{
@@ -1362,7 +1344,10 @@ void CWeaponGravityGun::UpdateObject( void )
 
 	CBaseEntity *pObject = m_hObject;
 	if ( !pObject )
+	{
+		m_gravCallback.DetachEntity();
 		return;
+	}
 
 	// HL2SB (2026-10-03): teleport-drive targets (NPCs, nextbots, brush
 	// models, body-less script ents) have NO shadow controller - the drive
@@ -1386,58 +1371,63 @@ void CWeaponGravityGun::UpdateObject( void )
 
 void CWeaponGravityGun::DetachObject( void )
 {
-	if ( m_hObject )
-	{
+	if ( m_bDetaching )
+		return;
+	m_bDetaching = true;
+	CBaseEntity *pObject = m_hObject;
 #ifndef CLIENT_DLL
-		CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-
-		// HL2SB GMod compat: GM:PhysgunDrop( ply, ent )
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	if ( pObject != NULL )
+	{
 		if ( L != NULL && pOwner != NULL )
 		{
 			BEGIN_LUA_CALL_HOOK( "PhysgunDrop" );
 				lua_pushplayer( L, pOwner );
-				lua_pushentity( L, m_hObject );
+				lua_pushentity( L, pObject );
 			END_LUA_CALL_HOOK( 2, 0 );
 		}
-
-		Pickup_OnPhysGunDrop( m_hObject, pOwner, DROPPED_BY_CANNON );
-
-		m_bDraggingNPC = false;
+		if ( m_hObject.Get() != NULL )
+			Pickup_OnPhysGunDrop( m_hObject, pOwner, DROPPED_BY_CANNON );
+	}
+	m_bDraggingNPC = false;
+	if ( pOwner != NULL )
+		pOwner->SetPhysicsFlag( PFLAG_DIROVERRIDE, false );
 #endif
-
-		IPhysicsObject *pList[VPHYSICS_MAX_OBJECT_LIST_COUNT];
-		int count = m_hObject->VPhysicsGetObjectList( pList, ARRAYSIZE(pList) );
-		for ( int i = 0; i < count; i++ )
-		{
-			PhysClearGameFlags( pList[i], FVPHYSICS_PLAYER_HELD );
-		}
-		m_gravCallback.DetachEntity();
-		m_hObject = NULL;
-		m_physicsBone = 0;
-
 
 #ifndef CLIENT_DLL
-	// HL2SB (2026-10-03): the beam entity goes dark with the hold.
-	if ( m_hBeam != NULL )
+	if ( m_hObject.Get() != NULL && !HL2SB_PhysgunHeldByOtherPlayer( m_hObject, pOwner ) )
 	{
-		CPhysBeam *pBeam = dynamic_cast< CPhysBeam * >( (CBaseEntity *)m_hBeam );
-		if ( pBeam != NULL )
-			pBeam->TurnOff();
+		if ( m_gravCallback.IsAttachedObjectValid() )
+			PhysClearGameFlags( m_gravCallback.m_pAttachedObject, FVPHYSICS_PLAYER_HELD );
 	}
 #endif
-	}
+	m_gravCallback.DetachEntity();
+	m_hObject = NULL;
+	m_physicsBone = 0;
+	m_vecHoldPos = vec3_origin;
+#ifndef CLIENT_DLL
+	CPhysBeam *pBeam = dynamic_cast<CPhysBeam *>( (CBaseEntity *)m_hBeam );
+	if ( pBeam != NULL )
+		pBeam->TurnOff();
+#endif
+	m_bDetaching = false;
 }
 
 void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhysics, short physicsbone, const Vector& start, const Vector &end, float distance )
 {
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-	if( !pOwner )
+	if ( pOwner == NULL || pObject == NULL || m_bDetaching )
 		return;
-	m_hObject = pObject;
-	m_physicsBone = physicsbone;
+	if ( m_hObject != NULL || m_gravCallback.m_controller != NULL || m_gravCallback.m_pAttachedObject != NULL )
+		DetachObject();
+	m_physicsBone = 0;
+	m_vecHoldPos = vec3_origin;
 	m_useDown = false;
 
 #ifndef CLIENT_DLL
+	m_bDraggingNPC = false;
+	m_heldWorldAngles = vec3_angle;
+	m_vecGrabOffset = vec3_origin;
 	// HL2SB GMod compat: the gamemode rules live in GM:PhysgunPickup( ply, ent ).
 	// GMod contract: literal false vetoes, literal true force-allows (that is
 	// how gamemodes allow grabbing PLAYERS), nil keeps the physgun's own rules
@@ -1495,7 +1485,7 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 	// 2) 或者属于真 NPC / NextBot（通过 IsNPC 或 MyNPCPointer 判断）；
 	// 3) 或者属于被 gamemode 显式放行的玩家。
 	bool bHasBody = ( pPhysics != NULL && pObject->GetMoveType() == MOVETYPE_VPHYSICS );
-	bool bIsNPC = pObject->IsNPC() || ( pObject->MyNPCPointer() != NULL );
+	bool bIsNPC = pObject->IsNPC() || pObject->MyNPCPointer() != NULL || pObject->MyNextBotPointer() != NULL;
 	bool bIsPlayer = pObject->IsPlayer();
 
 	if ( !bHasBody && !bIsNPC && !bIsPlayer )
@@ -1512,22 +1502,13 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 	// GMod style: the held object keeps its WORLD orientation, E+mouse rotates
 	m_heldWorldAngles = pObject->GetAbsAngles();
 
-	// GM:GetPreferredCarryAngles( ent, ply ) -> Angle|nil -- a non-nil result
-	// is the pose the object snaps to while carried.
-	if ( L != NULL )
+	if ( !m_heldWorldAngles.IsValid() || !end.IsValid() )
 	{
-		BEGIN_LUA_CALL_HOOK( "GetPreferredCarryAngles" );
-			lua_pushentity( L, pObject );
-			lua_pushplayer( L, pOwner );
-		END_LUA_CALL_HOOK( 2, 1 );
-
-		if ( lua_gettop( L ) > 0 )
-		{
-			if ( !lua_isnil( L, -1 ) )
-				m_heldWorldAngles = lua_toangle( L, -1 );
-			lua_pop( L, 1 );
-		}
+		m_bDraggingNPC = false;
+		return;
 	}
+	m_hObject = pObject;
+	m_physicsBone = physicsbone;
 #endif
 
 #ifndef CLIENT_DLL
@@ -1563,55 +1544,51 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 	}
 #endif
 
+#ifdef CLIENT_DLL
+	matrix3x4_t bodyToWorld;
+	m_hObject = pObject;
+	m_physicsBone = physicsbone;
+	m_distance = distance;
+	if ( pObject->GetMoveType() == MOVETYPE_VPHYSICS &&
+		HL2SB_PhysgunGetPhysicsBoneMatrix( pObject, physicsbone, bodyToWorld ) )
+	{
+		VectorITransform( end, bodyToWorld, m_vecHoldPos.GetForModify() );
+		return;
+	}
+	if ( pObject->IsNPC() || pObject->IsNextBot() )
+	{
+		pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
+		return;
+	}
+	m_hObject = NULL;
+	m_physicsBone = 0;
+	return;
+#else
 	if ( pPhysics && pObject->GetMoveType() == MOVETYPE_VPHYSICS )
 	{
 		m_distance = distance;
-
-		// GMod: grabbing a frozen object drags it (and unfreezes it while
-		// held; RMB re-freezes on release-in-place)
-		if ( !pPhysics->IsMoveable() )
-			pPhysics->EnableMotion( true );
 
 		Vector worldPosition;
 		pPhysics->WorldToLocal( &worldPosition, end );
 		m_worldPosition = worldPosition;
 
-		// HL2SB GMod compat: 抓取点统一以实体自身局部坐标系存储（对于多骨骼 ragdoll 走对应骨骼），
-		// 客户端渲染时用同规则反变换，端点将 100% 咬死在模型点击表面，绝不跳变或偏移。
-		if ( pObject->GetMoveType() == MOVETYPE_VPHYSICS && physicsbone > 0 )
-		{
-			CBaseAnimating *pAnim = pObject->GetBaseAnimating();
-			CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
-			if ( pHdr != NULL && pHdr->IsValid() && physicsbone < pHdr->numbones() )
-			{
-				matrix3x4_t boneMatrix;
-				pAnim->GetBoneTransform( physicsbone, boneMatrix );
-				VectorITransform( end, boneMatrix, m_vecHoldPos.GetForModify() );
-			}
-			else
-			{
-				pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
-			}
-		}
-		else
-		{
-			pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
-		}
+		m_vecHoldPos = worldPosition;
 		Vector vecOrigin;
-		pPhysics->GetPosition( &vecOrigin, NULL );
-		m_gravCallback.AttachEntity( pOwner, pObject, pPhysics, physicsbone, vecOrigin );
+		pPhysics->GetPosition( &vecOrigin, &m_heldWorldAngles );
+		if ( !vecOrigin.IsValid() || !m_heldWorldAngles.IsValid() || !worldPosition.IsValid() )
+		{
+			m_hObject = NULL;
+			m_physicsBone = 0;
+			m_vecHoldPos = vec3_origin;
+			return;
+		}
+		m_gravCallback.AttachEntity( pOwner, pObject, pPhysics, physicsbone, end );
 
 		m_originalObjectPosition = vecOrigin;
 
 		pPhysics->Wake();
-		IPhysicsObject *pList[VPHYSICS_MAX_OBJECT_LIST_COUNT];
-		int count = pObject->VPhysicsGetObjectList( pList, ARRAYSIZE(pList) );
-		for ( int i = 0; i < count; i++ )
-		{
-			PhysSetGameFlags( pList[i], FVPHYSICS_PLAYER_HELD );
-		}
+		PhysSetGameFlags( pPhysics, FVPHYSICS_PLAYER_HELD );
 
-#ifndef CLIENT_DLL
 		Pickup_OnPhysGunPickup( pObject, pOwner );
 
 		// GM:OnPhysgunPickup( ply, ent ) -- fired after a SUCCESSFUL pickup
@@ -1622,14 +1599,13 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 				lua_pushentity( L, pObject );
 			END_LUA_CALL_HOOK( 2, 0 );
 		}
-#endif
-
 	}
 	else
 	{
 		m_hObject = NULL;
 		m_physicsBone = 0;
 	}
+#endif
 }
 
 //=========================================================
@@ -1670,66 +1646,26 @@ void CWeaponGravityGun::PlayAttackAnimation( void )
 
 void CWeaponGravityGun::SecondaryAttack( void )
 {
-#ifdef CLIENT_DLL
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 	if ( pOwner == NULL || !m_hObject.Get() || m_flNextSecondaryAttack > gpGlobals->curtime )
 		return;
-
 	m_flNextPrimaryAttack = gpGlobals->curtime + 0.5f;
 	m_flNextSecondaryAttack = gpGlobals->curtime + 0.5f;
-	PlayAttackAnimation();
-#else
-	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-	if ( !pOwner || !m_hObject.Get() )
-		return;
-
-	// GMod slot 332: 0.5s attack gate
-	if ( m_flNextSecondaryAttack > gpGlobals->curtime )
-		return;
-
-	m_flNextPrimaryAttack = gpGlobals->curtime + 0.5f;
-	m_flNextSecondaryAttack = gpGlobals->curtime + 0.5f;
-
-	CBaseEntity *pObject = m_hObject.Get();
-	if ( m_bDraggingNPC )
+#ifndef CLIENT_DLL
+	if ( L != NULL )
 	{
-		// a dragged NPC has no physics body to freeze - RMB just drops it
-		DetachObject();
-		EffectDestroy();
-		SoundDestroy();
-		return;
-	}
-
-	IPhysicsObject *pPhys = GetPhysObjFromPhysicsBone( pObject, m_physicsBone );
-	if ( pPhys != NULL )
-	{
-		bool bFreezeBlocked = false;
-		if ( L != NULL )
-		{
-			BEGIN_LUA_CALL_HOOK( "OnPhysgunFreeze" );
-				lua_pushentity( L, this );
-				lua_pushphysicsobject( L, pPhys );
-				lua_pushentity( L, pObject );
-				lua_pushplayer( L, pOwner );
-			END_LUA_CALL_HOOK( 4, 1 );
-
-			if ( lua_gettop( L ) > 0 )
-			{
-				bFreezeBlocked = !lua_isnil( L, -1 );
-				lua_pop( L, 1 );
-			}
-		}
-
-		if ( !bFreezeBlocked )
-		{
-			pPhys->EnableMotion( false );
-			PlayAttackAnimation();
-			m_bFreezeReleaseLatch = true;
-			HL2SB_PlayerAddFrozenObject( pOwner, pObject, pPhys );
-			DetachObject();
-		}
+		IPhysicsObject *pPhys = m_bDraggingNPC ? NULL : GetPhysObjFromPhysicsBone( m_hObject, m_physicsBone );
+		BEGIN_LUA_CALL_HOOK( "OnPhysgunFreeze" );
+			lua_pushentity( L, this );
+			lua_pushphysicsobject( L, pPhys );
+			lua_pushentity( L, m_hObject );
+			lua_pushplayer( L, pOwner );
+		END_LUA_CALL_HOOK( 4, 0 );
 	}
 #endif
+	PlayAttackAnimation();
+	m_bFreezeReleaseLatch = true;
+	DetachObject();
 }
 
 #ifdef CLIENT_DLL
@@ -1872,20 +1808,13 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 	Vector vecEnd;
 	if ( pTarget != NULL )
 	{
-		if ( pTarget->GetMoveType() == MOVETYPE_VPHYSICS && m_physicsBone > 0 )
+		if ( pTarget->GetMoveType() == MOVETYPE_VPHYSICS )
 		{
-			C_BaseAnimating *pAnim = pTarget->GetBaseAnimating();
-			CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
-			if ( pHdr != NULL && pHdr->IsValid() && m_physicsBone < pHdr->numbones() )
-			{
-				matrix3x4_t boneMatrix;
-				pAnim->GetBoneTransform( m_physicsBone, boneMatrix );
-				VectorTransform( m_vecHoldPos, boneMatrix, vecEnd );
-			}
+			matrix3x4_t bodyToWorld;
+			if ( HL2SB_PhysgunGetPhysicsBoneMatrix( pTarget, m_physicsBone, bodyToWorld ) )
+				VectorTransform( m_vecHoldPos, bodyToWorld, vecEnd );
 			else
-			{
 				pTarget->EntityToWorldSpace( m_vecHoldPos, &vecEnd );
-			}
 		}
 		else
 		{
@@ -2115,6 +2044,7 @@ void CWeaponGravityGun::ItemPostFrame( void )
 		return;
 
 #ifndef CLIENT_DLL
+	pOwner->SetPhysicsFlag( PFLAG_DIROVERRIDE, m_hObject != NULL && ( pOwner->m_nButtons & IN_USE ) != 0 );
 	// HL2SB (2026-10-03): the beam entity exists from deploy (the reference
 	// creates it on its holster/deploy path), so the idle claw glow shows as
 	// soon as the gun is out - not only after the first grab.
@@ -2193,6 +2123,15 @@ bool HL2SB_PhysgunServerIsHolding( CBasePlayer *pPlayer )
 		return false;
 	CWeaponGravityGun *pGun = dynamic_cast< CWeaponGravityGun * >( pWpn );
 	return pGun != NULL && pGun->IsHolding();
+}
+#endif
+
+#ifndef CLIENT_DLL
+void HL2SB_PhysgunForceDrop( CBaseCombatWeapon *pWeapon, CBaseEntity *pOnlyIfHoldingThis )
+{
+	CWeaponGravityGun *pGun = dynamic_cast<CWeaponGravityGun *>( pWeapon );
+	if ( pGun != NULL && ( pOnlyIfHoldingThis == NULL || pGun->GetHeldEntity() == pOnlyIfHoldingThis ) )
+		pGun->EffectDestroy();
 }
 #endif
 

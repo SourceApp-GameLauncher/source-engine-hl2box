@@ -2700,19 +2700,11 @@ static int CBasePlayer_PickupObject (lua_State *L) {
   return 0;
 }
 
-// Player:DropObject( ent ) -- release ent if this player is +use-carrying it.
-// (The reference also drops physgun-held entities here; this engine's physgun
-// carry lives on a different weapon class with no drop entry point.)
-extern bool PlayerPickupControllerIsHoldingEntity( CBaseEntity *pPickupController, CBaseEntity *pHeldEntity );
+// Player:DropObject uses the same deferred drop path as engine callers.
 static int CBasePlayer_DropObject (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
   CBaseEntity *pEnt = luaL_checkentity(L, 2);
-  CBaseEntity *pUse = pPlayer->GetUseEntity();
-  if ( pUse != NULL && pUse->ClassMatches( "player_pickup" ) &&
-       PlayerPickupControllerIsHoldingEntity( pUse, pEnt ) )
-  {
-    pUse->Use( pPlayer, pUse, USE_OFF, 0 );
-  }
+  pPlayer->ForceDropOfCarriedPhysObjects( pEnt );
   return 0;
 }
 

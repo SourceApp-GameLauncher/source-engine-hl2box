@@ -123,7 +123,7 @@ static int CGameTrace___index (lua_State *L) {
     lua_pushinteger(L, tr.hitgroup);
   else if (Q_strcmp(field, "m_pEnt") == 0)
     lua_pushentity(L, tr.m_pEnt);
-  else if (Q_strcmp(field, "physicsbone") == 0)
+  else if (Q_strcmp(field, "physicsbone") == 0 || Q_strcmp(field, "PhysicsBone") == 0)
     lua_pushinteger(L, tr.physicsbone);
   else if (Q_strcmp(field, "startpos") == 0)
     lua_pushvector(L, tr.startpos);
@@ -308,7 +308,7 @@ static int CGameTrace___newindex (lua_State *L) {
     luaL_checktrace(L, 1).hitgroup = luaL_checkint(L, 3);
   else if (Q_strcmp(field, "m_pEnt") == 0)
     luaL_checktrace(L, 1).m_pEnt = lua_toentity(L, 3);
-  else if (Q_strcmp(field, "physicsbone") == 0)
+  else if (Q_strcmp(field, "physicsbone") == 0 || Q_strcmp(field, "PhysicsBone") == 0)
     luaL_checktrace(L, 1).physicsbone = luaL_checkint(L, 3);
   else if (Q_strcmp(field, "startpos") == 0)
     luaL_checktrace(L, 1).startpos = luaL_checkvector(L, 3);

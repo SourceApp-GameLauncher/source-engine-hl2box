@@ -1904,10 +1904,20 @@ static int CBaseAnimating_SetSequence (lua_State *L) {
 // index a physics bone is attached to (wiki).  The mapping lives in the studio
 // bone table (mstudiobone_t::physicsbone); no match answers -1.
 //-----------------------------------------------------------------------------
+extern int HL2SB_RagdollPhysicsBoneToBone( C_BaseAnimating *pEntity, int physicsbone );
 static int CBaseAnimating_TranslatePhysBoneToBone (lua_State *L) {
   C_BaseAnimating *pEntity = luaL_checkanimating( L, 1 );
   int nPhysBone = luaL_checkint( L, 2 );
 
+  if ( nPhysBone < 0 ) {
+    lua_pushinteger( L, -1 );
+    return 1;
+  }
+  int ragdollBone = HL2SB_RagdollPhysicsBoneToBone( pEntity, nPhysBone );
+  if ( ragdollBone != -2 ) {
+    lua_pushinteger( L, ragdollBone );
+    return 1;
+  }
   CStudioHdr *pStudioHdr = pEntity->GetModelPtr();
   if ( pStudioHdr != NULL ) {
     for ( int i = 0; i < pStudioHdr->numbones(); i++ ) {

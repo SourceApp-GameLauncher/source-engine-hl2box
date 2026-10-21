@@ -35,6 +35,7 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+extern bool HL2SB_PhysgunGetPhysicsBoneMatrix( C_BaseEntity *pEntity, int physicsbone, matrix3x4_t &matrix );
 extern ConVar physgun_drawbeams;
 extern ConVar physgun_maxrange;
 extern ConVar hl2sb_physgun_beamdebug;	// HL2SB (2026-10-03): defined in weapon_physgun.cpp
@@ -258,24 +259,14 @@ int C_PhysBeam::DrawModel( int flags )
 
 	if ( pTarget != NULL )
 	{
-		bBoneTarget = ( m_iPhysBone > 0 );
-
-		if ( pTarget->GetAbsAngles() == vec3_angle )
+		bBoneTarget = true;
+		if ( pTarget->GetMoveType() == MOVETYPE_VPHYSICS )
 		{
-			vecEnd = pTarget->GetAbsOrigin() + m_HoldPos;
-		}
-		else if ( pTarget->GetMoveType() == MOVETYPE_VPHYSICS )
-		{
-			C_BaseAnimating *pAnim = static_cast< C_BaseAnimating * >( pTarget );
-			CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
-			if ( pHdr != NULL && pHdr->IsValid() && m_iPhysBone >= 0 && m_iPhysBone < pHdr->numbones() )
-			{
-				VectorTransform( m_HoldPos, pAnim->GetBone( m_iPhysBone ), vecEnd );
-			}
+			matrix3x4_t bodyToWorld;
+			if ( HL2SB_PhysgunGetPhysicsBoneMatrix( pTarget, m_iPhysBone, bodyToWorld ) )
+				VectorTransform( m_HoldPos, bodyToWorld, vecEnd );
 			else
-			{
 				pTarget->EntityToWorldSpace( m_HoldPos, &vecEnd );
-			}
 		}
 		else
 		{

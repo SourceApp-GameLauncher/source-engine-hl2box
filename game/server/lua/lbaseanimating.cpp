@@ -540,6 +540,16 @@ static int CBaseAnimating_TranslatePhysBoneToBone (lua_State *L) {
   CBaseAnimating *pEntity = luaL_checkanimating( L, 1 );
   int nPhysBone = luaL_checkint( L, 2 );
 
+  if ( nPhysBone < 0 ) {
+    lua_pushinteger( L, -1 );
+    return 1;
+  }
+  CRagdollProp *pRagdoll = dynamic_cast<CRagdollProp *>( pEntity );
+  if ( pRagdoll != NULL ) {
+    ragdoll_t *pData = pRagdoll->GetRagdoll();
+    lua_pushinteger( L, nPhysBone < pData->listCount ? pData->boneIndex[nPhysBone] : -1 );
+    return 1;
+  }
   CStudioHdr *pStudioHdr = pEntity->GetModelPtr();
   if ( pStudioHdr != NULL ) {
     for ( int i = 0; i < pStudioHdr->numbones(); i++ ) {

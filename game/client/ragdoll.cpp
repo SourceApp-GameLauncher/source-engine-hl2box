@@ -416,6 +416,44 @@ private:
 };
 
 
+// Shared by the beam renderer and the Lua bone mapping binding.
+int HL2SB_RagdollPhysicsBoneToBone( C_BaseAnimating *pEntity, int physicsbone )
+{
+	C_ServerRagdoll *pServer = dynamic_cast<C_ServerRagdoll *>( pEntity );
+	if ( pServer != NULL )
+		return physicsbone >= 0 && physicsbone < pServer->m_elementCount ? pServer->m_boneIndex[physicsbone] : -1;
+	if ( pEntity != NULL && pEntity->m_pRagdoll != NULL )
+	{
+		ragdoll_t *pRagdoll = pEntity->m_pRagdoll->GetRagdoll();
+		if ( physicsbone >= 0 && physicsbone < pRagdoll->listCount )
+			return pRagdoll->boneIndex[physicsbone];
+		return -1;
+	}
+	return -2;
+}
+
+bool HL2SB_GetRagdollPhysicsBoneMatrix( C_BaseAnimating *pEntity, int physicsbone, matrix3x4_t &matrix )
+{
+	C_ServerRagdoll *pServer = dynamic_cast<C_ServerRagdoll *>( pEntity );
+	if ( pServer != NULL )
+	{
+		if ( physicsbone < 0 || physicsbone >= pServer->m_elementCount )
+			return false;
+		AngleMatrix( pServer->m_ragAngles[physicsbone], pServer->m_ragPos[physicsbone], matrix );
+		return true;
+	}
+	if ( pEntity != NULL && pEntity->m_pRagdoll != NULL )
+	{
+		ragdoll_t *pRagdoll = pEntity->m_pRagdoll->GetRagdoll();
+		if ( physicsbone >= 0 && physicsbone < pRagdoll->listCount && pRagdoll->list[physicsbone].pObject != NULL )
+		{
+			pRagdoll->list[physicsbone].pObject->GetPositionMatrix( &matrix );
+			return true;
+		}
+	}
+	return false;
+}
+
 EXTERN_RECV_TABLE(DT_Ragdoll);
 IMPLEMENT_CLIENTCLASS_DT(C_ServerRagdoll, DT_Ragdoll, CRagdollProp)
 	RecvPropArray(RecvPropQAngles(RECVINFO(m_ragAngles[0])), m_ragAngles),

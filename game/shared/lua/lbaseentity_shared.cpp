@@ -3037,7 +3037,7 @@ static int CBaseEntity_GetPhysicsObjectNum (lua_State *L) {
   int nNum = luaL_checkint(L, 2);
   IPhysicsObject *pList[VPHYSICS_MAX_OBJECT_LIST_COUNT];
   int count = luaL_checkentity(L, 1)->VPhysicsGetObjectList( pList, ARRAYSIZE(pList) );
-  if ( nNum < 0 || nNum >= count || pList[nNum] == NULL )
+  if ( nNum < 0 || nNum >= count || nNum >= ARRAYSIZE(pList) || pList[nNum] == NULL )
   {
     lua_pushnil(L);
     return 1;

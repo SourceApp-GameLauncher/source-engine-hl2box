@@ -760,7 +760,8 @@ void QuaternionDiff( const IVP_U_Quat &p, const IVP_U_Quat &q, IVP_U_Quat &qt )
 
 void QuaternionAxisAngle( const IVP_U_Quat &q, Vector &axis, float &angle )
 {
-	angle = 2 * acos(q.w);
+	// Normalization can round the scalar component outside the acos domain.
+	angle = 2 * acos( clamp( q.w, -1.0, 1.0 ) );
 	if ( angle > M_PI )
 	{
 		angle -= 2*M_PI;
