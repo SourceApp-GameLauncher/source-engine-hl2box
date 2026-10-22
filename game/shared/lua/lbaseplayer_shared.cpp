@@ -2496,60 +2496,55 @@ static int CBasePlayer_StripWeapon (lua_State *L) {
 }
 #endif
 
-// HL2SB GMod compat: Player:GetInfo( convarName ) -- read a client-side
-// convar (FCVAR_USERINFO).  On the local client this always reads the local
-// player's cvar regardless of which player the method is called on; that is
-// GMod's documented behaviour.
-// HL2SB GMod parity (2026-09-29): Entity:GetInfo / GetInfoNum must answer
-// with the value THAT PLAYER'S CLIENT reports - GMod's server-side GetInfo
-// reads the client's replicated userinfo convar store, not the server's own
-// cvar dictionary.  Addon config cvars (Minecraft's minecraft_blocktype,
-// minecraft_blockhealth, mc_viewmodel_doanim, ...) are created with
-// CreateClientConVar( ..., userdata=true ) - they exist ONLY on the client -
-// so the previous ConVarRef lookup found nothing on the server and every
-// GetCSConVarB/I/F helper in those addons read nil: Minecraft's server-side
-// "isBlockAllowed(GetCSConVarI(...))" gate then aborted placement (the block
-// stayed a clientside-only entity the server could never shoot or delete).
-// Keep ConVarRef first (local realm + real server cvars), then ask the engine
-// for the client-reported value.
+// Server tool settings belong to the requesting player's userinfo store.
+// Client calls read the local console value.
 static int CBasePlayer_GetInfo (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
   const char *pszName = luaL_checkstring(L, 2);
-  ConVarRef ref( pszName, true );
-  if ( ref.IsValid() ) {
-    lua_pushstring( L, ref.GetString() );
-    return 1;
-  }
 #ifdef GAME_DLL
-  const char *pszClient = engine->GetClientConVarValue( pPlayer->entindex(), pszName );
-  if ( pszClient && pszClient[ 0 ] )
+  const char *pszValue = engine->GetClientConVarValue( pPlayer->entindex(), pszName );
+  if ( pszValue && pszValue[0] )
   {
-    lua_pushstring( L, pszClient );
-    return 1;
+    lua_pushstring( L, pszValue );
   }
+  else
+  {
+    // Lua-created tool cvars can be registered after the initial userinfo
+    // batch. Keep the requesting-player value first, then use the local cvar
+    // store as the Source/GMod fallback for that early window.
+    ConVarRef ref( pszName, true );
+    lua_pushstring( L, ref.IsValid() ? ref.GetString() : "" );
+  }
+#else
+  ConVarRef ref( pszName, true );
+  lua_pushstring( L, ref.IsValid() ? ref.GetString() : "" );
 #endif
-  lua_pushnil( L );
   return 1;
 }
 
 static int CBasePlayer_GetInfoNum (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
   const char *pszName = luaL_checkstring(L, 2);
-  float flDefault = (float)luaL_optnumber(L, 3, 0.0f);
-  ConVarRef ref( pszName, true );
-  if ( ref.IsValid() ) {
-    lua_pushnumber( L, ref.GetFloat() );
-    return 1;
-  }
+  const float flDefault = (float)luaL_optnumber(L, 3, 0.0f);
 #ifdef GAME_DLL
-  const char *pszClient = engine->GetClientConVarValue( pPlayer->entindex(), pszName );
-  if ( pszClient && pszClient[ 0 ] )
-  {
-    lua_pushnumber( L, (float)Q_atof( pszClient ) );
+  if ( pPlayer->IsFakeClient() ) {
+    lua_pushnumber( L, 0 );
     return 1;
   }
+  const char *pszValue = engine->GetClientConVarValue( pPlayer->entindex(), pszName );
+  if ( pszValue && pszValue[0] )
+  {
+    lua_pushnumber( L, (float)Q_atof(pszValue) );
+  }
+  else
+  {
+    ConVarRef ref( pszName, true );
+    lua_pushnumber( L, ref.IsValid() ? ref.GetFloat() : flDefault );
+  }
+#else
+  ConVarRef ref( pszName, true );
+  lua_pushnumber( L, ref.IsValid() ? ref.GetFloat() : flDefault );
 #endif
-  lua_pushnumber( L, flDefault );
   return 1;
 }
 

@@ -2104,123 +2104,12 @@ bool CHL2MPScriptedWeapon::DispatchHUDShouldDraw( const char *pszElementName )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: GMod semantics: every SendWeaponAnim restarts the viewmodel
-//          animation, so automatic fire shows a kick on every shot. Stock
-//          SetIdealActivity early-outs while the same activity is already the
-//          ideal one, which leaves scripted viewmodels frozen on the first
-//          frame of the shot animation. Invalidating the cached ideal before
-//          delegating forces the restart on every call.
-//
-// HL2SB: the stock chain resolves the activity with SelectWeightedSequence() on
-// the WEAPON ENTITY's own model, and only then hands the resulting sequence
-// index to the viewmodel entity (CBaseCombatWeapon::SetIdealActivity ->
-// SendViewModelAnim).  CBaseCombatWeapon::Equip() and SetActivity() point that
-// own model at the VIEWMODEL while a player holds the weapon, which is how
-// Valve's content is meant to be resolved: v_smg1.mdl carries the full ACT_VM_*
-// list (w_smg1.mdl only carries ACT_VM_IDLE and its range-attack activity).
-//
-// ⚠️ Measured on 2026-09-13 (the one-shot line below): for a scripted weapon the
-// own model IS the viewmodel -- weapon_medkit reports
-// weaponModel='models/weapons/c_medkit.mdl' resolves=1 -- so an earlier theory
-// that GMod's activity-less world models were breaking this was WRONG.  What the
-// log did show is that resolution can still fail for a normal reason:
-//
-//   SendWeaponAnim 'weapon_flechettegun' activity=172: weaponModel='c_smg1.mdl' resolves=0
-//
-// models/weapons/c_smg1.mdl simply has no ACT_VM_HOLSTER, so the stock path
-// returns false and nothing is animated.
-//
-// So this fallback is a safety net, not the medkit's fix: when the weapon's own
-// model cannot resolve the activity, try the viewmodel entity's own sequence list
-// before giving up.  It costs nothing when the stock path works (it is not
-// reached), and it turns a silent no-op into either an animation or a log line.
+// Resolve animation activities through the normal weapon transition path.
+// Failed requests retain the previous animation state.
 //-----------------------------------------------------------------------------
 bool CHL2MPScriptedWeapon::SendWeaponAnim( int iActivity )
 {
-	m_IdealActivity = ACT_INVALID;
-	m_nIdealSequence = -1;
-
-	// HL2SB (2026-10-01) probe: unconditional (capped) entry -- the
-	// WarnOnce line below only prints once per key per process, which
-	// hid whether DefaultDeploy calls this on the first equip.
-	{
-		static int s_nSendAnimLogged = 0;
-		if ( s_nSendAnimLogged < 40 )
-		{
-			++s_nSendAnimLogged;
-			luasrc_LuaInfoMsgF( "[HL2SB wp] %s SendWeaponAnim-IN class='%s' act=%d ref=%d\n",
-#ifdef CLIENT_DLL
-				"CLIENT",
-#else
-				"SERVER",
-#endif
-				GetClassname(), iActivity, (int)m_nTableReference );
-		}
-	}
-
-	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-	CBaseViewModel *pViewModel = ( pOwner != NULL ) ? pOwner->GetViewModel( m_nViewModelIndex, false ) : NULL;
-
-	const bool bOnWeaponModel =
-		( SelectWeightedSequence( (Activity)iActivity ) != ACTIVITY_NOT_AVAILABLE );
-
-	// GetScriptedClassname() is client-only, and the client sets its classname
-	// from the scripted name, so GetClassname() names the SWEP on both realms.
-	char szKey[ 192 ];
-	Q_snprintf( szKey, sizeof( szKey ), "weaponanim:%s:%d", GetClassname(), iActivity );
-
-	HL2SB_WarnOnce( szKey,
-		"SendWeaponAnim '%s' activity=%d: weaponModel='%s' resolves=%d viewmodel='%s'\n",
-		GetClassname(), iActivity, STRING( GetModelName() ), bOnWeaponModel ? 1 : 0,
-		( pViewModel != NULL ) ? STRING( pViewModel->GetModelName() ) : "<none>" );
-
-	if ( bOnWeaponModel )
-	{
-		// HL2SB (2026-09-30): play the sequence DIRECTLY.  Stock
-		// SetIdealActivity can route the request through FindTransitionSequence
-		// and start an ACT_TRANSITION sequence instead of the requested one
-		// (re-arming the idle timer to the TRANSITION's duration -- measured
-		// as a 4.005s idle loop on the Nyan Gun's combined viewmodel).  GMod
-		// SWEPs have no transition chain: set the sequence and play it now.
-		MDLCACHE_CRITICAL_SECTION();
-		const int nSequence = SelectWeightedSequence( (Activity)iActivity );
-		if ( nSequence == ACTIVITY_NOT_AVAILABLE )
-			return false;
-
-		SetActivity( (Activity)iActivity );
-		SetSequence( nSequence );
-		SendViewModelAnim( nSequence );
-
-		m_IdealActivity = (Activity)iActivity;
-		m_nIdealSequence = nSequence;
-
-		SetWeaponIdleTime( gpGlobals->curtime + SequenceDuration() );
-		return true;
-	}
-
-	if ( pViewModel == NULL )
-		return false;
-
-	// Make sure the viewmodel carries this weapon's model before asking it to
-	// resolve an activity (SendViewModelAnim would do this, but we need the
-	// sequence now).
-	SetViewModel();
-
-	const int nSequence = pViewModel->SelectWeightedSequence( (Activity)iActivity );
-
-	if ( nSequence == ACTIVITY_NOT_AVAILABLE )
-		return false;
-
-	// Keep the weapon's cached ideal in step, so MaintainIdealActivity() and
-	// IsViewModelSequenceFinished() agree with what the viewmodel is playing.
-	m_IdealActivity = (Activity)iActivity;
-	m_nIdealSequence = nSequence;
-
-	SendViewModelAnim( nSequence );
-
-	SetWeaponIdleTime( gpGlobals->curtime + SequenceDuration() );
-
-	return true;
+	return BaseClass::SendWeaponAnim( iActivity );
 }
 
 //-----------------------------------------------------------------------------

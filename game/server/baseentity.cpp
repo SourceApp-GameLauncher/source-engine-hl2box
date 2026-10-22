@@ -2171,6 +2171,12 @@ extern bool g_bReceivedChainedUpdateOnRemove;
 //-----------------------------------------------------------------------------
 void CBaseEntity::UpdateOnRemove( void )
 {
+	extern void HL2SB_ClearPhysConstraintData(CBaseEntity *constraint);
+	HL2SB_ClearPhysConstraintData(this);
+#ifdef LUA_SDK
+	extern void HL2SB_StopMotionController(CBaseEntity *entity);
+	HL2SB_StopMotionController(this);
+#endif
 #ifdef LUA_SDK
 	HL2SB_ClearSpawnEffect(this);
 #endif

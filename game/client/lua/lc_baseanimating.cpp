@@ -22,6 +22,7 @@
 #include "c_baseflex.h"		// HL2SB: C_BaseFlex flex weights (GetFlexWeight/SetFlexWeight)
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 
 // ===== HL2SB GMod compat (2026-09-24): Entity callbacks =====================
@@ -1110,69 +1111,23 @@ static int CBaseAnimating_GetFlexNum (lua_State *L) {
   return 1;
 }
 
-// The engine keeps no client-side flex scale, so round-trip it here per entity.
-struct HL2SB_FlexScale_t { CBaseHandle hEntity; float flScale; };
-static CUtlVector<HL2SB_FlexScale_t> s_FlexScales;
-
-static float HL2SB_GetFlexScaleValue( C_BaseAnimating *pEntity )
-{
-  const CBaseHandle h = pEntity->GetRefEHandle();
-  for ( int i = 0; i < s_FlexScales.Count(); ++i )
-    if ( s_FlexScales[i].hEntity == h )
-      return s_FlexScales[i].flScale;
-  return 1.0f;
-}
-
 static int CBaseAnimating_GetFlexScale (lua_State *L) {
-  lua_pushnumber(L, HL2SB_GetFlexScaleValue( luaL_checkanimating(L, 1) ));
+  lua_pushnumber(L, HL2SB_GetFlexScale(luaL_checkanimating(L, 1)));
   return 1;
 }
 
 static int CBaseAnimating_SetFlexScale (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  float flScale = luaL_checknumber(L, 2);
-  const CBaseHandle h = pEntity->GetRefEHandle();
-  for ( int i = 0; i < s_FlexScales.Count(); ++i )
-  {
-    if ( s_FlexScales[i].hEntity == h )
-    {
-      s_FlexScales[i].flScale = flScale;
-      return 0;
-    }
-  }
-  if ( s_FlexScales.Count() > 64 )
-  {
-    for ( int i = s_FlexScales.Count() - 1; i >= 0; --i )
-      if ( s_FlexScales[i].hEntity.Get() == NULL )
-        s_FlexScales.FastRemove( i );
-  }
-  HL2SB_FlexScale_t &entry = s_FlexScales[s_FlexScales.AddToTail()];
-  entry.hEntity = h;
-  entry.flScale = flScale;
+  HL2SB_SetFlexScale(luaL_checkanimating(L, 1), (float)luaL_checknumber(L, 2));
   return 0;
 }
 
 static int CBaseAnimating_GetFlexWeight (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  int i = luaL_checkint(L, 2);
-  C_BaseFlex *pFlex = dynamic_cast<C_BaseFlex *>( pEntity );
-  if ( !pFlex || i < 0 || i >= (int)pFlex->GetNumFlexControllers() )
-  {
-    lua_pushnumber(L, 0.0f);
-    return 1;
-  }
-  lua_pushnumber(L, pFlex->GetFlexWeight( (LocalFlexController_t)i ));
+  lua_pushnumber(L, HL2SB_GetFlexWeight(luaL_checkanimating(L, 1), luaL_checkint(L, 2)));
   return 1;
 }
 
 static int CBaseAnimating_SetFlexWeight (lua_State *L) {
-  C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  int i = luaL_checkint(L, 2);
-  float flWeight = luaL_checknumber(L, 3);
-  C_BaseFlex *pFlex = dynamic_cast<C_BaseFlex *>( pEntity );
-  if ( !pFlex || i < 0 || i >= (int)pFlex->GetNumFlexControllers() )
-    return 0;
-  pFlex->SetFlexWeight( (LocalFlexController_t)i, flWeight );
+  HL2SB_SetFlexWeight(luaL_checkanimating(L, 1), luaL_checkint(L, 2), (float)luaL_checknumber(L, 3));
   return 0;
 }
 

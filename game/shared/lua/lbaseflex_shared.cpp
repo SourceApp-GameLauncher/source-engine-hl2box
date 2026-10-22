@@ -8,6 +8,7 @@
 #include "lvphysics_interface.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 #include <model_types.h>
 
@@ -171,7 +172,7 @@ LUA_BINDING_BEGIN( CBaseFlex, GetFlexWeight, "class", "Get flex weight." )
     lua_CBaseFlex *pEntity = LUA_BINDING_ARGUMENT( luaL_checkbaseflex, 1, "entity" );
     LocalFlexController_t iFlexController = ( LocalFlexController_t )( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "flexId" );
 
-    lua_pushnumber( L, pEntity->GetFlexWeight( iFlexController ) );
+    lua_pushnumber( L, HL2SB_GetFlexWeight( pEntity, iFlexController ) );
     return 1;
 }
 LUA_BINDING_END( "number", "Flex weight." )
@@ -182,7 +183,7 @@ LUA_BINDING_BEGIN( CBaseFlex, SetFlexWeight, "class", "Set flex weight." )
     LocalFlexController_t iFlexController = ( LocalFlexController_t )( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "flexId" );
     float flWeight = LUA_BINDING_ARGUMENT( luaL_checknumber, 3, "weight" );
 
-    pEntity->SetFlexWeight( iFlexController, flWeight );
+    HL2SB_SetFlexWeight( pEntity, iFlexController, flWeight );
     return 0;
 }
 LUA_BINDING_END()
@@ -191,16 +192,7 @@ LUA_BINDING_BEGIN( CBaseFlex, HasFlexManipulator, "class", "Check if the entity 
 {
     lua_CBaseFlex *pEntity = LUA_BINDING_ARGUMENT( luaL_checkbaseflex, 1, "entity" );
 
-    for ( LocalFlexController_t i = LocalFlexController_t( 0 ); i < pEntity->GetNumFlexControllers(); i++ )
-    {
-        if ( pEntity->GetFlexWeight( i ) != 0.0f )
-        {
-            lua_pushboolean( L, true );
-            return 1;
-        }
-    }
-
-    lua_pushboolean( L, false );
+    lua_pushboolean( L, HL2SB_HasFlexManipulator( pEntity ) );
     return 1;
 }
 LUA_BINDING_END( "boolean", "True if the entity has flex manipulator." )

@@ -3,6 +3,7 @@
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lrender.h"
+#include "model_types.h"
 
 // HL2SB GMod compat (ConVars In Garrysmod): the physgun visual toggles.
 // physgun_drawbeams is read by hl2sb/weapon_physgun.cpp's draw paths,
@@ -624,6 +625,60 @@ LUA_BINDING_END()
 static void HL2SB_CaptureWrite(void *context, void *data, int size)
 {
     static_cast<CUtlBuffer *>(context)->Put(data, size);
+}
+
+static void HL2SB_ApplyModelLighting();
+
+bool HL2SB_RenderSpawnIcon(C_BaseAnimating *entity, const CViewSetup &camera,
+    int width, int height, const Vector *lightbox, CUtlBuffer &png, CUtlVector<unsigned char> &pixels)
+{
+    char targetName[64];
+    Q_snprintf(targetName, sizeof(targetName), "_rt_spawnicon_%ix%i", width, height);
+    ITexture *target = materials->CreateNamedRenderTargetTextureEx(targetName, width, height,
+        RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA8888, MATERIAL_RT_DEPTH_SEPARATE,
+        TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD, 0);
+    if (!target) return false;
+    CMatRenderContextPtr context(materials);
+    IMatRenderContextInternal *internal = static_cast<IMatRenderContextInternal *>(context.operator->());
+    int depthAlpha = internal->GetIntRenderingParameter(INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA);
+    Vector toneMap = context->GetToneMappingScaleLinear();
+    float modulation[3]; render->GetColorModulation(modulation);
+    float blend = render->GetBlend();
+    Vector4D lighting[6];
+    for (int i = 0; i < 6; ++i) lighting[i].Init(0.2f, 0.2f, 0.2f, 1);
+    lighting[0].Init(1.3f, 1.3f, 1.3f, 1);
+    lighting[4].Init(2.3f, 2.3f, 2.3f, 1);
+    lighting[5].Init(0.1f, 0.1f, 0.1f, 1);
+    if (lightbox)
+        for (int i = 0; i < 6; ++i) lighting[i].Init(lightbox[i].x, lightbox[i].y, lightbox[i].z, 1);
+    context->PushRenderTargetAndViewport(target, 0, 0, width, height);
+    context->SetIntRenderingParameter(INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA, 0);
+    context->OverrideAlphaWriteEnable(true, true);
+    context->ClearColor4ub(0, 0, 0, 0);
+    context->ClearBuffers(true, true, false);
+    context->SetToneMappingScaleLinear(Vector(1, 1, 1));
+    context->SetAmbientLightCube(lighting);
+    g_pStudioRender->SetAmbientLightColors(lighting);
+    g_pStudioRender->SetLocalLights(0, NULL);
+    modelrender->SuppressEngineLighting(true);
+    render->Push3DView(camera, 0, NULL, view->GetFrustum());
+    const float white[3] = {1, 1, 1};
+    render->SetColorModulation(white);
+    render->SetBlend(1);
+    entity->DrawModel(STUDIO_RENDER);
+    render->PopView(view->GetFrustum());
+    pixels.SetCount(width * height * 4);
+    context->ReadPixels(0, 0, width, height, pixels.Base(), IMAGE_FORMAT_RGBA8888);
+    modelrender->SuppressEngineLighting(false);
+    render->SetColorModulation(modulation);
+    render->SetBlend(blend);
+    context->SetToneMappingScaleLinear(toneMap);
+    context->SetIntRenderingParameter(INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA, depthAlpha);
+    context->OverrideAlphaWriteEnable(false, true);
+    context->PopRenderTargetAndViewport();
+    HL2SB_ApplyModelLighting();
+    return stbi_write_png_to_func(HL2SB_CaptureWrite, &png, width, height, 4,
+        pixels.Base(), width * 4) != 0;
 }
 
 LUA_BINDING_BEGIN( Renders, Capture, "library", "Captures a render target rectangle as PNG or JPEG data.", "client" )
@@ -2802,6 +2857,9 @@ LUALIB_API int luaopen_render( lua_State *L )
     LUA_REGISTRATION_COMMIT_LIBRARY( Renders );
 
 #ifdef CLIENT_DLL
+    lua_getfield(L, -1, "GetViewEntity");
+    lua_setglobal(L, "GetViewEntity");
+
     // HL2SB: the cam library -- cam.Start( {type="3D"/"2D", ...} ) / cam.End() /
     // cam.IgnoreZ().  The content render.lua shim builds cam.Start3D/Start2D on
     // top of these.

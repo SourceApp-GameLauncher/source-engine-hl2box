@@ -410,12 +410,7 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 			lua_pop( L, 1 );
 		}
 
-		// HL2SB: GMod's Entity:DTVar needs the same treatment as NetworkVar above, and
-		// for the same reason: SetupDataTables() is invoked with the entity's LUA TABLE
-		// (lua_pushvalue below, "self: the entity's Lua table"), not with the entity
-		// userdata - so a method that lives only on the entity metatable is invisible
-		// inside it.  cod_c4's ENT:SetupDataTables calls self:DTVar( "Float", 0, ... )
-		// and raised "attempt to call a nil value (method 'DTVar')" on every C4 spawn.
+		// Keep legacy table callers using the same declaration helpers.
 		lua_getglobal( L, "HL2SB_EntityDTVar" );
 		if ( lua_isfunction( L, -1 ) )
 		{
@@ -441,16 +436,7 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 			lua_pop( L, 1 );
 		}
 
-		lua_getfield( L, -1, "SetupDataTables" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_pushvalue( L, -2 );		// self: the entity's Lua table
-			luasrc_pcall( L, 1, 0, 0 );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
+
 	}
 	else if ( lua_istable( L, -1 ) && !bFreshBind )
 	{
@@ -479,6 +465,24 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		// StartTouch, OnRemove, NetworkVarNotify) sitting under the first
 		// ShouldDraw of a session.  The fresh branch's luaL_ref pops its table;
 		// this branch has to as well.
+		lua_pop( L, 1 );
+	}
+
+	// Bind the instance before invoking script so closures capture the entity,
+	// and every entity method is available during data-table setup.
+	if ( !bSeeded && m_nTableReference >= 0 )
+	{
+		lua_getref( L, m_nTableReference );
+		lua_getfield( L, -1, "SetupDataTables" );
+		if ( lua_isfunction( L, -1 ) )
+		{
+			lua_pushanimating( L, this );
+			luasrc_pcall( L, 1, 0, 0 );
+		}
+		else
+		{
+			lua_pop( L, 1 );
+		}
 		lua_pop( L, 1 );
 	}
 

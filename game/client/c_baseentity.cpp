@@ -8,6 +8,7 @@
 #include "c_baseentity.h"
 #include "prediction.h"
 #include "model_types.h"
+#include "gamestringpool.h"
 #include "iviewrender_beams.h"
 #include "dlight.h"
 #include "iviewrender.h"
@@ -48,6 +49,7 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 
 
@@ -2118,6 +2120,9 @@ bool C_BaseEntity::SetupBones( matrix3x4_t *pBoneToWorldOut, int nMaxBones, int 
 //-----------------------------------------------------------------------------
 void C_BaseEntity::SetupWeights( const matrix3x4_t *pBoneToWorld, int nFlexWeightCount, float *pFlexWeights, float *pFlexDelayedWeights )
 {
+#ifdef LUA_SDK
+	HL2SB_ApplyFlexManipulation(this, nFlexWeightCount, pFlexWeights, pFlexDelayedWeights);
+#endif
 }
 
 
@@ -6375,7 +6380,7 @@ int C_BaseEntity::SaveDataDescBlock( ISave &save, datamap_t *dmap )
 
 void C_BaseEntity::SetClassname( const char *className )
 {
-	m_iClassname = MAKE_STRING( className );
+	m_iClassname = AllocPooledString( className );
 }
 
 

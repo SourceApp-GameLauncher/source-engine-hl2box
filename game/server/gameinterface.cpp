@@ -7,6 +7,9 @@
 //===========================================================================//
 
 #include "cbase.h"
+#ifdef LUA_SDK
+#include "lua/hl2sb_playerbuttons.h"
+#endif
 #include "gamestringpool.h"
 #include "mapentities_shared.h"
 #include "game.h"
@@ -2698,8 +2701,6 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 	// is consecutive in memory. If either of these things change, then this routine needs to change, but
 	// ideally we won't be calling any virtual from this routine. This speedy routine was added as an
 	// optimization which would be nice to keep.
-	edict_t *pBaseEdict = engine->PEntityOfEntIndex( 0 );
-
 	// get recipient player's skybox:
 	CBaseEntity *pRecipientEntity = CBaseEntity::Instance( pInfo->m_pClientEnt );
 
@@ -2724,8 +2725,12 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 	{
 		int iEdict = pEdictIndices[i];
 
-		edict_t *pEdict = &pBaseEdict[iEdict];
-		Assert( pEdict == engine->PEntityOfEntIndex( iEdict ) );
+		// Entity removal can free an edict between the list snapshot and this
+		// pass. Resolve the index again instead of relying on a contiguous edict
+		// array and reject freed/lightweight entries before reading flags.
+		edict_t *pEdict = engine->PEntityOfEntIndex( iEdict );
+		if ( pEdict == NULL || pEdict->IsFree() || pEdict->GetUnknown() == NULL )
+			continue;
 		int nFlags = pEdict->m_fStateFlags & (FL_EDICT_DONTSEND|FL_EDICT_ALWAYS|FL_EDICT_PVSCHECK|FL_EDICT_FULLCHECK);
 
 		// entity needs no transmit
@@ -2759,7 +2764,10 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 				if ( !pParent )
 					break;
 
-				pEdict = pParent->edict();
+				edict_t *pParentEdict = pParent->edict();
+				if ( pParentEdict == NULL || pParentEdict->IsFree() || pParentEdict->GetUnknown() == NULL )
+					break;
+				pEdict = pParentEdict;
 				iEdict = pParent->entindex();
 			}
 			continue;
@@ -2768,6 +2776,9 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 		// FIXME: Would like to remove all dependencies
 		CBaseEntity *pEnt = ( CBaseEntity * )pEdict->GetUnknown();
 		Assert( dynamic_cast< CBaseEntity* >( pEdict->GetUnknown() ) == pEnt );
+		CServerNetworkProperty *netProp = static_cast<CServerNetworkProperty*>( pEdict->GetNetworkable() );
+		if ( pEnt == NULL || netProp == NULL )
+			continue;
 
 		if ( nFlags == FL_EDICT_FULLCHECK )
 		{
@@ -2786,8 +2797,6 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 		// don't send this entity
 		if ( !( nFlags & FL_EDICT_PVSCHECK ) )
 			continue;
-
-		CServerNetworkProperty *netProp = static_cast<CServerNetworkProperty*>( pEdict->GetNetworkable() );
 
 #ifndef _X360
 		if ( bIsHLTV || bIsReplay )
@@ -2832,7 +2841,7 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 			CBaseEntity *pFlagEnt = ( CBaseEntity * )pEdict->GetUnknown();
 			if ( pFlagEnt && ( pFlagEnt->GetEFlags() & EFL_TRANSMIT_WITH_PARENT ) )
 			{
-				CServerNetworkProperty *pFlagParent = static_cast< CServerNetworkProperty * >( pEdict->GetNetworkable() )->GetNetworkParent();
+				CServerNetworkProperty *pFlagParent = netProp->GetNetworkParent();
 				if ( pFlagParent && pInfo->m_pTransmitEdict->Get( pFlagParent->entindex() ) )
 				{
 					pFlagEnt->SetTransmit( pInfo, true );
@@ -2860,6 +2869,8 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
 			}
 
 			edict_t *checkEdict = check->edict();
+			if ( checkEdict == NULL || checkEdict->IsFree() || checkEdict->GetUnknown() == NULL )
+				break;
 			int checkFlags = checkEdict->m_fStateFlags & (FL_EDICT_DONTSEND|FL_EDICT_ALWAYS|FL_EDICT_PVSCHECK|FL_EDICT_FULLCHECK);
 			if ( checkFlags & FL_EDICT_DONTSEND )
 				break;
@@ -3417,6 +3428,9 @@ float CServerGameClients::ProcessUsercmds( edict_t *player, bf_read *buf, int nu
 	// Initialize for reading delta compressed usercmds
 	cmdNull.Reset();
 	from = &cmdNull;
+#ifdef LUA_SDK
+	HL2SB_BeginPlayerButtonsPacket(ignore || paused ? NULL : pPlayer);
+#endif
 	for ( i = totalcmds - 1; i >= 0; i-- )
 	{
 		to = &cmds[ i ];
@@ -3424,6 +3438,10 @@ float CServerGameClients::ProcessUsercmds( edict_t *player, bf_read *buf, int nu
 		from = to;
 	}
 
+
+#ifdef LUA_SDK
+	HL2SB_BeginPlayerButtonsPacket(NULL);
+#endif
 	// Client not fully connected or server has gone inactive  or is paused, just ignore
 	if ( ignore || !pPlayer )
 	{

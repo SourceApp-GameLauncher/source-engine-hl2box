@@ -61,6 +61,7 @@ int luasrc_UTIL_JSONToTable( lua_State *L );
 #include "igameevents.h"
 #include "player.h"
 #include "networkstringtable_gamedll.h"
+#include "lrecipientfilter.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -683,6 +684,162 @@ static bool g_netActive = false;
 // argument; SendNetMessage applies it to the recipient filter.
 static bool g_netUnreliable = false;
 
+// Legacy usermessages have their own composition state, independent of net.
+// Keep the existing client transport while resolving recipients natively.
+static char s_UserMessageBuffer[MAX_USER_MSG_DATA];
+static bf_write s_UserMessageWrite;
+static CRecipientFilter s_UserMessageRecipients;
+static bool s_UserMessageActive = false;
+
+static CBaseEntity *umsg_CheckEntity( lua_State *L, int index )
+{
+	if ( lua_isnoneornil( L, index ) )
+		return NULL;
+	bool entityType = false;
+	if ( lua_type( L, index ) == LUA_TUSERDATA && lua_getmetatable( L, index ) )
+	{
+		lua_pushliteral( L, "MetaID" );
+		lua_rawget( L, -2 );
+		entityType = lua_tointeger( L, -1 ) == 9;
+		lua_pop( L, 2 );
+	}
+	if ( !entityType )
+		luaL_argerror( L, index, "Entity expected" );
+	return lua_toentity( L, index );
+}
+
+static CBasePlayer *umsg_CheckPlayer( lua_State *L, int index )
+{
+	CBaseEntity *entity = umsg_CheckEntity( L, index );
+	if ( !entity || !entity->IsPlayer() )
+		luaL_argerror( L, index, "Player expected" );
+	return static_cast<CBasePlayer *>(entity);
+}
+
+static int umsg_Start( lua_State *L )
+{
+	const char *name = luaL_checkstring( L, 1 );
+	s_UserMessageActive = false;
+	s_UserMessageRecipients.Reset();
+	if ( lua_isnoneornil( L, 2 ) )
+	{
+		s_UserMessageRecipients.AddAllPlayers();
+	}
+	else if ( luaL_testudata( L, 2, "CRecipientFilter" ) || luaL_testudata( L, 2, "CPASFilter" ) )
+	{
+		s_UserMessageRecipients.CopyFrom( luaL_checkrecipientfilter( L, 2 ) );
+	}
+	else if ( lua_istable( L, 2 ) )
+	{
+		lua_pushnil( L );
+		while ( lua_next( L, 2 ) != 0 )
+		{
+			s_UserMessageRecipients.AddRecipient( umsg_CheckPlayer( L, -1 ) );
+			lua_pop( L, 1 );
+		}
+	}
+	else
+	{
+		s_UserMessageRecipients.AddRecipient( umsg_CheckPlayer( L, 2 ) );
+	}
+	const unsigned short id = HL2SB_AddNetworkString( "hl2sb_umsg" );
+	if ( !id )
+		return luaL_error( L, "Unable to register usermessage transport" );
+	s_UserMessageWrite.StartWriting( s_UserMessageBuffer, sizeof(s_UserMessageBuffer) );
+	s_UserMessageWrite.SetAssertOnOverflow( false );
+	s_UserMessageWrite.WriteUBitLong( id, HL2SB_NET_HEADER_BITS );
+	s_UserMessageWrite.WriteString( name );
+	s_UserMessageActive = true;
+	return 0;
+}
+
+static int umsg_End( lua_State *L )
+{
+	if ( !s_UserMessageActive )
+		return luaL_error( L, "umsg.End called without umsg.Start" );
+	s_UserMessageActive = false;
+	if ( s_UserMessageWrite.IsOverflowed() )
+	{
+		luasrc_LuaWarnMsgF( "Usermessage exceeded the transport limit; message discarded\n" );
+		return 0;
+	}
+	s_UserMessageRecipients.MakeReliable();
+	UserMessageBegin( s_UserMessageRecipients, "LuaNet" );
+	MessageWriteBits( s_UserMessageWrite.GetData(), s_UserMessageWrite.GetNumBitsWritten() );
+	MessageEnd();
+	return 0;
+}
+
+static int umsg_WriteInteger( lua_State *L )
+{
+	const int value = (int)luaL_checknumber( L, 1 );
+	if ( s_UserMessageActive )
+		s_UserMessageWrite.WriteSBitLong( value, (int)lua_tointeger( L, lua_upvalueindex(1) ) );
+	return 0;
+}
+
+static int umsg_WriteBool( lua_State *L )
+{
+	if ( s_UserMessageActive ) s_UserMessageWrite.WriteOneBit( lua_toboolean( L, 1 ) );
+	return 0;
+}
+
+static int umsg_WriteFloat( lua_State *L )
+{
+	const float value = (float)luaL_checknumber( L, 1 );
+	if ( s_UserMessageActive ) s_UserMessageWrite.WriteFloat( value );
+	return 0;
+}
+
+static int umsg_WriteString( lua_State *L )
+{
+	const char *value = luaL_checkstring( L, 1 );
+	if ( s_UserMessageActive ) s_UserMessageWrite.WriteString( value );
+	return 0;
+}
+
+static int umsg_WriteEntity( lua_State *L )
+{
+	CBaseEntity *entity = umsg_CheckEntity( L, 1 );
+	if ( s_UserMessageActive ) s_UserMessageWrite.WriteShort( entity ? entity->entindex() : 0 );
+	return 0;
+}
+
+static int umsg_WriteVector( lua_State *L )
+{
+	const Vector value = luaL_checkvector( L, 1 );
+	if ( s_UserMessageActive ) s_UserMessageWrite.WriteBitVec3Coord( value );
+	return 0;
+}
+
+static int umsg_WriteAngle( lua_State *L )
+{
+	const QAngle value = luaL_checkangle( L, 1 );
+	if ( s_UserMessageActive ) s_UserMessageWrite.WriteBitAngles( value );
+	return 0;
+}
+
+void HL2SB_InstallNativeUserMessages( lua_State *L )
+{
+	static const luaL_Reg functions[] = {
+		{ "Start", umsg_Start }, { "End", umsg_End },
+		{ "Bool", umsg_WriteBool }, { "Float", umsg_WriteFloat },
+		{ "String", umsg_WriteString }, { "Entity", umsg_WriteEntity },
+		{ "Vector", umsg_WriteVector }, { "Angle", umsg_WriteAngle },
+		{ NULL, NULL }
+	};
+	luaL_register( L, "umsg", functions );
+	const char *names[] = { "Char", "Short", "Long" };
+	const int bits[] = { 8, 16, 32 };
+	for ( int i = 0; i < ARRAYSIZE(names); ++i )
+	{
+		lua_pushinteger( L, bits[i] );
+		lua_pushcclosure( L, umsg_WriteInteger, 1 );
+		lua_setfield( L, -2, names[i] );
+	}
+	lua_pop( L, 1 );
+}
+
 // net.Start( name, [unreliable=false] ) -> bool
 static int net_Start( lua_State *L )
 {
@@ -1287,4 +1444,8 @@ LUALIB_API int luaopen_net( lua_State *L )
 LUA_API void luasrc_net_reset( void )
 {
 	Net_SetRead( NULL );
+#ifndef CLIENT_DLL
+	s_UserMessageActive = false;
+	s_UserMessageRecipients.Reset();
+#endif
 }

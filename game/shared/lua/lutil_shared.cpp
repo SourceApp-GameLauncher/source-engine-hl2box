@@ -2448,7 +2448,8 @@ static int luasrc_util_IsValidProp (lua_State *L) {
   }
 
   vcollide_t *pCollide = modelinfo->GetVCollide( nIndex );
-  lua_pushboolean( L, pCollide != NULL && pCollide->solidCount > 0 );
+  // A multi-body collision model belongs to the ragdoll spawn path.
+  lua_pushboolean( L, pCollide != NULL && pCollide->solidCount == 1 );
   return 1;
 }
 

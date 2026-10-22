@@ -22,6 +22,8 @@
 #endif
 
 #include "physconstraint.h"
+#include "physconstraint_lua.h"
+#include <map>
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -145,6 +147,100 @@ void CPhysConstraintSystem::Spawn()
 }
 
 LINK_ENTITY_TO_CLASS( phys_constraintsystem, CPhysConstraintSystem );
+
+namespace
+{
+struct LuaConstraintObject
+{
+	LuaConstraintObject() : object(NULL), bone(-1), world(false) {}
+	EHANDLE entity;
+	IPhysicsObject *object;
+	int bone;
+	bool world;
+
+	void Set(IPhysicsObject *value)
+	{
+		object = value;
+		world = value && value == g_PhysWorldObject;
+		bone = -1;
+		entity = value && !world ? static_cast<CBaseEntity *>(value->GetGameData()) : NULL;
+		if (entity)
+		{
+			IPhysicsObject *objects[VPHYSICS_MAX_OBJECT_LIST_COUNT];
+			int count = entity->VPhysicsGetObjectList(objects, ARRAYSIZE(objects));
+			for (int i = 0; i < count; ++i) if (objects[i] == value) { bone = i; break; }
+		}
+	}
+
+	IPhysicsObject *Get()
+	{
+		if (world) return object == g_PhysWorldObject ? object : NULL;
+		if (!entity || bone < 0) return NULL;
+		IPhysicsObject *objects[VPHYSICS_MAX_OBJECT_LIST_COUNT];
+		int count = entity->VPhysicsGetObjectList(objects, ARRAYSIZE(objects));
+		return bone < count && objects[bone] == object ? object : NULL;
+	}
+};
+
+struct LuaConstraintData
+{
+	LuaConstraintData() : explicitObjects(false) {}
+	EHANDLE system;
+	LuaConstraintObject objects[2];
+	bool explicitObjects;
+};
+
+EHANDLE s_LuaConstraintSystem;
+std::map<CBaseEntity *, LuaConstraintData> s_LuaConstraints;
+}
+
+void HL2SB_SetPhysConstraintSystem(CBaseEntity *system)
+{
+	s_LuaConstraintSystem = dynamic_cast<CPhysConstraintSystem *>(system);
+}
+
+void HL2SB_CapturePhysConstraintSystem(CBaseEntity *constraint)
+{
+	if (s_LuaConstraintSystem) s_LuaConstraints[constraint].system = s_LuaConstraintSystem;
+}
+
+void HL2SB_SetPhysConstraintObjects(CBaseEntity *constraint, IPhysicsObject *first, IPhysicsObject *second)
+{
+	HL2SB_CapturePhysConstraintSystem(constraint);
+	LuaConstraintData &data = s_LuaConstraints[constraint];
+	data.explicitObjects = true;
+	data.objects[0].Set(first);
+	data.objects[1].Set(second);
+}
+
+bool HL2SB_GetPhysConstraintObject(CBaseEntity *constraint, int index, IPhysicsObject **object)
+{
+	std::map<CBaseEntity *, LuaConstraintData>::iterator found = s_LuaConstraints.find(constraint);
+	if (found == s_LuaConstraints.end() || !found->second.explicitObjects || index < 0 || index > 1) return false;
+	*object = found->second.objects[index].Get();
+	return true;
+}
+
+IPhysicsConstraintGroup *HL2SB_GetPhysConstraintGroup(CBaseEntity *constraint)
+{
+	std::map<CBaseEntity *, LuaConstraintData>::iterator found = s_LuaConstraints.find(constraint);
+	if (found == s_LuaConstraints.end()) return NULL;
+	CPhysConstraintSystem *system = dynamic_cast<CPhysConstraintSystem *>(found->second.system.Get());
+	return system ? system->GetVPhysicsGroup() : NULL;
+}
+
+IPhysicsObject *HL2SB_GetAttachedPhysicsObject(CBaseEntity *constraint, CBaseEntity *attached)
+{
+	IPhysicsObject *object = NULL;
+	if (HL2SB_GetPhysConstraintObject(constraint, 0, &object)) return object;
+	return attached ? attached->VPhysicsGetObject() : NULL;
+}
+
+void HL2SB_ClearPhysConstraintData(CBaseEntity *constraint)
+{
+	s_LuaConstraints.erase(constraint);
+	if (s_LuaConstraintSystem.Get() == constraint) s_LuaConstraintSystem = NULL;
+}
 
 void PhysTeleportConstrainedEntity( CBaseEntity *pTeleportSource, IPhysicsObject *pObject0, IPhysicsObject *pObject1, const Vector &prevPosition, const QAngle &prevAngles, bool physicsRotate )
 {
@@ -409,6 +505,7 @@ END_DATADESC()
 
 CPhysConstraint::CPhysConstraint( void )
 {
+	HL2SB_CapturePhysConstraintSystem(this);
 	m_pConstraint = NULL;
 	m_nameAttach1 = NULL_STRING;
 	m_nameAttach2 = NULL_STRING;
@@ -420,6 +517,7 @@ CPhysConstraint::CPhysConstraint( void )
 
 CPhysConstraint::~CPhysConstraint()
 {
+	HL2SB_ClearPhysConstraintData(this);
 	Deactivate();
 	physenv->DestroyConstraint( m_pConstraint );
 }
@@ -563,8 +661,20 @@ static IPhysicsConstraintGroup *GetRagdollConstraintGroup( IPhysicsObject *pObj 
 
 void CPhysConstraint::GetConstraintObjects( hl_constraint_info_t &info )
 {
-	FindPhysicsAnchor( m_nameAttach1, info, 0, this );
-	FindPhysicsAnchor( m_nameAttach2, info, 1, this );
+	if (HL2SB_GetPhysConstraintObject(this, 0, &info.pObjects[0]))
+	{
+		HL2SB_GetPhysConstraintObject(this, 1, &info.pObjects[1]);
+		if (!info.pObjects[0] || !info.pObjects[1])
+		{
+			info.pObjects[0] = info.pObjects[1] = NULL;
+			return;
+		}
+	}
+	else
+	{
+		FindPhysicsAnchor( m_nameAttach1, info, 0, this );
+		FindPhysicsAnchor( m_nameAttach2, info, 1, this );
+	}
 
 	// Missing one object, assume the world instead
 	if ( info.pObjects[0] == NULL && info.pObjects[1] )
@@ -666,6 +776,7 @@ bool CPhysConstraint::ActivateConstraint( void )
 		return false;
 	}
 	IPhysicsConstraintGroup *pGroup = GetConstraintGroup( m_nameSystem );
+	if (!pGroup) pGroup = HL2SB_GetPhysConstraintGroup(this);
 	if ( !pGroup )
 	{
 		pGroup = info.pGroup;
@@ -1427,6 +1538,7 @@ class CPhysLength : public CPhysConstraint
 	DECLARE_CLASS( CPhysLength, CPhysConstraint );
 public:
 	DECLARE_DATADESC();
+	CPhysLength() : m_length(0.0f) {}
 
 	void DrawDebugGeometryOverlays()
 	{
@@ -1473,6 +1585,7 @@ private:
 	float		m_addLength;
 	float		m_minLength;
 	float		m_totalLength;
+	float		m_length;
 };
 
 BEGIN_DATADESC( CPhysLength )
@@ -1480,6 +1593,7 @@ BEGIN_DATADESC( CPhysLength )
 	DEFINE_AUTO_ARRAY( m_offset, FIELD_VECTOR ),
 	DEFINE_KEYFIELD( m_addLength, FIELD_FLOAT, "addlength" ),
 	DEFINE_KEYFIELD( m_minLength, FIELD_FLOAT, "minlength" ),
+	DEFINE_KEYFIELD( m_length, FIELD_FLOAT, "length" ),
 	DEFINE_KEYFIELD( m_vecAttach, FIELD_POSITION_VECTOR, "attachpoint" ),
 	DEFINE_FIELD( m_totalLength, FIELD_FLOAT ),
 END_DATADESC()
@@ -1500,7 +1614,8 @@ IPhysicsConstraint *CPhysLength::CreateConstraint( IPhysicsConstraintGroup *pGro
 	position[1] = m_vecAttach;
 	int index = info.swapped ? 1 : 0;
 	length.InitWorldspace( info.pObjects[0], info.pObjects[1], position[index], position[!index] );
-	length.totalLength += m_addLength;
+	// GMod accepts an explicit length; map ropes may still use added length.
+	length.totalLength = MAX( 0.1f, m_length > 0.0f ? m_length : length.totalLength + m_addLength );
 	length.minLength = m_minLength;
 	m_totalLength = length.totalLength;
 	if ( HasSpawnFlags(SF_LENGTH_RIGID) )

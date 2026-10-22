@@ -168,15 +168,8 @@ static int luasrc_print (lua_State *L) {
 
 static int luasrc_type (lua_State *L) {
   luaL_checkany(L, 1);
-  if (lua_getmetatable(L, 1)) {
-    lua_pushstring(L, "__type");
-	lua_rawget(L, -2);
-	lua_remove(L, -2);
-	if (!lua_isstring(L, -1))
-	  lua_pop(L, 1);
-	else
-	  return 1;
-  }
+  // The Lua bootstrap captures this primitive before adding named userdata types.
+  // Predicates such as isentity must retain access to the underlying Lua type.
   lua_pushstring(L, luaL_typename(L, 1));
   return 1;
 }
@@ -2146,6 +2139,10 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 	return iError;
 }
 
+#ifndef CLIENT_DLL
+extern void HL2SB_InstallNativeUserMessages( lua_State *L );
+#endif
+
 LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 {
 	FileFindHandle_t fh;
@@ -2258,6 +2255,12 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 		fn = g_pFullFileSystem->FindNext( fh );
 	}
 	g_pFullFileSystem->FindClose( fh );
+#ifndef CLIENT_DLL
+	// Native recipient handling replaces the legacy sender after module loading.
+	// The original usermessage receiver and addon scripts remain unchanged.
+	if ( !Q_stricmp( path, LUA_PATH_MODULES ) )
+		HL2SB_InstallNativeUserMessages( L );
+#endif
 	if ( nFailed > 0 )
 		luasrc_LuaWarnMsgF( "[Lua] %s -> %d file(s), %d FAILED\n", path, nLoaded, nFailed );
 	else
@@ -3333,6 +3336,15 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 
 	char entDir[ MAX_PATH ];
 	Q_snprintf( entDir, sizeof( entDir ), "weapons/%s", className );
+	// Old base tables use an empty category; let the registry supply its default.
+	lua_getfield( L, -1, "Category" );
+	const bool emptyCategory = lua_type( L, -1 ) == LUA_TSTRING && lua_rawlen( L, -1 ) == 0;
+	lua_pop( L, 1 );
+	if ( emptyCategory )
+	{
+		lua_pushnil( L );
+		lua_setfield( L, -2, "Category" );
+	}
 	lua_pushstring( L, entDir );
 	lua_setfield( L, -2, "__folder" );
 	lua_pushstring( L, LUA_BASE_WEAPON );

@@ -11,6 +11,7 @@
 #include "vphysics_interface.h"
 #include "vphysics/performance.h"
 #include "luamanager.h"
+#include "inputsystem/ButtonCode.h"
 #include "luasrclib.h"
 #include "lvphysics_interface.h"
 #include "vphysics/lperformance.h"
@@ -761,6 +762,26 @@ static int IPhysicsObject_CalculateVelocityOffset (lua_State *L) {
   return 2;
 }
 
+static int IPhysicsObject_AlignAngles (lua_State *L) {
+  IPhysicsObject *object = luaL_checkphysicsobject(L, 1);
+  QAngle source = luaL_checkangle(L, 2);
+  QAngle target = luaL_checkangle(L, 3);
+  Vector position;
+  QAngle current;
+  object->GetPosition(&position, &current);
+  matrix3x4_t sourceMatrix, inverseSource, targetMatrix, currentMatrix, delta, aligned;
+  AngleMatrix(source, sourceMatrix);
+  MatrixInvert(sourceMatrix, inverseSource);
+  AngleMatrix(target, targetMatrix);
+  ConcatTransforms(targetMatrix, inverseSource, delta);
+  AngleMatrix(current, currentMatrix);
+  ConcatTransforms(delta, currentMatrix, aligned);
+  QAngle result;
+  MatrixAngles(aligned, result);
+  lua_pushangle(L, result);
+  return 1;
+}
+
 static int IPhysicsObject_EnableCollisions (lua_State *L) {
   luaL_checkphysicsobject(L, 1)->EnableCollisions(luaL_checkboolean(L, 2));
   return 0;
@@ -1285,6 +1306,7 @@ static int IPhysicsObject___tostring (lua_State *L) {
 
 
 static const luaL_Reg IPhysicsObjectmeta[] = {
+  {"AlignAngles", IPhysicsObject_AlignAngles},
   {"AddVelocity", IPhysicsObject_AddVelocity},
   {"AddAngleVelocity", IPhysicsObject_AddAngleVelocity},
   {"ApplyForceCenter", IPhysicsObject_ApplyForceCenter},
@@ -1373,6 +1395,11 @@ static const luaL_Reg IPhysicsObjectmeta[] = {
 ** Open IPhysicsObject object
 */
 LUALIB_API int luaopen_IPhysicsObject (lua_State *L) {
+  lua_pushinteger(L, IMotionEvent::SIM_NOTHING); lua_setglobal(L, "SIM_NOTHING");
+  lua_pushinteger(L, IMotionEvent::SIM_LOCAL_ACCELERATION); lua_setglobal(L, "SIM_LOCAL_ACCELERATION");
+  lua_pushinteger(L, IMotionEvent::SIM_LOCAL_FORCE); lua_setglobal(L, "SIM_LOCAL_FORCE");
+  lua_pushinteger(L, IMotionEvent::SIM_GLOBAL_ACCELERATION); lua_setglobal(L, "SIM_GLOBAL_ACCELERATION");
+  lua_pushinteger(L, IMotionEvent::SIM_GLOBAL_FORCE); lua_setglobal(L, "SIM_GLOBAL_FORCE");
   luaL_newmetatable(L, LUA_PHYSICSOBJECTLIBNAME);
   luaL_register(L, NULL, IPhysicsObjectmeta);
   lua_pushvalue(L, -1);  /* push metatable */

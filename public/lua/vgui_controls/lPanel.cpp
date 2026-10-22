@@ -41,6 +41,8 @@
 #include "vgui/LVGUI.h"
 #include "vgui_controls/HTML.h"
 #include "VGuiMatSurface/IMatSystemSurface.h"
+#include "vgui/ILocalize.h"
+#include "tier3/tier3.h"
 #include "filesystem.h"
 #include "iviewrender.h"
 #include "view_shared.h"
@@ -489,12 +491,25 @@ static int Panel_GetRefTable (lua_State *L) {
 void HL2SB_LuaPanelSetHovered(lua_State *state, Panel *panel, bool hovered)
 {
   if (!state || (state != ::L && state != LGameUI)) return;
+  lua_checkstack(state, 12);
   Panel_PushTable(state, panel);
+  bool changed = false;
   if (lua_istable(state, -1)) {
+    lua_getfield(state, -1, "Hovered");
+    changed = (lua_toboolean(state, -1) != 0) != hovered;
+    lua_pop(state, 1);
     lua_pushboolean(state, hovered);
     lua_setfield(state, -2, "Hovered");
   }
   lua_pop(state, 1);
+  if (changed) {
+    // GMod raises this global independently of the control's cursor methods.
+    lua_getglobal(state, hovered ? "ChangeTooltip" : "EndTooltip");
+    if (lua_isfunction(state, -1)) {
+      lua_pushpanel(state, panel);
+      luasrc_pcall(state, 1, 0, 0);
+    } else lua_pop(state, 1);
+  }
 }
 
 bool HL2SB_LuaPanelBeginPaint(lua_State *state, Panel *panel)
@@ -1732,10 +1747,30 @@ static int Panel_IsModal (lua_State *L) {
   return 1;
 }
 
-// GMod Panel:SetDrawOnTop( bool ) -- keep the panel above other popups
-// (dtooltip/dmenu use it).  vgui2's face for that is IPanel::SetTopmostPopup.
+// Register non-popup controls in the surface's ordered paint list without
+// changing keyboard or mouse input. A topmost flag alone does not paint them.
 static int Panel_SetDrawOnTop (lua_State *L) {
-  vgui::ipanel()->SetTopmostPopup( luaL_checkpanel(L, 1)->GetVPanel(), luaL_checkboolean(L, 2) != 0 );
+  Panel *panel = luaL_checkpanel(L, 1);
+  const bool onTop = luaL_checkboolean(L, 2) != 0;
+  Panel_PushTable(L, panel);
+  lua_pushliteral(L, "__hl2sb_DrawOnTopPopup");
+  lua_rawget(L, -2);
+  const bool promoted = lua_toboolean(L, -1) != 0;
+  lua_pop(L, 1);
+  if (onTop && !panel->IsPopup()) {
+    vgui::surface()->CreatePopup(panel->GetVPanel(), false, false, false,
+        panel->IsMouseInputEnabled(), panel->IsKeyBoardInputEnabled());
+    lua_pushboolean(L, true);
+    lua_setfield(L, -2, "__hl2sb_DrawOnTopPopup");
+  } else if (!onTop && promoted) {
+    vgui::surface()->ReleasePanel(panel->GetVPanel());
+    vgui::ipanel()->SetPopup(panel->GetVPanel(), false);
+    lua_pushnil(L);
+    lua_setfield(L, -2, "__hl2sb_DrawOnTopPopup");
+  }
+  lua_pop(L, 1);
+  vgui::ipanel()->SetTopmostPopup(panel->GetVPanel(), onTop);
+  if (onTop) vgui::surface()->MovePopupToFront(panel->GetVPanel());
   return 0;
 }
 
@@ -1914,6 +1949,9 @@ static int Panel_SetText (lua_State *L) {
         }
       }
     }
+    // Unknown localization labels fall back to readable text without '#'.
+    if (pszText[0] == '#' && (!g_pVGuiLocalize || !g_pVGuiLocalize->Find(pszText)))
+      ++pszText;
     pLabel->SetText(pszText);
     lua_settop(L, top);
   }

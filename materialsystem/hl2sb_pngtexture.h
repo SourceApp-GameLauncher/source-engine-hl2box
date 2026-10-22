@@ -88,9 +88,8 @@ CThreadFastMutex &HL2SB_ImageDecodeMutex();
 // whenever this file or the LoadTexture image branch changes; the value is
 // printed at material system init ("[HL2SB] materialsystem image-cache build
 // ...") so a user test session can prove which build it ran.
-// 6: GMod pngParameters pass ("!"-prefixed parameterised names, texture flags
-//    from digits, .cache whitelist, spawnicons MOD-first probe), H2IC v2
-//    (64-bit mtime key + payload CRC) + size-capped cache pruning.
-#define HL2SB_IMAGECACHE_BUILD_REV 6
+// 7: Decode source images into resident textures without a second disk cache.
+//    Generated spawnicons use the mod's materials/spawnicons directory.
+#define HL2SB_IMAGECACHE_BUILD_REV 7
 
 #endif // HL2SB_PNGTEXTURE_H

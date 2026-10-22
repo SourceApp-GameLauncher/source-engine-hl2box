@@ -5,6 +5,9 @@
 //=============================================================================//
 
 #include "cbase.h"
+#ifdef LUA_SDK
+#include "lua/hl2sb_playerbuttons.h"
+#endif
 #include "player.h"
 #include "usercmd.h"
 #include "igamemovement.h"
@@ -343,6 +346,9 @@ void CPlayerMove::RunCommand ( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	// Set globals appropriately
 	gpGlobals->curtime		=  playerCurTime;
 	gpGlobals->frametime	=  playerFrameTime;
+#ifdef LUA_SDK
+	if (!player->m_bGamePaused) HL2SB_RunPlayerButtons(player, ucmd);
+#endif
 
 	// Prevent hacked clients from sending us invalid view angles to try to get leaf server code to crash
 	if ( !ucmd->viewangles.IsValid() || !IsEntityQAngleReasonable(ucmd->viewangles) )

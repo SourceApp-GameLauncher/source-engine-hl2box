@@ -44,6 +44,10 @@ IMPLEMENT_CLIENTCLASS_DT_NOBASE( C_RopeKeyframe, DT_RopeKeyframe, CRopeKeyframe 
 	RecvPropEHandle( RECVINFO(m_hEndPoint) ),
 	RecvPropInt( RECVINFO(m_iStartAttachment) ),
 	RecvPropInt( RECVINFO(m_iEndAttachment) ),
+	RecvPropVector(RECVINFO(m_vecStartOffset)),
+	RecvPropVector(RECVINFO(m_vecEndOffset)),
+	RecvPropInt(RECVINFO(m_iStartBone)),
+	RecvPropInt(RECVINFO(m_iEndBone)),
 
 	RecvPropInt( RECVINFO(m_fLockedPoints) ),
 	RecvPropInt( RECVINFO(m_Slack), 0, RecvProxy_RecomputeSprings ),
@@ -1033,6 +1037,9 @@ C_RopeKeyframe::C_RopeKeyframe()
 	m_TextureHeight = 1;
 	m_hStartPoint = m_hEndPoint = NULL;
 	m_iStartAttachment = m_iEndAttachment = 0;
+	m_vecStartOffset.Init();
+	m_vecEndOffset.Init();
+	m_iStartBone = m_iEndBone = -1;
 	m_vColorMod.Init( 1, 1, 1 );
 	m_nLinksTouchingSomething = 0;
 	m_Subdiv = 255; // default to using the cvar
@@ -1947,13 +1954,58 @@ bool C_RopeKeyframe::CalculateEndPointAttachment( C_BaseEntity *pEnt, int iAttac
 	return true;
 }
 
+extern int HL2SB_RagdollPhysicsBoneToBone(C_BaseAnimating *entity, int bone);
+bool C_RopeKeyframe::CalculateLuaEndPoint(int point, Vector &position, QAngle *angles)
+{
+	C_BaseEntity *entity = point == 0 ? m_hStartPoint.Get() : m_hEndPoint.Get();
+	int physicsBone = point == 0 ? m_iStartBone : m_iEndBone;
+	int attachment = point == 0 ? m_iStartAttachment : m_iEndAttachment;
+	if (physicsBone < 0) return CalculateEndPointAttachment(entity, attachment, position, angles);
+	if (!entity) return false;
+	const Vector &offset = point == 0 ? m_vecStartOffset : m_vecEndOffset;
+	if (entity->entindex() == 0)
+	{
+		position = offset;
+		if (angles) angles->Init();
+		return true;
+	}
+	matrix3x4_t transform;
+	MatrixCopy(entity->EntityToWorldTransform(), transform);
+	C_BaseAnimating *anim = entity->GetBaseAnimating();
+	if ( anim && anim->IsRagdoll() )
+	{
+		IPhysicsObject *objects[VPHYSICS_MAX_OBJECT_LIST_COUNT];
+		const int count = entity->VPhysicsGetObjectList( objects, ARRAYSIZE(objects) );
+		if ( physicsBone < count && objects[physicsBone] )
+		{
+			objects[physicsBone]->LocalToWorld( &position, offset );
+			if ( angles ) objects[physicsBone]->GetPosition( NULL, angles );
+			return true;
+		}
+		const int bone = HL2SB_RagdollPhysicsBoneToBone( anim, physicsBone );
+		if ( bone >= 0 )
+		{
+			anim->GetBoneTransform( bone, transform );
+			VectorTransform( offset, transform, position );
+			if ( angles ) MatrixAngles( transform, *angles );
+			return true;
+		}
+		VectorTransform( offset, transform, position );
+		if ( angles ) MatrixAngles( transform, *angles );
+		return true;
+	}
+	VectorTransform(offset, transform, position);
+	if (angles) MatrixAngles(transform, *angles);
+	return true;
+}
+
 bool C_RopeKeyframe::GetEndPointPos( int iPt, Vector &vPos )
 {
 	// By caching the results here, we avoid doing this a bunch of times per frame.
 	if ( m_bEndPointAttachmentPositionsDirty )
 	{
-		CalculateEndPointAttachment( m_hStartPoint, m_iStartAttachment, m_vCachedEndPointAttachmentPos[0], NULL );
-		CalculateEndPointAttachment( m_hEndPoint, m_iEndAttachment, m_vCachedEndPointAttachmentPos[1], NULL );
+		CalculateLuaEndPoint(0, m_vCachedEndPointAttachmentPos[0], NULL);
+		CalculateLuaEndPoint(1, m_vCachedEndPointAttachmentPos[1], NULL);
 		m_bEndPointAttachmentPositionsDirty = false;
 	}
 
@@ -1986,8 +2038,8 @@ bool C_RopeKeyframe::GetEndPointAttachment( int iPt, Vector &vPos, QAngle &angle
 	// By caching the results here, we avoid doing this a bunch of times per frame.
 	if ( m_bEndPointAttachmentPositionsDirty || m_bEndPointAttachmentAnglesDirty )
 	{
-		CalculateEndPointAttachment( m_hStartPoint, m_iStartAttachment, m_vCachedEndPointAttachmentPos[0], &m_vCachedEndPointAttachmentAngle[0] );
-		CalculateEndPointAttachment( m_hEndPoint, m_iEndAttachment, m_vCachedEndPointAttachmentPos[1], &m_vCachedEndPointAttachmentAngle[1] );
+		CalculateLuaEndPoint(0, m_vCachedEndPointAttachmentPos[0], &m_vCachedEndPointAttachmentAngle[0]);
+		CalculateLuaEndPoint(1, m_vCachedEndPointAttachmentPos[1], &m_vCachedEndPointAttachmentAngle[1]);
 		m_bEndPointAttachmentPositionsDirty = false;
 		m_bEndPointAttachmentAnglesDirty = false;
 	}

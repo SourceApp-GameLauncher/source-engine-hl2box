@@ -15,6 +15,7 @@
 
 // our definition
 #include "scriptedhudviewport.h"
+#include "hl2sb_framestats.h"
 
 // lua hooks
 #ifdef LUA_SDK
@@ -53,56 +54,35 @@ void CScriptedHudViewport::SetParent(vgui::VPANEL parent)
 
 void CScriptedHudViewport::Paint()
 {
-	// HL2SB (2026-09-25): the timer + client->server net pumps MOVED to
-	// ClientModeShared::Update (clientmode_shared.cpp).  This Paint() only
-	// runs when a scripted HUD viewport control exists, so timers and queued
-	// net commands silently stalled on any client UI without one.
+	const bool bFrameStats = HL2SB_FrameStats_Enabled();
+	double flHookStart = 0.0;
+	if ( bFrameStats )
+	{
+		HL2SB_FrameStats_FramePulse();
+		flHookStart = Plat_FloatTime();
+	}
 
 	BEGIN_LUA_CALL_HOOK( "HudViewportPaint" );
 	END_LUA_CALL_HOOK( 0, 0 );
-
-	// HL2SB GMod compat (2026-09-23): SWEP:DrawHUDBackground() runs in the
-	// GM:HUDPaintBackground phase -- the wiki says it is called BEFORE
-	// WEAPON:DrawHUD -- and SWEP:DrawHUD() runs in the GM:HUDPaint phase.
-	// GMod order: HUDPaintBackground -> HUDPaint, so mirror that here.
-#if defined( LUA_SDK )
-	{
-		C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-		if ( pLocalPlayer != NULL && pLocalPlayer->IsAlive() )
-		{
-			CBaseCombatWeapon *pWep = pLocalPlayer->GetActiveWeapon();
-			if ( pWep != NULL && pWep->IsScripted() )
-			{
-				BEGIN_LUA_CALL_WEAPON_HOOK( "DrawHUDBackground", pWep );
-				END_LUA_CALL_WEAPON_HOOK( 0, 0 );
-			}
-		}
-	}
-#endif
-
-	// HL2SB: GMod's name for the same event.
-	//
-	// GMod addons write hook.Add( "HUDPaint", ... ) to draw a HUD (GMod passes no
-	// arguments and ignores the return value), and nothing in this tree ever fired that
-	// name: the only registration, lua/includes/extensions/client/player.lua:76, was dead.
-	// Every ported GMod HUD was silently inert - cod_c4's C4 pick-up prompt among them
-	// (addons/cod_c4/lua/entities/cod-c4/cl_init.lua:39), which is why the prompt never
-	// appeared even once its input.LookupBinding call was fixed.
-	BEGIN_LUA_CALL_HOOK( "HUDPaint" );
+	BEGIN_LUA_CALL_HOOK( "PreDrawHUD" );
+	END_LUA_CALL_HOOK( 0, 0 );
+	BEGIN_LUA_CALL_HOOK( "HUDPaintBackground" );
 	END_LUA_CALL_HOOK( 0, 0 );
 
-#if defined( LUA_SDK )
+	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
+	CBaseCombatWeapon *pWeapon = pPlayer && pPlayer->IsAlive() ? pPlayer->GetActiveWeapon() : NULL;
+	if ( pWeapon && pWeapon->IsScripted() )
 	{
-		C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-		if ( pLocalPlayer != NULL && pLocalPlayer->IsAlive() )
-		{
-			CBaseCombatWeapon *pWep = pLocalPlayer->GetActiveWeapon();
-			if ( pWep != NULL && pWep->IsScripted() )
-			{
-				BEGIN_LUA_CALL_WEAPON_HOOK( "DrawHUD", pWep );
-				END_LUA_CALL_WEAPON_HOOK( 0, 0 );
-			}
-		}
+		BEGIN_LUA_CALL_WEAPON_HOOK( "DrawHUDBackground", pWeapon );
+		END_LUA_CALL_WEAPON_HOOK( 0, 0 );
 	}
-#endif
+
+	// The gamemode dispatches the weapon HUD. Paint it once, before Lua panels.
+	BEGIN_LUA_CALL_HOOK( "HUDPaint" );
+	END_LUA_CALL_HOOK( 0, 0 );
+	if ( bFrameStats )
+		HL2SB_FrameStats_NoteLuaHook( "HUDPaint", Plat_FloatTime() - flHookStart );
+
+	BEGIN_LUA_CALL_HOOK( "PostDrawHUD" );
+	END_LUA_CALL_HOOK( 0, 0 );
 }

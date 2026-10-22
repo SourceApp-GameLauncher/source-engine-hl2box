@@ -563,7 +563,7 @@ static CThreadFastMutex s_ImageMaterialsMutex;
 // and the unconditional $translucent/$nocull the old synthesis applied are
 // gone (GMod has neither by default).  A path with no image file is no longer
 // cached either -- GMod re-probes every call and hands out the error material.
-static IMaterial *HL2SB_FindOrCreateImageMaterial( const char *pMaterialName, const char *pDigits )
+IMaterial *HL2SB_FindImageMaterial( const char *pMaterialName, const char *pDigits )
 {
     char szKey[MAX_PATH];
     Q_snprintf( szKey, sizeof( szKey ), "!%s%s", pDigits, pMaterialName );
@@ -616,7 +616,6 @@ static IMaterial *HL2SB_FindOrCreateImageMaterial( const char *pMaterialName, co
             // the reference the material system may cull it (same as
             // HL2SB_CreateMaterial below).
             pMaterial->IncrementReferenceCount();
-            luasrc_LuaInfoMsgF( "[HL2SB] Material('%s') -> image material\n", szKey );
         }
     }
 
@@ -856,7 +855,7 @@ static int HL2SB_Material( lua_State *L )
     if ( bImageName && HL2SB_ImagePathValid( pMaterialName ) )
     {
         HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_MATERIAL_IMG );
-        IMaterial *pImageMaterial = HL2SB_FindOrCreateImageMaterial( pMaterialName, pDigits );
+        IMaterial *pImageMaterial = HL2SB_FindImageMaterial( pMaterialName, pDigits );
         if ( pImageMaterial )
         {
             lua_pushmaterial( L, pImageMaterial );
