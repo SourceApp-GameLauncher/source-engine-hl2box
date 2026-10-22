@@ -39,7 +39,12 @@
 #endif
 
 
-#if !defined(PLATFORM_GLIBC) && defined(LINUX) // fuck musl
+// Toolchains older than C++11 have no nullptr keyword, so on non-glibc Linux
+// (musl) the name is mapped to the integer zero.  A C++11 toolchain has the
+// keyword, and mapping it away breaks every library header that is parsed
+// afterwards: the libc++ containers fail to compile when the keyword is
+// replaced before their headers are read.
+#if !defined(PLATFORM_GLIBC) && defined(LINUX) && (!defined(__cplusplus) || __cplusplus < 201103L)
 #ifdef nullptr
 #undef nullptr
 #endif
