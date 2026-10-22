@@ -18,7 +18,7 @@
 // HL2SB: game.AddParticles() below drives the particle system manager directly.
 #include "particles/particles.h"
 #include "filesystem.h"
-#include "tier1/commandbuffer.h"
+#include "tier1/CommandBuffer.h"
 // HL2SB: luaL_checkentity (SuppressHostEvents), the GMod global helpers
 // registered at the end, the NetworkVar shim (which hands a 0..1 Vector back for
 // a Vector-declared variable, a 0..255 Color otherwise) and the vector/color
