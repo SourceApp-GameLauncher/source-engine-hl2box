@@ -25,11 +25,13 @@
 #endif
 #include "vphysics/constraints.h"
 #include "physics.h"
-#include "effect_dispatch_data.h"	// HL2SB GMod compat: the RMB-freeze TeslaHitboxes dispatch
+#include "effect_dispatch_data.h"
 #ifndef CLIENT_DLL
 #include "te_effect_dispatch.h"		// HL2SB: server-side DispatchEffect( name, data )
+#include "recipientfilter.h"
 #endif
 #include "in_buttons.h"
+#include "basescripted.h"
 #include "IEffects.h"
 #include "soundenvelope.h"
 #include "engine/IEngineSound.h"
@@ -122,6 +124,48 @@ ConVar physgun_maxrange( "physgun_maxrange", "4096", FCVAR_ARCHIVE | FCVAR_REPLI
 ConVar phys_spinspeed( "phys_spinspeed", "200", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: E+A/D spin speed (degrees per second)" );
 ConVar gm_snapangles( "gm_snapangles", "45", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: Shift+E angle snap grid (degrees, 0 disables)" );
 ConVar gm_snapgrid( "gm_snapgrid", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: snap grid size (0 disables)" );
+
+#ifndef CLIENT_DLL
+static int HL2SB_PhysgunPlayerFrozeObject( lua_State *state )
+{
+	lua_getglobal( state, "DisablePropCreateEffect" );
+	const bool disabled = lua_toboolean( state, -1 ) != 0;
+	lua_pop( state, 1 );
+	if ( disabled )
+		return 0;
+
+	CBaseEntity *entity = lua_toentity( state, 3 );
+	IPhysicsObject *body = lua_tophysicsobject( state, 4 );
+	if ( entity == NULL || body == NULL )
+		return 0;
+
+	CEffectData data;
+	body->GetPosition( &data.m_vOrigin, NULL );
+	data.m_nEntIndex = entity->entindex();
+	CPASFilter filter( data.m_vOrigin );
+	filter.SetIgnorePredictionCull( true );
+	DispatchEffect( "phys_freeze", data, filter );
+	return 0;
+}
+
+void HL2SB_InstallPhysgunGamemodeEffects( lua_State *state )
+{
+	// Complete the legacy sandbox table before gamemode inheritance is applied.
+	lua_getglobal( state, "GM" );
+	if ( lua_istable( state, -1 ) )
+	{
+		lua_getfield( state, -1, "PlayerFrozeObject" );
+		const bool missing = lua_isnil( state, -1 );
+		lua_pop( state, 1 );
+		if ( missing )
+		{
+			lua_pushcfunction( state, HL2SB_PhysgunPlayerFrozeObject );
+			lua_setfield( state, -2, "PlayerFrozeObject" );
+		}
+	}
+	lua_pop( state, 1 );
+}
+#endif
 
 // HL2SB (2026-10-03): physgun visual diagnostics, BOTH realms (the server
 // prints its beam-entity spawn, the client prints the client entity's
@@ -426,25 +470,23 @@ public:
 	void GetRenderBounds( Vector& mins, Vector& maxs )
 	{
 		BaseClass::GetRenderBounds( mins, maxs );
-
-		// add to the bounds, don't clear them.
-		// ClearBounds( mins, maxs );
-		AddPointToBounds( vec3_origin, mins, maxs );
-		AddPointToBounds( m_targetPosition, mins, maxs );
-		AddPointToBounds( m_worldPosition, mins, maxs );
 	}
 
 	void GetRenderBoundsWorldspace( Vector& mins, Vector& maxs )
 	{
 		BaseClass::GetRenderBoundsWorldspace( mins, maxs );
-
-		// add to the bounds, don't clear them.
-		// ClearBounds( mins, maxs );
-		AddPointToBounds( vec3_origin, mins, maxs );
-		AddPointToBounds( m_targetPosition, mins, maxs );
-		AddPointToBounds( m_worldPosition, mins, maxs );
-		mins -= GetRenderOrigin();
-		maxs -= GetRenderOrigin();
+		// World-space bounds must stay in world space for reflection culling.
+		C_BasePlayer *pOwner = ToBasePlayer( GetOwner() );
+		if ( pOwner != NULL )
+			AddPointToBounds( pOwner->Weapon_ShootPosition(), mins, maxs );
+		C_BaseEntity *pTarget = m_hObject;
+		if ( pTarget != NULL && pTarget != this )
+		{
+			Vector targetMins, targetMaxs;
+			pTarget->GetRenderBoundsWorldspace( targetMins, targetMaxs );
+			AddPointToBounds( targetMins, mins, maxs );
+			AddPointToBounds( targetMaxs, mins, maxs );
+		}
 	}
 
 	int KeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding )
@@ -874,10 +916,8 @@ void CWeaponGravityGun::TraceLine( trace_t *ptr )
 	pOwner->EyeVectors( &forward, NULL, NULL );
 
 	start = pOwner->Weapon_ShootPosition();
-	Vector end = start + forward * physgun_maxrange.GetFloat();
-
-	// UTIL_TraceLine( start, end, MASK_SHOT, pOwner, COLLISION_GROUP_NONE, ptr );
-	UTIL_TraceLine( start, end, MASK_SHOT|CONTENTS_GRATE, pOwner, COLLISION_GROUP_NONE, ptr );
+	Vector end = start + forward * ( 2.0f * physgun_maxrange.GetFloat() );
+	UTIL_TraceLine( start, end, MASK_SHOT_HULL | CONTENTS_AUX, pOwner, COLLISION_GROUP_NONE, ptr );
 }
 
 //-----------------------------------------------------------------------------
@@ -942,7 +982,7 @@ void CWeaponGravityGun::EffectUpdate( void )
 
 	TraceLine( &tr );
 	Vector end = tr.endpos;
-	float distance = tr.fraction * physgun_maxrange.GetFloat();
+	float distance = start.DistTo( end );
 
 	if ( m_hObject == NULL && !m_bFreezeReleaseLatch &&
 		m_flNextPrimaryAttack <= gpGlobals->curtime && tr.DidHit() &&
@@ -1485,7 +1525,8 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 	// 2) 或者属于真 NPC / NextBot（通过 IsNPC 或 MyNPCPointer 判断）；
 	// 3) 或者属于被 gamemode 显式放行的玩家。
 	bool bHasBody = ( pPhysics != NULL && pObject->GetMoveType() == MOVETYPE_VPHYSICS );
-	bool bIsNPC = pObject->IsNPC() || pObject->MyNPCPointer() != NULL || pObject->MyNextBotPointer() != NULL;
+	bool bIsNPC = pObject->IsNPC() || pObject->MyNPCPointer() != NULL || pObject->MyNextBotPointer() != NULL ||
+		( dynamic_cast< CBaseScripted * >( pObject ) != NULL && pObject->GetMoveType() == MOVETYPE_STEP );
 	bool bIsPlayer = pObject->IsPlayer();
 
 	if ( !bHasBody && !bIsNPC && !bIsPlayer )
@@ -1555,7 +1596,8 @@ void CWeaponGravityGun::AttachObject( CBaseEntity *pObject, IPhysicsObject *pPhy
 		VectorITransform( end, bodyToWorld, m_vecHoldPos.GetForModify() );
 		return;
 	}
-	if ( pObject->IsNPC() || pObject->IsNextBot() )
+	if ( pObject->IsNPC() || pObject->IsNextBot() ||
+		( dynamic_cast< CBaseScripted * >( pObject ) != NULL && pObject->GetMoveType() == MOVETYPE_STEP ) )
 	{
 		pObject->WorldToEntitySpace( end, &m_vecHoldPos.GetForModify() );
 		return;
@@ -1768,12 +1810,6 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 	if ( pOwner->GetActiveWeapon() != this )
 		return;
 
-	{
-		extern ConVar physgun_drawbeams;
-		if ( !physgun_drawbeams.GetBool() )
-			return;
-	}
-
 	// The anchor is the view model's attachment 1 (muzzle) in first person;
 	// the weapon entity's attachment 1 otherwise (the mirror passes may cull
 	// the view model).  Fallback: the owner's shoot position.
@@ -1798,7 +1834,7 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 	else
 		AngleVectors( pOwner->EyeAngles(), &vecAimDir );
 
-	bool bBoneTarget = ( m_physicsBone > 0 );
+	bool bBoneTarget = ( m_hObject != NULL );
 
 	// The beam end: m_vecHoldPos transformed back by the target, or the scan
 	// trace endpos when nothing is held.
@@ -1824,7 +1860,9 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 	else
 	{
 		trace_t tr;
-		TraceLine( &tr );
+		Vector start = pOwner->Weapon_ShootPosition();
+		UTIL_TraceLine( start, start + vecAimDir * ( physgun_maxrange.GetFloat() * 0.5f ),
+			MASK_SHOT_HULL, pOwner, COLLISION_GROUP_NONE, &tr );
 		vecEnd = tr.endpos;
 	}
 
@@ -1886,7 +1924,11 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 		return;
 	}
 
-	// ACTIVE: claw sprites (2, or 7 on a bone target) marching along the aim
+	extern ConVar physgun_drawbeams;
+	if ( !physgun_drawbeams.GetBool() )
+		return;
+
+	// ACTIVE: claw sprites (2, or 7 with a target) marching along the aim
 	// direction at 2 units each.
 	int nClaw = bBoneTarget ? 7 : 2;
 	// HL2SB (2026-10-03): the reference's hold claw size arguments were
@@ -1909,25 +1951,20 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 		}
 	}
 
-	// HL2SB (2026-10-03): the ribbon is STRAIGHT, like the reference beam.
-	// The control point used to ride the AIM direction at half the span,
-	// which bows the quadratic Bezier whenever the hold end sits off the aim
-	// line (an NPC grabbed at its hit point, a bone hold) - the "beam bends
-	// when grabbing NPCs" report.  A control point at the midpoint of the
-	// endpoints degenerates the quadratic Bezier to the exact straight
-	// segment; the width flicker and scroll keep the reference look.  A bone
-	// hold swaps the ribbon material and scroll direction.
-	Vector vecControl = ( vecMuzzle + vecEnd ) * 0.5f;
+	// The control point follows the aim ray while the end follows the held body.
+	Vector vecControl = pTarget != NULL
+		? pOwner->Weapon_ShootPosition() + vecAimDir * vecMuzzle.DistTo( vecEnd ) * 0.6f
+		: vecEnd;
 
 	CMatRenderContextPtr pRenderContext( materials );
 	IMaterial *pRibbon = materials->FindMaterial( bBoneTarget ? "sprites/physbeama" : "sprites/physbeam", TEXTURE_GROUP_CLIENT_EFFECTS );
 	pRenderContext->Bind( pRibbon );
 	Vector vecRibbonColor( r / 255.0f, g / 255.0f, b / 255.0f );
 
-	float flScroll = gpGlobals->curtime * ( bBoneTarget ? 2.5625f : -2.0f );
+	float flScroll = gpGlobals->curtime * ( bBoneTarget ? 10.0f : -2.0f );
 	HL2SB_DrawPhysgunRibbon( vecMuzzle, vecControl, vecEnd, 2.0f, vecRibbonColor, flScroll );
-	HL2SB_DrawPhysgunRibbon( vecMuzzle, vecControl, vecEnd, random->RandomFloat( 2.0f, 5.0f ), vecRibbonColor, flScroll );
-	HL2SB_DrawPhysgunRibbon( vecMuzzle, vecControl, vecEnd, random->RandomFloat( 2.0f, 6.0f ), vecRibbonColor, flScroll );
+	HL2SB_DrawPhysgunRibbon( vecEnd, vecControl, vecMuzzle, random->RandomFloat( 2.0f, 5.0f ), vecRibbonColor, flScroll * 1.1f );
+	HL2SB_DrawPhysgunRibbon( vecEnd, vecControl, vecMuzzle, random->RandomFloat( 2.0f, 6.0f ), vecRibbonColor, flScroll * -0.9f );
 
 	// End dot at the hold point - the "aim dot"; idle shows NOTHING there.
 	int nEnd = bBoneTarget ? 7 : 2;

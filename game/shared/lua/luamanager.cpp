@@ -3641,6 +3641,13 @@ bool luasrc_LoadGamemode (const char *gamemode) {
   {
     filesystem->RelativePathToFullPath( filename, "MOD", fullpath, sizeof( fullpath ) );
 	if (luasrc_dofile(L, fullpath) == 0) {
+	#ifndef CLIENT_DLL
+	  if ( !Q_stricmp( gamemode, "sandbox" ) )
+	  {
+	    extern void HL2SB_InstallPhysgunGamemodeEffects( lua_State *state );
+	    HL2SB_InstallPhysgunGamemodeEffects( L );
+	  }
+	#endif
 	  lua_getglobal(L, "gamemode");
 	  lua_getfield(L, -1, "register");
 	  lua_remove(L, -2);
