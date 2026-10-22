@@ -1114,6 +1114,7 @@ void CSDLMgr::SetMouseVisible( bool bState )
 	{
 		m_bCursorVisible = bState;
 		m_bSetMouseVisibleCalled = true;
+		NotifyMouseVisibilityChanged(bState);
 	}
 }
 
@@ -1131,6 +1132,7 @@ void CSDLMgr::SetMouseCursor( SDL_Cursor *hCursor )
 		else
 		{
 			m_hCursor = hCursor;
+			NotifyCursorChanged(hCursor);
 		}
 		m_bSetMouseCursorCalled = true;
 	}
