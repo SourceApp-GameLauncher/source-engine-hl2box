@@ -1,6 +1,6 @@
 [submodule "thirdparty"]
 	path = thirdparty
-	url = https://github.com/nillerusr/source-thirdparty
+	url = https://github.com/2376780283/SourceApp-thirdparty.git
 [submodule "ivp"]
 	path = ivp
 	# HL2SB: fetch from our fork - it carries the local collision-guard commit
