@@ -55,6 +55,11 @@ END_DATADESC()
 #ifdef CLIENT_DLL
 extern ConVar v_viewmodel_fov;
 #endif
+
+ConVar sv_defaultdeployspeed( "sv_defaultdeployspeed", "4",
+	FCVAR_REPLICATED, "Default deploy speed for weapons",
+	true, 0.1f, true, 10.0f );
+
 // LINK_ENTITY_TO_CLASS( weapon_hl2mpbase_scriptedweapon, CHL2MPScriptedWeapon );
 // PRECACHE_WEAPON_REGISTER( weapon_hl2mpbase_scriptedweapon );
 
@@ -597,14 +602,10 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 
-	// HL2SB GMod compat (2026-10-03): SWEP.DeploySpeed seeds the weapon's
-	// deploy-speed scale (WEAPON:SetDeploySpeed); the member already defaults
-	// to 1.0, so an absent key changes nothing.
+	// Scripted weapons inherit the global deploy speed unless they specify one.
 	lua_pushweaponfield( L, m_nTableReference, "DeploySpeed" );
-	if ( lua_isnumber( L, -1 ) && lua_tonumber( L, -1 ) > 0.0f )
-	{
-		m_flDeploySpeed = lua_tonumber( L, -1 );
-	}
+	m_flDeploySpeed = MAX( 0.1f, lua_isnumber( L, -1 )
+		? (float)lua_tonumber( L, -1 ) : sv_defaultdeployspeed.GetFloat() );
 	lua_pop( L, 1 );
 
 	lua_pushweaponfield( L, m_nTableReference, "rumble" );
@@ -850,6 +851,33 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 }
 
 #ifdef CLIENT_DLL
+static void HL2SB_EnsureInitialWeaponDeploy( CHL2MPScriptedWeapon *pWeapon )
+{
+#ifdef LUA_SDK
+	if ( L == NULL || pWeapon->m_nTableReference < 0 )
+		return;
+
+	CBasePlayer *pOwner = ToBasePlayer( pWeapon->GetOwner() );
+	if ( !pOwner || pOwner != CBasePlayer::GetLocalPlayer()
+		|| pOwner->GetActiveWeapon() != pWeapon || !pOwner->IsAlive()
+		|| !pOwner->GetViewModel( pWeapon->m_nViewModelIndex, false ) )
+		return;
+
+	lua_getref( L, pWeapon->m_nTableReference );
+	if ( !lua_istable( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+	lua_pushliteral( L, "__hl2sb_client_deploy_attempted" );
+	lua_rawget( L, -2 );
+	const bool bAttempted = lua_toboolean( L, -1 ) != 0;
+	lua_pop( L, 2 );
+	if ( !bAttempted )
+		pWeapon->Deploy();
+#endif
+}
+
 void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged( updateType );
@@ -882,8 +910,11 @@ void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 
 			luasrc_LuaInfoMsgF( "[HL2SB wp] CLIENT weapon bound ent=%d refAfter=%d vmidx=%d\n",
 				entindex(), (int)m_nTableReference, (int)m_iViewModelIndex );
-			}
 		}
+	}
+
+	// Network activation can precede the client's scripted weapon binding.
+	HL2SB_EnsureInitialWeaponDeploy( this );
 }
 
 const char *CHL2MPScriptedWeapon::GetScriptedClassname( void )
@@ -1133,6 +1164,11 @@ const char *CHL2MPScriptedWeapon::GetPrintName( void ) const
 {
 #if defined ( LUA_SDK )
 	lua_pushweaponfield( L, m_nTableReference, "PrintName" );
+	if ( lua_isstring( L, -1 ) && !Q_stricmp( lua_tostring( L, -1 ), "#GMOD_Fists" ) )
+	{
+		lua_pop( L, 1 );
+		return "#weapon_fists";
+	}
 
 	RETURN_LUA_STRING();
 #endif
@@ -1777,25 +1813,38 @@ bool CHL2MPScriptedWeapon::Deploy( void )
 
 	// HL2SB: refresh self.Owner / self.Weapon BEFORE the script sees the deploy.
 	HL2SB_WeaponUpdateLuaOwnerFields( this );
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 
-	// Snapshot the fire gates before SWEP:Deploy runs so we can tell whether
-	// the script armed them itself.  In GMod the script's SetNextPrimaryFire
-	// from Deploy() is authoritative (weapon_cf_base's DeployDuration field
-	// exists precisely to set CurTime + DeployDuration there).
-	const float flPrevNextPrimaryAttack   = m_flNextPrimaryAttack;
-	const float flPrevNextSecondaryAttack = m_flNextSecondaryAttack;
+#ifdef CLIENT_DLL
+	// Record the attempt before callbacks so a veto is not retried every frame.
+	if ( L != NULL && m_nTableReference >= 0 && pOwner != NULL
+		&& pOwner->GetViewModel( m_nViewModelIndex, false ) != NULL )
+	{
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) )
+		{
+			lua_pushliteral( L, "__hl2sb_client_deploy_attempted" );
+			lua_pushboolean( L, true );
+			lua_rawset( L, -3 );
+		}
+		lua_pop( L, 1 );
+	}
+#endif
 
-	// GMod: SWEP:Deploy() returning true is the NORMAL case (weapon_base
-	// returns true) and does NOT mean "skip the engine default" - only an
-	// explicit false cancels the deploy. The engine's DefaultDeploy() has to
-	// run: it sets the viewmodel, plays the draw activity, fires
-	// WeaponSound(DEPLOY), unhides the weapon and arms m_flNextPrimaryAttack.
+	// GMod prepares the model and default draw before the script chooses its
+	// own sequence, playback rate and attack times.
+	BaseClass::Deploy();
+	if ( pOwner != NULL )
+	{
+		CBaseViewModel *pViewModel = pOwner->GetViewModel( m_nViewModelIndex, false );
+		if ( pViewModel != NULL )
+			pViewModel->SetPlaybackRate( MAX( 0.1f, GetDeploySpeed() ) );
+	}
+
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Deploy" );
 	END_LUA_CALL_WEAPON_METHOD( 0, 1 );
 
-	// HL2SB (2026-10-01) probe: capture what SWEP:Deploy answered BEFORE
-	// RETURN_LUA_VETO pops it. top=0 -> pcall errored (traceback logged);
-	// isbool=1 boolval=0 -> explicit veto (BaseClass::Deploy skipped).
+	// Capture the script result before the return-value handler consumes it.
 	{
 		const int iTop = lua_gettop( L );
 		const bool bIsBool = ( iTop > 0 && lua_isboolean( L, -1 ) ) != 0;
@@ -1812,49 +1861,7 @@ bool CHL2MPScriptedWeapon::Deploy( void )
 
 	RETURN_LUA_VETO();
 
-	const bool bScriptArmedPrimary   = ( m_flNextPrimaryAttack   != flPrevNextPrimaryAttack );
-	const bool bScriptArmedSecondary = ( m_flNextSecondaryAttack != flPrevNextSecondaryAttack );
-	const float flScriptNextPrimaryAttack   = m_flNextPrimaryAttack;
-	const float flScriptNextSecondaryAttack = m_flNextSecondaryAttack;
-
-	const bool bResult = BaseClass::Deploy();
-
-	// HL2SB probe: what did the stock deploy chain decide?
-	luasrc_LuaInfoMsgF( "[HL2SB wp] %s Deploy stock ent=%d class='%s' result=%d anyammo=%d autoswfrom=%d drawact=%d state=%d\n",
-#ifdef CLIENT_DLL
-		"CLIENT",
-#else
-		"SERVER",
-#endif
-		entindex(), GetClassname(), bResult ? 1 : 0, HasAnyAmmo() ? 1 : 0,
-		AllowsAutoSwitchFrom() ? 1 : 0, (int)GetDrawActivity(), (int)m_iState );
-
-	// HL2SB (2026-09-22): DefaultDeploy() re-stamps both gates with
-	// curtime + SequenceDuration() AFTER the script ran - and, worse,
-	// pOwner->SetNextAttack( curtime + SequenceDuration() ), which parks the
-	// whole weapon in ItemBusyFrame so the Lua fire-button dispatch never
-	// runs at all.  With a draw activity that resolves long (or fails to
-	// resolve and leaves SequenceDuration() on whatever sequence is current)
-	// that locked CF SWEPs out for ~1s after deploy, while GMod fires at
-	// DeployDuration.  Restore what the script asked for; never hold the
-	// owner past the script's own gate.
-	if ( bScriptArmedPrimary )
-		m_flNextPrimaryAttack = flScriptNextPrimaryAttack;
-	if ( bScriptArmedSecondary )
-		m_flNextSecondaryAttack = flScriptNextSecondaryAttack;
-
-	if ( bScriptArmedPrimary || bScriptArmedSecondary )
-	{
-		CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-		if ( pOwner != NULL )
-		{
-			const float flScriptGate = bScriptArmedPrimary ? flScriptNextPrimaryAttack : flScriptNextSecondaryAttack;
-			if ( pOwner->GetNextAttack() > flScriptGate )
-				pOwner->SetNextAttack( flScriptGate );
-		}
-	}
-
-	return bResult;
+	return true;
 #else
 	return BaseClass::Deploy();
 #endif
@@ -2242,6 +2249,9 @@ bool CHL2MPScriptedWeapon::Holster( CBaseCombatWeapon *pSwitchingTo )
 //-----------------------------------------------------------------------------
 void CHL2MPScriptedWeapon::ItemPostFrame( void )
 {
+#ifdef CLIENT_DLL
+	HL2SB_EnsureInitialWeaponDeploy( this );
+#endif
 #if defined ( LUA_SDK )
 	// GMod calls SWEP:Think() every frame while the weapon is active.
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Think" );
@@ -2481,6 +2491,9 @@ void CHL2MPScriptedWeapon::ItemPostFrame( void )
 //-----------------------------------------------------------------------------
 void CHL2MPScriptedWeapon::ItemBusyFrame( void )
 {
+#ifdef CLIENT_DLL
+	HL2SB_EnsureInitialWeaponDeploy( this );
+#endif
 #if defined ( LUA_SDK )
 	BEGIN_LUA_CALL_WEAPON_METHOD( "ItemBusyFrame" );
 	END_LUA_CALL_WEAPON_METHOD( 0, 1 );

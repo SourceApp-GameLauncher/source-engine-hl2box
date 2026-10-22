@@ -83,10 +83,10 @@ class LLabel : public Label
     protected:
     virtual void ApplySchemeSettings( vgui::IScheme *pScheme )
     {
+        BaseClass::ApplySchemeSettings( pScheme );
+
         LUA_CALL_PANEL_METHOD_BEGIN( "ApplySchemeSettings" );
         LUA_CALL_PANEL_METHOD_END( 0, 0 );
-
-        BaseClass::ApplySchemeSettings( pScheme );
     }
 
     /*
