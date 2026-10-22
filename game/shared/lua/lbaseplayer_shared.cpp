@@ -37,6 +37,7 @@ extern bool HL2SB_GetWorldClickDirection( Vector &direction, const CViewSetup *s
 #include "iclientvehicle.h"
 // HL2SB: Player:IsSprinting reads the live C_BaseHLPlayer::m_fIsSprinting state.
 #include "c_basehlplayer.h"
+#include "hl2mp/c_hl2mp_player.h"
 // HL2SB (2026-10-03): Player:ShouldDrawLocalPlayer reads the view entity
 // through the engine's render interface.
 #include "ivrenderview.h"
@@ -1573,11 +1574,8 @@ static int CBasePlayer_SetCurrentViewOffset (lua_State *L) {
 }
 
 #ifdef CLIENT_DLL
-// HL2SB GMod compat (2026-09-24): Player:Get/SetRenderAngles - First Person
-// Body drives the body's yaw from these every frame.  This fork's render
-// angles ARE the absolute angles (C_BaseEntity::GetRenderAngles returns
-// GetAbsAngles), so the setter writes SetAbsAngles.  Client realm: the server
-// has no render-angle concept.
+// Player render angles belong to the animation state, independently of the
+// entity's parent transform and eye angles.
 // HL2SB GMod compat (2026-09-25): Player:GetRagdollEntity() - this fork's
 // C_BasePlayer carries no clientside ragdoll handle, so answer the NULL
 // entity (GMod answers NULL while alive as well).  The First Person Body
@@ -1621,7 +1619,14 @@ static int CBasePlayer_GetRenderAngles (lua_State *L) {
 }
 
 static int CBasePlayer_SetRenderAngles (lua_State *L) {
-  lua_toplayer(L, 1)->SetAbsAngles(luaL_checkangle(L, 2));
+  C_HL2MP_Player *pPlayer = dynamic_cast<C_HL2MP_Player *>(luaL_checkplayer(L, 1));
+  const QAngle &angles = luaL_checkangle(L, 2);
+  if (pPlayer != NULL && !pPlayer->IsRagdoll())
+  {
+    // The mutable animation state owns this reference. Entity transforms
+    // must not change when a render callback temporarily changes the pose.
+    const_cast<QAngle &>(pPlayer->GetRenderAngles()) = angles;
+  }
   return 0;
 }
 #endif

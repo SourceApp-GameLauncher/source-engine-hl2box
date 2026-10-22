@@ -330,15 +330,18 @@ static int VMatrix_GetAngles (lua_State *L) {
   return 1;
 }
 
-// HL2SB GMod compat (2026-09-25): Matrix:SetAngles( angle ) - rebuilds the
-// rotation part from the angle, keeping the translation.  First Person Body's
-// bone-mirror callback calls it for every mirrored bone; without it the whole
-// callback aborted every frame (T-pose).
+// GMod keeps the existing axis scales when replacing a matrix's rotation.
 static int VMatrix_SetAngles (lua_State *L) {
   lua_VMatrix &m = luaL_checkvmatrix(L, 1);
-  QAngle angles = luaL_checkangle(L, 2);
-  Vector vecTranslation = m.GetTranslation();
-  m.SetupMatrixOrgAngles( vecTranslation, angles );
+  const QAngle &angles = luaL_checkangle(L, 2);
+  const Vector scale = m.GetScale();
+  VMatrix rotation;
+  rotation.SetupMatrixOrgAngles( vec3_origin, angles );
+  for (int row = 0; row < 3; ++row)
+  {
+    for (int column = 0; column < 3; ++column)
+      m[row][column] = rotation[row][column] * scale[row];
+  }
   return 0;
 }
 

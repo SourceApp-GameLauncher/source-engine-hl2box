@@ -112,6 +112,8 @@ IMPLEMENT_CLIENTCLASS_DT(C_HL2MP_Player, DT_HL2MP_Player, CHL2MP_Player)
 	RecvPropFloat( RECVINFO( m_flHL2SBRunSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBSlowWalkSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBJumpPower ) ),
+	RecvPropFloat( RECVINFO( m_flHL2SBDuckSpeed ) ),
+	RecvPropFloat( RECVINFO( m_flHL2SBUnDuckSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBTauntEnd ) ),
 	RecvPropEHandle( RECVINFO( m_hHands ) ),
 END_RECV_TABLE()
@@ -173,12 +175,12 @@ C_HL2MP_Player::C_HL2MP_Player() : m_PlayerAnimState( this ), m_iv_angEyeAngles(
 	m_flHL2SBWalkSpeed = 150.0f;
 	m_flHL2SBRunSpeed = 400.0f;
 	m_flHL2SBSlowWalkSpeed = 100.0f;
-	m_flHL2SBJumpPower = 0.0f;
+	m_flHL2SBJumpPower = 200.0f;
 
 	// HL2SB: stored-only GMod knobs (see the server header).
 	m_flHL2SBCrouchedWalkSpeed = 0.34f;
-	m_flHL2SBDuckSpeed = 0.4f;
-	m_flHL2SBUnDuckSpeed = 0.4f;
+	m_flHL2SBDuckSpeed = 0.3f;
+	m_flHL2SBUnDuckSpeed = 0.3f;
 	m_flHL2SBLadderClimbSpeed = 100.0f;
 	m_flHL2SBStepSize = 18.0f;
 	m_bHL2SBAllowWeaponsInVehicle = false;

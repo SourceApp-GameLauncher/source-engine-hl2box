@@ -150,15 +150,8 @@ void HL2SB_RunEntityCallbacks( C_BaseAnimating *pEntity, const char *pszName )
 }
 
 //-----------------------------------------------------------------------------
-// HL2SB GMod compat (2026-10-03): Entity:ManipulateBonePosition / ManipulateBoneScale.
-// Reference behaviour: the offset/scale is stored per (entity, bone) and applied
-// on every bone setup; the optional 4th boolean (default true) also applies it
-// to the live bone array immediately.  A side table keyed by EHANDLE keeps
-// C_BaseAnimating's layout untouched (same pattern as the callback list above).
-// Position offsets are added to the bone matrix translation in world space and
-// the scale multiplies the matrix basis - that is what the observed reference
-// consumers need (hiding a bone far away / zeroing it), and it is what the
-// read side (GetBoneMatrix) hands back afterwards.
+// Position and angle offsets participate in the local pose before IK and
+// parent transforms. Scale is applied after BuildBonePositions callbacks.
 //-----------------------------------------------------------------------------
 struct HL2SB_BoneManip_t
 {
@@ -195,89 +188,49 @@ static HL2SB_BoneManip_t *HL2SB_FindBoneManip( C_BaseAnimating *pEntity, int nBo
 	return &manip;
 }
 
-// bBonesReady: called from the C_BaseAnimating::SetupBones tail, where the
-// bone array under construction is already allocated and filled - the write
-// happens in place and NO SetupBones call may happen here: the tail itself
-// lives inside SetupBones, so calling it again is unbounded recursion (the
-// 1MB-stack-eating crash when the minecraft SWEP manipulated every bone).
-// The !bBonesReady path serves the immediate write from the Lua bindings.
-static void HL2SB_ApplyBoneManipEntry( C_BaseAnimating *pEntity, HL2SB_BoneManip_t &manip, bool bBonesReady )
+void HL2SB_ApplyBonePoseManipulations( C_BaseAnimating *pEntity, CStudioHdr *pHdr,
+	Vector *pos, Quaternion *q )
 {
-	studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
-	if ( pHdr == NULL || manip.nBone < 0 || manip.nBone >= pHdr->numbones )
-		return;
-
-	if ( !bBonesReady )
-	{
-		// Outside bone setup (a Lua ManipulateBone* call): re-run a full
-		// SetupBones -- its tail replays every stored manipulation onto the
-		// freshly rebuilt array, so each call takes effect and the relative
-		// offset can never double-apply.  (The old per-frame stamp skipped
-		// same-frame replays AND same-frame Lua calls; predicted players
-		// invalidate their bone cache several times a frame in multiplayer,
-		// which dropped the manipulation and left the FPB head visible.)
-		if ( !pEntity->IsEFlagSet( EFL_SETTING_UP_BONES ) && !s_bInEntityCallbacks )
-		{
-			// Force a rebuild even when the bone cache believes it is current --
-			// otherwise a second ManipulateBone* call in the same frame would be
-			// short-circuited by the cache and the new value never applied.
-			pEntity->InvalidateBoneCache();
-			pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
-			// the tail replay above applied this entry already
-			return;
-		}
-
-		// Mid-setup (a BuildBonePositions callback manipulating its own
-		// bones): the array is already being written, fall through to the
-		// in-place write like the reference behaviour does.
-		// s_bInEntityCallbacks covers the BuildBonePositions callback (the
-		// EFL is already cleared by the time the tail runs).
-	}
-
-	matrix3x4_t &bone = pEntity->GetBoneForWrite( manip.nBone );
-	if ( manip.bHasPos )
-	{
-		Vector vTranslation;
-		MatrixGetTranslation( bone, vTranslation );
-		vTranslation += manip.vecPos;
-		MatrixSetTranslation( vTranslation, bone );
-	}
-	if ( manip.bHasScale )
-	{
-		MatrixScaleBy( manip.vecScale.x, bone );
-	}
-	if ( manip.bHasAngles )
-	{
-		// Rotate the basis around the bone origin; the translation column is
-		// kept so a ManipulateBonePosition offset and a rotation compose
-		// independently of write order.
-		matrix3x4_t rot, out;
-		AngleMatrix( manip.angAngles, rot );
-		Vector vTranslation;
-		MatrixGetTranslation( bone, vTranslation );
-		ConcatTransforms( rot, bone, out );
-		MatrixSetTranslation( vTranslation, out );
-		MatrixCopy( out, bone );
-	}
-
-}
-
-// Called from C_BaseAnimating::SetupBones right before the BuildBonePositions
-// callbacks, so manipulations survive every rebuild and Lua callbacks observe
-// the manipulated bones.  Dead-entity entries are swept here too.
-void HL2SB_ApplyBoneManipulations( C_BaseAnimating *pEntity )
-{
-	if ( L == NULL || pEntity == NULL )
+	if ( pEntity == NULL || pHdr == NULL )
 		return;
 	for ( int i = s_BoneManips.Count() - 1; i >= 0; --i )
 	{
-		if ( s_BoneManips[i].hEntity.Get() == NULL )
+		HL2SB_BoneManip_t &manip = s_BoneManips[i];
+		if ( manip.hEntity.Get() == NULL )
 		{
 			s_BoneManips.FastRemove( i );
 			continue;
 		}
-		if ( s_BoneManips[i].hEntity == pEntity )
-			HL2SB_ApplyBoneManipEntry( pEntity, s_BoneManips[i], true );
+		if ( manip.hEntity.Get() != pEntity || manip.nBone < 0 || manip.nBone >= pHdr->numbones() )
+			continue;
+		if ( manip.bHasPos )
+			pos[manip.nBone] += manip.vecPos;
+		if ( manip.bHasAngles )
+		{
+			Quaternion offset, result;
+			AngleQuaternion( manip.angAngles, offset );
+			QuaternionMult( q[manip.nBone], offset, result );
+			q[manip.nBone] = result;
+		}
+	}
+}
+
+void HL2SB_ApplyBoneScaleManipulations( C_BaseAnimating *pEntity, CStudioHdr *pHdr, int boneMask )
+{
+	if ( pEntity == NULL || pHdr == NULL )
+		return;
+	for ( int i = 0; i < s_BoneManips.Count(); ++i )
+	{
+		const HL2SB_BoneManip_t &manip = s_BoneManips[i];
+		if ( manip.hEntity.Get() != pEntity || !manip.bHasScale || manip.nBone < 0 ||
+			manip.nBone >= pHdr->numbones() || !( pHdr->boneFlags( manip.nBone ) & boneMask ) )
+			continue;
+		matrix3x4_t &bone = pEntity->GetBoneForWrite( manip.nBone );
+		for ( int row = 0; row < 3; ++row )
+		{
+			for ( int column = 0; column < 3; ++column )
+				bone[row][column] *= manip.vecScale[column];
+		}
 	}
 }
 
@@ -651,7 +604,7 @@ static int CBaseAnimating_GetBoneMatrix (lua_State *L) {
 
   studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
   const int nBoneTotal = pHdr ? pHdr->numbones : 0;
-  if ( nBone < 0 || nBone >= nBoneTotal )
+  if ( nBone < 0 || nBone >= nBoneTotal || !pEntity->IsBoneMatrixAvailable( nBone, false ) )
   {
     lua_pushnil( L );
     return 1;
@@ -676,7 +629,7 @@ static int CBaseAnimating_CopyBoneMatrix (lua_State *L) {
   VMatrix &vm = luaL_checkvmatrix(L, 3);
 
   studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
-  if ( !pHdr || nBone >= pHdr->numbones )
+  if ( !pHdr || nBone >= pHdr->numbones || !pEntity->IsBoneMatrixAvailable( nBone, false ) )
     return 0;
 
   vm.CopyFrom3x4( pEntity->GetBone( nBone ) );
@@ -693,10 +646,10 @@ static int CBaseAnimating_SetBoneMatrix (lua_State *L) {
 
   studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
   const int nBoneTotal = pHdr ? pHdr->numbones : 0;
-  if ( !pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime ) )
-    return 0;
   if ( nBone < 0 || nBone >= nBoneTotal )
     return 0;
+  if ( !pEntity->IsBoneMatrixAvailable( nBone, true ) )
+    return luaL_error( L, "Bone has not been set up" );
 
   // HL2SB (2026-09-25): the incoming matrix is WORLD space and the accessor
   // stores WORLD space - write it through unchanged (see GetBoneMatrix).
@@ -721,10 +674,10 @@ static int CBaseAnimating_SetBonePosition (lua_State *L) {
 
   studiohdr_t *pHdr = HL2SB_GetStudioHdrSafe( pEntity );
   const int nBoneTotal = pHdr ? pHdr->numbones : 0;
-  if ( !pEntity->SetupBones( NULL, 0, BONE_USED_BY_ANYTHING, gpGlobals->curtime ) )
-    return 0;
   if ( nBone < 0 || nBone >= nBoneTotal )
     return 0;
+  if ( !pEntity->IsBoneMatrixAvailable( nBone, true ) )
+    return luaL_error( L, "Bone has not been set up" );
 
   QuaternionMatrix( Quaternion( angAng ), vecPos, pEntity->GetBoneForWrite( nBone ) );
   return 0;
@@ -863,27 +816,18 @@ static int CBaseAnimating_GetCallbacks (lua_State *L) {
 }
 
 static int CBaseAnimating_ManipulateBoneScale (lua_State *L) {
-  // HL2SB (2026-10-03): real per-bone scale (reference behaviour, see
-  // HL2SB_BoneManip_t above).  The old whole-model degrade broke First Person
-  // Body's vehicle head-hiding (scale 0 on ONE bone shrank the entire body);
-  // a uniform scale on EVERY bone is still visually SetModelScale, so the
-  // minecraft held-block usage is unaffected.
-  // HL2SB (2026-10-16): non-animating self -> no-op (GMod client.dll
-  // 0x18011F310), see the family note at ManipulateBoneAngles.
+  // Store the per-bone scale for the end of the current or next build.
   C_BaseAnimating *pEntity = lua_toanimating(L, 1);
   if (pEntity == NULL)
     return 0;
   int nBone = luaL_checkint(L, 2);
   Vector scale = luaL_checkvector(L, 3);
-  bool bImmediate = lua_isnoneornil(L, 4) ? true : ( lua_toboolean(L, 4) != 0 );
+  if ( scale.LengthSqr() > 512.0f * 512.0f )
+    scale *= 512.0f / scale.Length();
 
   HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, nBone, true );
   pManip->vecScale = scale;
-    bool bChanged = ( !pManip->bHasScale || !( pManip->vecScale == scale ) );
   pManip->bHasScale = true;
-
-  if ( bImmediate && bChanged )
-    HL2SB_ApplyBoneManipEntry( pEntity, *pManip, false );
   return 0;
 }
 
@@ -1267,15 +1211,10 @@ static int CBaseAnimating_SetLOD (lua_State *L) {
 // from becoming a real one).  Returns the engine's success flag.
 static int CBaseAnimating_SetupBones (lua_State *L) {
   C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  // HL2SB (2026-10-04) GMod contract: Entity:SetupBones FORCES a bone rebuild.
-  // Honoring the per-frame dedup here let one mid-frame forced build serve as
-  // the render build: First Person Body's CalcView work zeroes head/steer pose
-  // parameters around its own SetupBones and restores them right after -- with
-  // a cache hit on the render pass the restore was never rebuilt, and the
-  // seated model vibrated between the two poses every frame.
+  // This explicit request rebuilds even an already-cached frame.
   pEntity->InvalidateBoneCache();
-  lua_pushboolean(L, pEntity->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, gpGlobals->curtime ));
-  return 1;
+  pEntity->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+  return 0;
 }
 
 // HL2SB GMod compat (2026-09-25): Entity:GetPoseParameterName( id ) -> string.
@@ -1293,28 +1232,19 @@ static int CBaseAnimating_GetPoseParameterName (lua_State *L) {
   return 1;
 }
 
-// HL2SB GMod compat (2026-09-25, real 2026-10-03): Entity:ManipulateBonePosition(
-// bone, vec [, immediate=true] ) - the offset is stored per (entity, bone) and
-// applied on every bone setup plus immediately by default (reference
-// behaviour: the optional 4th boolean defaults to true).  First
-// Person Body pushes the head bone to (0, 10000, 0) to hide it.
-// HL2SB (2026-10-16): non-animating self -> no-op (GMod client.dll
-// 0x18011F2E0), see the family note at ManipulateBoneAngles.
+// Store the bounded local offset. Client writes do not start a bone build.
 static int CBaseAnimating_ManipulateBonePosition (lua_State *L) {
   C_BaseAnimating *pEntity = lua_toanimating(L, 1);
   if (pEntity == NULL)
     return 0;
   int nBone = luaL_checkint(L, 2);
-  const Vector &vecPos = luaL_checkvector(L, 3);
-  bool bImmediate = lua_isnoneornil(L, 4) ? true : ( lua_toboolean(L, 4) != 0 );
+  Vector vecPos = luaL_checkvector(L, 3);
+  if ( vecPos.LengthSqr() > 128.0f * 128.0f )
+    vecPos *= 128.0f / vecPos.Length();
 
   HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, nBone, true );
   pManip->vecPos = vecPos;
-    bool bChanged = ( !pManip->bHasPos || !( pManip->vecPos == vecPos ) );
   pManip->bHasPos = true;
-
-  if ( bImmediate && bChanged )
-    HL2SB_ApplyBoneManipEntry( pEntity, *pManip, false );
   return 0;
 }
 
@@ -1339,15 +1269,10 @@ static int CBaseAnimating_ManipulateBoneAngles (lua_State *L) {
     return 0;
   int nBone = luaL_checkint(L, 2);
   const QAngle &angAngles = luaL_checkangle(L, 3);
-  bool bImmediate = lua_isnoneornil(L, 4) ? true : ( lua_toboolean(L, 4) != 0 );
 
   HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, nBone, true );
   pManip->angAngles = angAngles;
-    bool bChanged = ( !pManip->bHasAngles || !( pManip->angAngles == angAngles ) );
   pManip->bHasAngles = true;
-
-  if ( bImmediate && bChanged )
-    HL2SB_ApplyBoneManipEntry( pEntity, *pManip, false );
   return 0;
 }
 
@@ -1853,25 +1778,17 @@ static int CBaseAnimating_SetPlaybackRate (lua_State *L) {
 
 static int CBaseAnimating_SetPoseParameter (lua_State *L) {
   C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
-  float flNewValue;
   switch(lua_type(L, 2)) {
 	case LUA_TNUMBER:
-	  flNewValue = pEntity->SetPoseParameter(luaL_checkint(L, 2), luaL_checknumber(L, 3));
+	  pEntity->SetPoseParameter(luaL_checkint(L, 2), luaL_checknumber(L, 3));
 	  break;
 	case LUA_TSTRING:
 	default:
-	  flNewValue = pEntity->SetPoseParameter(luaL_checkstring(L, 2), luaL_checknumber(L, 3));
+	  pEntity->SetPoseParameter(luaL_checkstring(L, 2), luaL_checknumber(L, 3));
 	  break;
   }
-  // HL2SB (2026-10-04) GMod contract: a pose write must be visible to the next
-  // bone build.  CBaseAnimating::SetPoseParameter only stores the value -- the
-  // per-frame bone cache then kept serving a build made from the poses that
-  // were current when it last ran (First Person Body zeroes head/steer poses
-  // around a forced SetupBones in its CalcView work and restores them right
-  // after; without this the seated model vibrated between the two poses).
-  pEntity->InvalidateBoneCache();
-  lua_pushnumber(L, flNewValue);
-  return 1;
+  // A pose write does not discard an already-built temporary pose.
+  return 0;
 }
 
 static int CBaseAnimating_SetPredictable (lua_State *L) {

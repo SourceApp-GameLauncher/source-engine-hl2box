@@ -358,13 +358,23 @@ static int CHL2MP_Player_GetCrouchedWalkSpeed (lua_State *L) {
   lua_pushnumber(L, luaL_checkhl2mpplayer(L, 1)->m_flHL2SBCrouchedWalkSpeed); return 1;
 }
 static int CHL2MP_Player_SetDuckSpeed (lua_State *L) {
-  luaL_checkhl2mpplayer(L, 1)->m_flHL2SBDuckSpeed = luaL_checknumber(L, 2); return 0;
+  CHL2MP_Player *pPlayer = luaL_checkhl2mpplayer(L, 1);
+  pPlayer->m_flHL2SBDuckSpeed = luaL_checknumber(L, 2);
+#ifndef CLIENT_DLL
+  pPlayer->NetworkStateChanged();
+#endif
+  return 0;
 }
 static int CHL2MP_Player_GetDuckSpeed (lua_State *L) {
   lua_pushnumber(L, luaL_checkhl2mpplayer(L, 1)->m_flHL2SBDuckSpeed); return 1;
 }
 static int CHL2MP_Player_SetUnDuckSpeed (lua_State *L) {
-  luaL_checkhl2mpplayer(L, 1)->m_flHL2SBUnDuckSpeed = luaL_checknumber(L, 2); return 0;
+  CHL2MP_Player *pPlayer = luaL_checkhl2mpplayer(L, 1);
+  pPlayer->m_flHL2SBUnDuckSpeed = luaL_checknumber(L, 2);
+#ifndef CLIENT_DLL
+  pPlayer->NetworkStateChanged();
+#endif
+  return 0;
 }
 static int CHL2MP_Player_GetUnDuckSpeed (lua_State *L) {
   lua_pushnumber(L, luaL_checkhl2mpplayer(L, 1)->m_flHL2SBUnDuckSpeed); return 1;

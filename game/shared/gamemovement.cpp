@@ -2496,12 +2496,10 @@ bool CGameMovement::CheckJumpButton( void )
 		flMul = sqrt(2 * GetCurrentGravity() * GAMEMOVEMENT_JUMP_HEIGHT);
 	}
 
-	// HL2SB (2026-09-27): GMod's Player:SetJumpPower scales the jump velocity
-	// proportionally (default 200 = engine default).  Players that never had
-	// SetJumpPower called report 0 and keep the stock impulse.
-	float flJumpPower = player->GetHL2SBJumpPower();
-	if ( flJumpPower > 0.0f )
-		flMul *= ( flJumpPower / 200.0f );
+	// GMod's jump power is an impulse in units per second.
+#if defined( HL2SB )
+	flMul = player->GetHL2SBJumpPower();
+#endif
 
 	// Acclerate upward
 	// If we are ducking...
@@ -2572,12 +2570,15 @@ bool CGameMovement::CheckJumpButton( void )
 	}
 #endif
 
+	// GMod keeps the regular player hull and eye offset during a jump.
+#if !defined( HL2SB )
 	// Set jump time.
 	if ( gpGlobals->maxClients == 1 )
 	{
 		player->m_Local.m_flJumpTime = GAMEMOVEMENT_JUMP_TIME;
 		player->m_Local.m_bInDuckJump = true;
 	}
+#endif
 
 #if defined( HL2_DLL )
 
@@ -4188,6 +4189,9 @@ void CGameMovement::FinishUnDuck( void )
 
 	player->m_Local.m_bDucked = false;
 	player->RemoveFlag( FL_DUCKING );
+#if defined( HL2SB )
+	player->RemoveFlag( FL_ANIMDUCKING );
+#endif
 	player->m_Local.m_bDucking  = false;
 	player->m_Local.m_bInDuckJump  = false;
 	player->SetViewOffset( GetPlayerViewOffset( false ) );
@@ -4250,6 +4254,9 @@ void CGameMovement::FinishUnDuckJump( trace_t &trace )
 	flDeltaZ -= viewDelta.z;
 
 	player->RemoveFlag( FL_DUCKING );
+#if defined( HL2SB )
+	player->RemoveFlag( FL_ANIMDUCKING );
+#endif
 	player->m_Local.m_bDucked = false;
 	player->m_Local.m_bDucking  = false;
 	player->m_Local.m_bInDuckJump = false;
@@ -4276,6 +4283,9 @@ void CGameMovement::FinishDuck( void )
 	// if ( player->GetFlags() & FL_DUCKING ) return;
 
 	player->AddFlag( FL_DUCKING );
+#if defined( HL2SB )
+	player->AddFlag( FL_ANIMDUCKING );
+#endif
 	player->m_Local.m_bDucked = true;
 	player->m_Local.m_bDucking = false;
 
@@ -4414,6 +4424,12 @@ bool CGameMovement::CanUnDuckJump( trace_t &trace )
 //-----------------------------------------------------------------------------
 void CGameMovement::Duck( void )
 {
+	float flTimeToDuck = TIME_TO_DUCK;
+	float flTimeToUnDuck = TIME_TO_UNDUCK;
+#if defined( HL2SB )
+	extern void HL2SB_GetPlayerDuckDurations( CBasePlayer *, float &, float & );
+	HL2SB_GetPlayerDuckDurations( player, flTimeToDuck, flTimeToUnDuck );
+#endif
 	int buttonsChanged	= ( mv->m_nOldButtons ^ mv->m_nButtons );	// These buttons have changed this frame
 	int buttonsPressed	=  buttonsChanged & mv->m_nButtons;			// The changed ones still down are "pressed"
 	int buttonsReleased	=  buttonsChanged & mv->m_nOldButtons;		// The changed ones which were previously down are "released"
@@ -4468,18 +4484,21 @@ void CGameMovement::Duck( void )
 			// The player is in duck transition and not duck-jumping.
 			if ( player->m_Local.m_bDucking && !bDuckJump && !bDuckJumpTime )
 			{
+#if defined( HL2SB )
+				player->AddFlag( FL_ANIMDUCKING );
+#endif
 				float flDuckMilliseconds = MAX( 0.0f, GAMEMOVEMENT_DUCK_TIME - ( float )player->m_Local.m_flDucktime );
 				float flDuckSeconds = flDuckMilliseconds * 0.001f;
 				
 				// Finish in duck transition when transition time is over, in "duck", in air.
-				if ( ( flDuckSeconds > TIME_TO_DUCK ) || bInDuck || bInAir )
+				if ( ( flDuckSeconds > flTimeToDuck ) || bInDuck || bInAir )
 				{
 					FinishDuck();
 				}
 				else
 				{
 					// Calc parametric time
-					float flDuckFraction = SimpleSpline( flDuckSeconds / TIME_TO_DUCK );
+					float flDuckFraction = SimpleSpline( flDuckSeconds / flTimeToDuck );
 					SetDuckedEyeOffset( flDuckFraction );
 				}
 			}
@@ -4548,8 +4567,8 @@ void CGameMovement::Duck( void )
 					else if ( player->m_Local.m_bDucking && !player->m_Local.m_bDucked )
 					{
 						// Invert time if release before fully ducked!!!
-						float unduckMilliseconds = 1000.0f * TIME_TO_UNDUCK;
-						float duckMilliseconds = 1000.0f * TIME_TO_DUCK;
+						float unduckMilliseconds = 1000.0f * flTimeToUnDuck;
+						float duckMilliseconds = 1000.0f * flTimeToDuck;
 						float elapsedMilliseconds = GAMEMOVEMENT_DUCK_TIME - player->m_Local.m_flDucktime;
 
 						float fracDucked = elapsedMilliseconds / duckMilliseconds;
@@ -4566,18 +4585,21 @@ void CGameMovement::Duck( void )
 					// or unducking
 					if ( ( player->m_Local.m_bDucking || player->m_Local.m_bDucked ) )
 					{
+#if defined( HL2SB )
+						player->RemoveFlag( FL_ANIMDUCKING );
+#endif
 						float flDuckMilliseconds = MAX( 0.0f, GAMEMOVEMENT_DUCK_TIME - (float)player->m_Local.m_flDucktime );
 						float flDuckSeconds = flDuckMilliseconds * 0.001f;
 						
 						// Finish ducking immediately if duck time is over or not on ground
-						if ( flDuckSeconds > TIME_TO_UNDUCK || ( bInAir && !bDuckJump ) )
+						if ( flDuckSeconds > flTimeToUnDuck || ( bInAir && !bDuckJump ) )
 						{
 							FinishUnDuck();
 						}
 						else
 						{
 							// Calc parametric time
-							float flDuckFraction = SimpleSpline( 1.0f - ( flDuckSeconds / TIME_TO_UNDUCK ) );
+							float flDuckFraction = SimpleSpline( 1.0f - ( flDuckSeconds / flTimeToUnDuck ) );
 							SetDuckedEyeOffset( flDuckFraction );
 							player->m_Local.m_bDucking = true;
 						}
@@ -4594,6 +4616,9 @@ void CGameMovement::Duck( void )
 						player->m_Local.m_bDucked = true;
 						player->m_Local.m_bDucking = false;
 						player->AddFlag( FL_DUCKING );
+#if defined( HL2SB )
+						player->AddFlag( FL_ANIMDUCKING );
+#endif
 					}
 				}
 			}
