@@ -120,7 +120,7 @@ jobs:
 #        uses: actions/upload-artifact@v7
 #        with:
 #          name: build-android-armv7a
-#          path: /home/runner/work/source-engine-mod/android_build/lib/armeabi-v7a/*.*
+#          path: /home/runner/work/source-engine-hl2box/android_build/lib/armeabi-v7a/*.*
 #          if-no-files-found: error
 
   build-android-aarch64:
@@ -167,7 +167,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: build-android-aarch64
-          path: /home/runner/work/source-engine-mod/android_build/lib/arm64-v8a/*.*
+          path: /home/runner/work/source-engine-hl2box/android_build/lib/arm64-v8a/*.*
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
