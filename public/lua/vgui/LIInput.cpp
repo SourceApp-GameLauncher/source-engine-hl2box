@@ -13,7 +13,7 @@
 #include <luamanager.h>
 #include "luasrclib.h"
 #include "vgui_controls/lPanel.h"
-#include "inputsystem/IInputSystem.h"
+#include "inputsystem/iinputsystem.h"
 #include "tier2/tier2.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
