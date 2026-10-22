@@ -310,7 +310,11 @@ bool C_BaseViewModel::Interpolate( float currentTime )
 }
 
 
-inline bool C_BaseViewModel::ShouldFlipViewModel()
+// Not inline on purpose: the shared player code calls this from another
+// translation unit, and an inline definition is not required to be emitted
+// out of line.  Optimizing compilers drop the copy entirely, which leaves the
+// shared caller without a definition at link time.
+bool C_BaseViewModel::ShouldFlipViewModel()
 {
 	// If cl_righthand is set, then we want them all right-handed.
 	CBaseCombatWeapon *pWeapon = m_hWeapon.Get();
