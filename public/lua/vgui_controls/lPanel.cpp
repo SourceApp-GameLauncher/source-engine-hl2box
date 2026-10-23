@@ -1294,8 +1294,31 @@ static int Panel_SetSilentMode (lua_State *L) {
 static int Panel_SetSize (lua_State *L) {
   Panel *pPanel = luaL_checkpanel(L, 1);
 
-  pPanel->SetSize(luaL_checkint(L, 2), luaL_checkint(L, 3));
+  pPanel->SetSize((int)lua_tonumber(L, 2), (int)lua_tonumber(L, 3));
   Panel_SyncLuaGeometry(L, pPanel);
+  return 0;
+}
+
+// Manual painting keeps the normal traversal from drawing this subtree twice.
+extern void HL2SB_PanelSetPaintedManually(Panel *panel, bool manual);
+extern void HL2SB_PanelPaintManual(Panel *panel);
+
+static int Panel_SetPaintedManually (lua_State *L) {
+  HL2SB_PanelSetPaintedManually(luaL_checkpanel(L, 1), lua_toboolean(L, 2) != 0);
+  return 0;
+}
+
+static int Panel_PaintManual (lua_State *L) {
+  Panel *panel = luaL_checkpanel(L, 1);
+  IMatSystemSurface *s = dynamic_cast<IMatSystemSurface *>(surface());
+  bool disabled = true;
+  if (s) {
+    int left, top, right, bottom;
+    s->GetClippingRect(left, top, right, bottom, disabled);
+    if (lua_toboolean(L, 2)) s->DisableClipping(true);
+  }
+  HL2SB_PanelPaintManual(panel);
+  if (s) s->DisableClipping(disabled);
   return 0;
 }
 
@@ -2688,6 +2711,8 @@ static const luaL_Reg Panelmeta[] = {
   {"SetScheme", Panel_SetScheme},
   {"SetSilentMode", Panel_SetSilentMode},
   {"SetSize", Panel_SetSize},
+  {"SetPaintedManually", Panel_SetPaintedManually},
+  {"PaintManual", Panel_PaintManual},
   {"SetSkipChildDuringPainting", Panel_SetSkipChildDuringPainting},
   {"SetStartDragWhenMouseExitsPanel", Panel_SetStartDragWhenMouseExitsPanel},
   {"SetTabPosition", Panel_SetTabPosition},

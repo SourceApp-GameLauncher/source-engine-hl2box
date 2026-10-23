@@ -1323,25 +1323,7 @@ void CHL2MPRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 #endif
 	if ( stricmp( szModelName, pCurrentModel ) )
 	{
-#ifdef HL2SB
-		// HL2SB (2026-09-29): one announcement per pending request.  This
-		// function fires on EVERY client settings change (every replicated
-		// CreateClientConVar write - the Minecraft SWEP ticks
-		// mc_viewmodel_doanim on each attack), not only when cl_playermodel
-		// changed; with a genuinely pending model change (respawn-only mode)
-		// each of those re-entered this branch and re-printed the queue hint -
-		// the user's "still spams player-model-change on placing".  Only the
-		// first detection of a given desired model talks; repeats of the same
-		// pending request stay silent.
-		static char s_rgchModelNotice[ 256 ][ 128 ];
-		const int nNoticeIdx = pHL2Player->entindex();
-		if ( nNoticeIdx >= 0 && nNoticeIdx < 256 )
-		{
-			if ( !stricmp( s_rgchModelNotice[ nNoticeIdx ], szModelName ) )
-				return;
-			Q_strncpy( s_rgchModelNotice[ nNoticeIdx ], szModelName, sizeof( s_rgchModelNotice[0] ) );
-		}
-#endif
+#ifndef HL2SB
 		//Too soon, set the cvar back to what it was.
 		//Note: this will make this function be called again
 		//but since our models will match it'll just skip this whole dealio.
@@ -1357,29 +1339,25 @@ void CHL2MPRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 			return;
 		}
 
+#endif
+
 		if ( HL2MPRules()->IsTeamplay() == false )
 		{
 #ifdef HL2SB
-			// GMod-style model switching: when enabled, a requested model change
-			// is NOT applied now - it is queued and applied on the player's next
-			// respawn (see CHL2MP_Player::Spawn). Tell the player so.
+			// GMod applies the requested model at spawn without a chat notification.
 			if ( hl2sb_model_respawn_only.GetBool() )
-			{
-				char szHint[256];
-				Q_snprintf( szHint, sizeof( szHint ),
-					"Player model change queued - it will take effect on your next respawn (GMod style).\n" );
-				ClientPrint( pHL2Player, HUD_PRINTTALK, szHint );
 				return;
-			}
 #endif
 			pHL2Player->SetPlayerModel();
 
+#ifndef HL2SB
 			const char *pszCurrentModelName = modelinfo->GetModelName( pHL2Player->GetModel() );
 
 			char szReturnString[128];
 			Q_snprintf( szReturnString, sizeof( szReturnString ), "Your player model is: %s\n", pszCurrentModelName );
 
 			ClientPrint( pHL2Player, HUD_PRINTTALK, szReturnString );
+#endif
 		}
 		else
 		{

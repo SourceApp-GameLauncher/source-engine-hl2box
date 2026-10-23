@@ -13,6 +13,7 @@
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
 #include "basescripted.h"
+#include "activitylist.h"
 #include "mathlib/lvector.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -423,6 +424,36 @@ static int CBaseCombatWeapon_GetPrimaryAmmoType (lua_State *L) {
 
 static int CBaseCombatWeapon_GetPrimaryAttackActivity (lua_State *L) {
   lua_pushinteger(L, luaL_checkweapon(L, 1)->GetPrimaryAttackActivity());
+  return 1;
+}
+
+static int CBaseCombatWeapon_GetHoldType (lua_State *L) {
+  CBaseCombatWeapon *pWeapon = luaL_checkweapon(L, 1);
+  if ( pWeapon->IsScripted() ) {
+    lua_getref( L, pWeapon->m_nTableReference );
+    if ( lua_istable( L, -1 ) ) {
+      lua_getfield( L, -1, "HoldType" );
+      if ( lua_type( L, -1 ) == LUA_TSTRING ) {
+        lua_remove( L, -2 );
+        return 1;
+      }
+      lua_pop( L, 1 );
+    }
+    lua_pop( L, 1 );
+    lua_pushliteral( L, "normal" );
+    return 1;
+  }
+  const Activity activity = pWeapon->ActivityOverride( ACT_MP_STAND_IDLE, NULL );
+  const char *name = ActivityList_NameForIndex( activity );
+  const char *prefix = "ACT_HL2MP_IDLE_";
+  if ( name != NULL && !Q_strnicmp( name, prefix, Q_strlen( prefix ) ) ) {
+    char holdType[64];
+    Q_strncpy( holdType, name + Q_strlen( prefix ), sizeof( holdType ) );
+    Q_strlower( holdType );
+    lua_pushstring( L, !Q_strcmp( holdType, "smg1" ) ? "smg" : holdType );
+  } else {
+    lua_pushliteral( L, "normal" );
+  }
   return 1;
 }
 
@@ -1244,6 +1275,7 @@ static const luaL_Reg CBaseCombatWeaponmeta[] = {
   {"GetPrimaryAmmoType", CBaseCombatWeapon_GetPrimaryAmmoType},
   {"GetPrimaryAttackActivity", CBaseCombatWeapon_GetPrimaryAttackActivity},
   {"GetPrintName", CBaseCombatWeapon_GetPrintName},
+  {"GetHoldType", CBaseCombatWeapon_GetHoldType},
   {"GetRandomBurst", CBaseCombatWeapon_GetRandomBurst},
   {"GetRumbleEffect", CBaseCombatWeapon_GetRumbleEffect},
   {"GetSecondaryAmmoCount", CBaseCombatWeapon_GetSecondaryAmmoCount},

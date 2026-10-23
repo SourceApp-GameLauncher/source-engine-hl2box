@@ -729,7 +729,8 @@ static ITexture *HL2SB_GetSuperFPTex( int nIndex )
     static ITexture *s_pSuperFPTex[ 2 ] = { NULL, NULL };
     if ( s_pSuperFPTex[ nIndex ] == NULL )
     {
-        s_pSuperFPTex[ nIndex ] = materials->CreateNamedRenderTargetTextureEx2(
+        // Lua requests these after the engine's render-target allocation phase.
+        s_pSuperFPTex[ nIndex ] = materials->CreateNamedRenderTargetTextureEx(
             nIndex == 0 ? "__rt_SuperTexture1" : "__rt_SuperTexture2",
             512, 512, RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA8888,
             MATERIAL_RT_DEPTH_SEPARATE,

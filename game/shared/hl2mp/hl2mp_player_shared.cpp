@@ -39,6 +39,7 @@ ConVar hl2sb_anim_debug( "hl2sb_anim_debug", "0", FCVAR_REPLICATED | FCVAR_NOTIF
 
 #include "luamanager.h"
 #include "lhl2mp_player_shared.h"
+#include "lbaseplayer_shared.h"
 #include "mathlib/lvector.h"
 #include "lvphysics_interface.h"
 
@@ -636,297 +637,36 @@ static bool HL2SB_SetSeatedPoseParameter( CBaseAnimating *pAnim, const char *psz
 
 void CPlayerAnimState::UpdateVehicleAnimation( bool bWriteSeatedPose )
 {
-	m_eHL2SBVehicleAnimState = VEHICLE_ANIM_NONE;
-	m_iHL2SBVehicleRole = 0;
-	m_flHL2SBVehicleSteering = 0.0f;
-
-	CHL2MP_Player *pPlayer = GetOuter();
-	if ( !pPlayer )
-		return;
-
+    m_eHL2SBVehicleAnimState = VEHICLE_ANIM_NONE;
+    m_iHL2SBVehicleRole = 0;
+    m_flHL2SBVehicleSteering = 0.5f;
+    CHL2MP_Player *pPlayer = GetOuter();
+    CBaseEntity *pParent = pPlayer ? pPlayer->GetMoveParent() : NULL;
+    if ( !pParent || !pPlayer->IsInAVehicle() )
+        return;
 #ifdef CLIENT_DLL
-	IClientVehicle *pVehicle = pPlayer->GetVehicle();
+    IClientVehicle *pVehicle = pPlayer->GetVehicle();
 #else
-	IServerVehicle *pVehicle = pPlayer->GetVehicle();
+    IServerVehicle *pVehicle = pPlayer->GetVehicle();
 #endif
-	if ( !pVehicle )
-		return;
-
-	// --- role (shared API, works on both realms) -----------------------------
-	// IVehicle::GetPassengerRole() returns VEHICLE_ROLE_DRIVER for the driver seat,
-	// which is what GMod uses to pick the driver vs passenger pose.
-	const int iRole = pVehicle->GetPassengerRole( pPlayer );
-	m_iHL2SBVehicleRole = ( iRole == VEHICLE_ROLE_DRIVER ) ? 0 : 1;
-
-	// --- state ---------------------------------------------------------------
-	// ENTER/EXIT are server-only (the client never sees the vehicle's entry state);
-	// both realms can tell driver from passenger through GetPassengerRole().
-#ifdef CLIENT_DLL
-	m_eHL2SBVehicleAnimState = ( m_iHL2SBVehicleRole == 0 ) ? VEHICLE_ANIM_DRIVER
-														    : VEHICLE_ANIM_PASSENGER;
-#else
-	if ( pVehicle->IsPassengerEntering() )
-		m_eHL2SBVehicleAnimState = VEHICLE_ANIM_ENTER;
-	else if ( pVehicle->IsPassengerExiting() )
-		m_eHL2SBVehicleAnimState = VEHICLE_ANIM_EXIT;
-	else if ( m_iHL2SBVehicleRole == 0 )
-		m_eHL2SBVehicleAnimState = VEHICLE_ANIM_DRIVER;
-	else
-		m_eHL2SBVehicleAnimState = VEHICLE_ANIM_PASSENGER;
-#endif
-
-	// --- seat / vehicle entity -----------------------------------------------
-	// HL2MP's CLIENT vehicle interface is player-backed: GetVehicleEnt() returns the
-	// PLAYER there, not the car (log: client "vehicle=player" vs server
-	// "vehicle=prop_vehicle_jeep"). Anything read off that entity - render bounds,
-	// steering pose - is therefore the player's, not the vehicle's (the client used
-	// to report the player model's centred 0.500 as "steering"). Only a real other
-	// entity is usable; when there is none, fall back to what we are attached to and
-	// otherwise leave the pose at its centred default.
-	CBaseEntity *pVehEnt = pVehicle->GetVehicleEnt();
-	if ( pVehEnt == pPlayer || ( pVehEnt && pVehEnt->IsPlayer() ) )
-		pVehEnt = pPlayer->GetMoveParent();
-	if ( pVehEnt && pVehEnt->IsPlayer() )
-		pVehEnt = NULL;
-
-	// --- still seated? --------------------------------------------------------
-	// HL2SB: "in a vehicle" is NOT the same question as "sitting in it", and the gap
-	// between the two is the reported "the model keeps the seated pose for a fraction of a
-	// second after dismounting".
-	//
-	// CBasePlayer::GetInVehicle() parents the rider to the vehicle; leaving goes the other
-	// way round: CBaseServerVehicle::HandlePassengerExit() plays the vehicle's exit
-	// animation and UNPARENTS the player at its START (vehicle_baseserver.cpp SetParent(
-	// NULL )), while CBasePlayer::LeaveVehicle() - the only place m_hVehicle is cleared -
-	// runs when that animation FINISHES. For the whole 0.2-0.5s in between the player is
-	// unparented but still IsInAVehicle(), so the sit sequence (server) and this body/head
-	// layering (both realms) survived the dismount.
-	//
-	// Two signals, because the realms do not carry the same one:
-	//   * the move parent      - authoritative on the server (GetInVehicle parents,
-	//                            HandlePassengerExit unparents). GMod keys off exactly
-	//                            this: gamemodes/base/gamemode/animations.lua:144
-	//                            "The player must have a parent to be in a vehicle. If
-	//                            there's no parent, we are in the exit anim, so don't do
-	//                            sitting in 3rd person anymore". The client gets the same
-	//                            field over the wire (c_baseentity.cpp:464 RecvPropInt(
-	//                            RECVINFO_NAME( m_hNetworkMoveParent, moveparent ),
-	//                            RecvProxy_IntToMoveParent )).
-	//   * the seat pose itself - the sequence the SERVER pins (HL2SB_ResolveSeatedSequence)
-	//                            is networked, so a realm that somehow missed the parent
-	//                            change still sees the moment SetAnimation() stops pinning
-	//                            the seat.
-	Activity seatActivity = ACT_INVALID;
-	const int iSeatSequence = HL2SB_ResolveSeatedSequence( pPlayer, pVehEnt, &seatActivity );
-	const bool bPlayingSeatPose = ( iSeatSequence >= 0 && pPlayer->GetSequence() == iSeatSequence );
-
-	if ( ( pPlayer->GetMoveParent() == NULL ) && !bPlayingSeatPose )
-	{
-		// Fold the state back to NONE: the seated body/head layering below is gated on it,
-		// and its absence IS the reset - CPlayerAnimState::Update() already set m_angRender
-		// from the player's own angles and ComputePoseParam_BodyPitch/BodyLookYaw own
-		// aim_pitch/aim_yaw, so the normal gait takes the body back with no snap of its own
-		// (the game is already interpolating the dismount).
-		m_eHL2SBVehicleAnimState = VEHICLE_ANIM_NONE;
-		m_iHL2SBVehicleRole = 0;
-		m_flHL2SBSeatYaw = 0.0f;
-	}
-
-	// HL2SB (2026-10-14): the rider's vehicle_steer / aim_yaw / vertical_velocity
-	// pose parameters are written by the GAMEMODE - GM:UpdateAnimation
-	// (animations.lua) is the reference's only writer, including the pod's
-	// "steer = 0.5 -> x2-1" conversion and the aim_yaw-into-seat-frame fix.
-	// This C++ side used to write vehicle_steer itself ("owned by the server")
-	// and later even duplicated the aim pin, fighting the gamemode's writes;
-	// the visible player pose is client-driven here (m_flPoseParameter is
-	// excluded from the player DT) and GM:UpdateAnimation now dispatches from
-	// C_HL2MP_Player::UpdateClientSideAnimation for every player, so Lua is
-	// the only writer, exactly the reference's shape.  The member below is a
-	// debug-display value only.
-	m_flHL2SBVehicleSteering = 0.5f;
-
-	// --- steering (safe, model-driven) --------------------------------------
-	// Debug-display only: mirror the vehicle's own steering, normalised 0..1.
-	if ( pVehEnt )
-	{
-		CBaseAnimating *pVehAnim = pVehEnt->GetBaseAnimating();
-		if ( pVehAnim )
-		{
-			const int iVehSteer = pVehAnim->LookupPoseParameter( "vehicle_steer" );
-			if ( iVehSteer >= 0 && pVehAnim->GetModelPtr() )
-			{
-				const mstudioposeparamdesc_t &vehSteer = pVehAnim->GetModelPtr()->pPoseParameter( iVehSteer );
-				const float flSpan = vehSteer.end - vehSteer.start;
-				if ( flSpan > 0.0f )
-					m_flHL2SBVehicleSteering = ( pVehAnim->GetPoseParameter( iVehSteer ) - vehSteer.start ) / flSpan;
-			}
-		}
-	}
-
-	// --- seated body / head layering -----------------------------------------
-	// The body follows the SEAT, the head/upper body follows the view RELATIVE to it.
-	//
-	// What was wrong: m_angRender was set from the player's own local angles, and on
-	// BOTH realms those follow the mouse:
-	//   * client, local player: C_BasePlayer::PostDataUpdate() does
-	//     SetLocalAngles( engine->GetViewAngles() ) (c_baseplayer.cpp:853-868)
-	//   * server: ComputePoseParam_BodyYaw() writes the eye yaw in as well
-	//     ("Adrian: Make the model's angle match the legs", hl2mp_player_shared.cpp:905)
-	// so the whole seated model - legs and all - swept around with the view and through
-	// the chair, reported as "when you turn the view the player model turns with it" and
-	// "it sinks into the seat / the pose looks wrong".
-	//
-		// The seat datum is the vehicle's OWN `vehicle_feet_passenger0` attachment: it is
-		// what CBaseServerVehicle::GetPassengerSeatPoint() seats the player by, so the body
-		// and the seat cannot disagree. (Measured: chair world z 38.4 = the seat; the vehicle
-		// model's attachment angles carry its yaw, so a chair that has been physgunned round
-		// takes the body with it.) Nothing here is a model name.
-		//
-		// HL2SB: the datum is the seat's FULL world ORIENTATION, pitch and roll included, not
-		// just its yaw - that is the reported "put the chair on its back / tilt it and the
-		// rider ends up in the wrong place, clipping through it". The seat POINT already
-		// follows the chair's rotation (GetPassengerSeatPoint -> UTIL_ParentToWorldSpace), so
-		// rendering the body upright at that point means a flipped chair gets an upright
-		// rider floating over it. GMod's own chain leaves the tilt in (reference
-		// 2026-09-28): server CBasePlayer::GetInVehicle (win64 server.dll )
-		// writes SetAbsOrigin + SetAbsAngles with the seat point/angles from
-		// GetPassengerSeatPoint and then SetParent(vehicle, LookupAttachment(
-		// "vehicle_feet_passenger0")) - the full seat angles, once, with nothing after it
-		// zeroing pitch or roll; and GMod's client animstate ( + its pose
-		// callees) only writes pose parameters, never a render-angle member, so the drawn
-		// body takes the entity's abs angles - the chair's tilt rides into the model
-		// through the parent transform. For an UPRIGHT seat the attachment's pitch and
-		// roll are 0, so this is bit-identical to the old yaw-only pin there; only tilted
-		// seats change.
-		//
-		if ( m_eHL2SBVehicleAnimState != VEHICLE_ANIM_NONE )
-		{
-			QAngle angSeatWorld( 0.0f, 0.0f, 0.0f );
-			bool bHaveSeat = false;
-
-		CBaseAnimating *pSeatAnim = pVehEnt ? pVehEnt->GetBaseAnimating() : NULL;
-		if ( pSeatAnim && pVehEnt )
-		{
-			// --- the seat datum --------------------------------------------------------
-			// Two things have to be true at once, and each was a separate bug:
-			//   * it must be read from the vehicle's RESTING pose
-			//     (HL2SB_GetRestingAttachmentLocal: "idle" by label, else sequence 0), and
-			//     never from the live pose - the seat attachments hang off the vehicle's
-			//     animated driver-view bone, and reading that live is how the airboat got
-			//     "seated outside the boat" on its enter animation;
-			//   * the angles that helper returns are in the VEHICLE's model space, so they
-			//     have to be converted into world space with the vehicle's own transform -
-			//     used as a world yaw they pinned the rider to one fixed world direction,
-			//     so the hull appeared to swing the body while driving ("airboat jeep 在移动
-			//     时候 人物模型会转向").
-			// The conversion is the same one the server seats the player with
-			// (CBaseServerVehicle::GetPassengerSeatPoint -> UTIL_ParentToWorldSpace), so
-			// the two realms cannot disagree about where the seat points.
-				Vector vecSeatPos;
-				QAngle angSeat;
-			if ( HL2SB_GetRestingAttachmentLocal( pSeatAnim, "vehicle_feet_passenger0", &vecSeatPos, &angSeat ) )
-			{
-				HL2SB_VehicleModelToWorldSpace( pVehEnt, vecSeatPos, angSeat );
-					angSeatWorld = angSeat;
-					bHaveSeat = true;
-				}
-				else if ( pSeatAnim->GetAttachment( "vehicle_feet_passenger0", vecSeatPos, angSeat ) )
-				{
-					// Fallback for a model with no sequences at all: the pose it is in, which
-					// GetAttachment() already reports in world space.
-					angSeatWorld = angSeat;
-					bHaveSeat = true;
-				}
-			}
-
-			if ( !bHaveSeat && pVehEnt )
-			{
-				// No seat attachment at all (GetPassengerSeatPoint() falls back to the
-				// vehicle origin in that case): the vehicle's own orientation IS the seat's.
-				angSeatWorld = pVehEnt->GetAbsAngles();
-				bHaveSeat = true;
-			}
-
-			if ( !bHaveSeat )
-			{
-				// No vehicle entity to read either: keep the previous behaviour rather
-				// than inventing an orientation.
-				angSeatWorld = QAngle( 0.0f, pPlayer->GetLocalAngles()[YAW], 0.0f );
-			}
-
-			const float flSeatYaw = angSeatWorld[YAW];
-			m_flHL2SBSeatYaw = flSeatYaw;
-			m_angRender = angSeatWorld;
-
+    if ( !pVehicle )
+        return;
+    m_iHL2SBVehicleRole = pVehicle->GetPassengerRole( pPlayer ) == VEHICLE_ROLE_DRIVER ? 0 : 1;
+    m_eHL2SBVehicleAnimState = m_iHL2SBVehicleRole == 0 ? VEHICLE_ANIM_DRIVER : VEHICLE_ANIM_PASSENGER;
 #ifndef CLIENT_DLL
-			// The server owns the entity ANGLES: they are what the client receives for
-			// every remote player and what the server-side hitboxes are built from
-			// (CBaseAnimating::SetupBones() uses GetRenderAngles()), so they have to agree
-			// with the body that is drawn or shots at a seated player land on a body that
-			// is facing somewhere else. The FULL seat orientation goes in - GMod's
-			// GetInVehicle writes the seat's pitch/yaw/roll once and never pins them back
-			// upright - so a tilted chair's hitboxes stay glued to the tilted body too.
-			// This runs after ComputePoseParam_BodyYaw()'s "Adrian" SetLocalAngles stomp
-			// in the same Update(), so the last word is the seat's. The visible nod when
-			// the rider looks up/down is unaffected: it comes from the aim_pitch pose this
-			// function writes below, not from the entity pitch. SetAbsAngles() converts to
-			// parent-relative space.
-			pPlayer->SetAbsAngles( angSeatWorld );
+    if ( pVehicle->IsPassengerEntering() )
+        m_eHL2SBVehicleAnimState = VEHICLE_ANIM_ENTER;
+    else if ( pVehicle->IsPassengerExiting() )
+        m_eHL2SBVehicleAnimState = VEHICLE_ANIM_EXIT;
 #endif
-
-		// --- the head / upper body, relative to the seat ----------------------
-		// GMod does exactly this for a seat (gamemodes/base/gamemode/animations.lua:236):
-		//     ply:SetPoseParameter( "aim_yaw", math.NormalizeAngle(
-		//         ply:GetAimVector():Angle().y - Vehicle:GetAngles().y - 90 ) )
-		//
-		// The two anim model families carry these parameters in DIFFERENT units, and the
-		// old code got it wrong for both: it wrote 0.5 (its "0..1, centred" convention)
-		// into head_yaw. models/f_anm.mdl (GMod, and what cl_playermodel models include)
-		// declares head_yaw -75..75, head_pitch -60..60, aim_yaw -63.4..71.2,
-		// aim_pitch -86.8..82.8 - all DEGREES - so 0.5 put the head at half a degree,
-		// i.e. the head never turned at all. Read the range out of the model and write
-		// the value in the model's own units instead (HL2SB_SetSeatedPoseParameter()).
-		//
-		// One spelling per axis, never both: aim_* is the whole upper body (which the
-		// head bone follows), head_* is the head bone itself - writing both would turn
-		// the head twice as far.
-		//
-		// HL2SB (2026-10-14): this whole pose block is skipped when the caller only
-		// asked for the seat orientation (bWriteSeatedPose=false) - that is the
-		// client's driving branch, mirroring the reference which runs no animstate
-		// at all while the player is in a vehicle.  The seat-facing write above
-		// (m_angRender / SetAbsAngles) always runs: it is this fork's body
-		// orientation, not a pose parameter.
-		if ( bWriteSeatedPose )
-		{
-			const QAngle angView = pPlayer->EyeAngles();
-			const float flViewYawDelta = AngleNormalize( angView[YAW] - flSeatYaw );
-
-			if ( !HL2SB_SetSeatedPoseParameter( pPlayer, "aim_yaw", flViewYawDelta, 60.0f ) )
-			{
-				// Models without an aim chain (Valve's HL2MP anim models have neither
-				// aim_yaw nor the sit_* poses) keep a head-only turn.
-				HL2SB_SetSeatedPoseParameter( pPlayer, "head_yaw", flViewYawDelta, 60.0f );
-			}
-
-			if ( !HL2SB_SetSeatedPoseParameter( pPlayer, "aim_pitch", angView[PITCH], 60.0f ) )
-			{
-				HL2SB_SetSeatedPoseParameter( pPlayer, "head_pitch", angView[PITCH], 30.0f );
-			}
-
-			// body_yaw is a whole-body blender in some NPC models and absent from the anim
-			// models; "centred" is the middle of whatever range this model declares.
-			const int iBodyYaw = pPlayer->LookupPoseParameter( "body_yaw" );
-			if ( iBodyYaw >= 0 )
-			{
-				float flMin = 0.0f;
-				float flMax = 1.0f;
-				pPlayer->GetPoseParameterRange( iBodyYaw, flMin, flMax );
-				pPlayer->SetPoseParameter( iBodyYaw, ( flMin + flMax ) * 0.5f );
-			}
-		}
-	}
-
+    // Use the same live attachment frame that parents the rider.
+    matrix3x4_t parentMatrix;
+    const matrix3x4_t &parentToWorld = pPlayer->GetParentToWorldTransform( parentMatrix );
+    MatrixAngles( parentToWorld, m_angRender );
+    m_flHL2SBSeatYaw = m_angRender[YAW];
+#ifndef CLIENT_DLL
+    pPlayer->SetAbsAngles( m_angRender );
+#endif
 }
 
 CPlayerAnimState::CPlayerAnimState( CHL2MP_Player *outer )
@@ -952,72 +692,143 @@ CPlayerAnimState::CPlayerAnimState( CHL2MP_Player *outer )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+// Animation hooks run on both realms; Lua owns the activity and playback rate.
+extern void HL2SB_ResolveVehicleAnimation( CBaseEntity *pEntity );
+
+static bool HL2SB_PushPlayerAnimationHook( const char *pszName, CHL2MP_Player *pPlayer )
+{
+    if ( L == NULL )
+        return false;
+    lua_checkstack( L, 16 );
+    lua_getglobal( L, "hook" );
+    if ( !lua_istable( L, -1 ) )
+    {
+        lua_pop( L, 1 );
+        return false;
+    }
+    lua_getfield( L, -1, "Run" );
+    lua_remove( L, -2 );
+    if ( !lua_isfunction( L, -1 ) )
+    {
+        lua_pop( L, 1 );
+        return false;
+    }
+    lua_pushstring( L, pszName );
+    lua_pushplayer( L, pPlayer );
+    return true;
+}
+
+// The original Lua's generic activity offsets predate this engine's enum layout.
+static Activity HL2SB_NormalizePlayerActivity( Activity ideal, Activity translated )
+{
+    static const struct { Activity ideal; int offset; Activity native; } mappings[] =
+    {
+        { ACT_MP_STAND_IDLE, 0, ACT_HL2MP_IDLE },
+        { ACT_MP_WALK, 1, ACT_HL2MP_WALK },
+        { ACT_MP_RUN, 2, ACT_HL2MP_RUN },
+        { ACT_MP_CROUCH_IDLE, 3, ACT_HL2MP_IDLE_CROUCH },
+        { ACT_MP_CROUCHWALK, 4, ACT_HL2MP_WALK_CROUCH },
+        { ACT_MP_SWIM, 9, ACT_HL2MP_SWIM }
+    };
+    for ( int i = 0; i < ARRAYSIZE( mappings ); ++i )
+    {
+        if ( mappings[i].ideal == ideal && translated == ACT_HL2MP_IDLE + mappings[i].offset )
+            return mappings[i].native;
+    }
+    return translated;
+}
+
 void CPlayerAnimState::Update()
 {
-	m_angRender = GetOuter()->GetLocalAngles();
-	m_angRender[ PITCH ] = m_angRender[ ROLL ] = 0.0f;
+    CHL2MP_Player *pPlayer = GetOuter();
+    CStudioHdr *pHdr = pPlayer->GetModelPtr();
+    if ( !pHdr || !pHdr->SequencesAvailable() || !pPlayer->IsAlive() )
+        return;
 
-	ComputePoseParam_BodyYaw();
-	ComputePoseParam_BodyPitch(GetOuter()->GetModelPtr());
-	ComputePoseParam_BodyLookYaw();
+    if ( pPlayer->IsInAVehicle() )
+        HL2SB_ResolveVehicleAnimation( pPlayer->GetMoveParent() );
 
-	ComputePlaybackRate();
+    Vector velocity;
+    GetOuterAbsVelocity( velocity );
+    Activity ideal = ACT_MP_STAND_IDLE;
+    int sequenceOverride = -1;
+    const int stackTop = L ? lua_gettop( L ) : 0;
+    if ( HL2SB_PushPlayerAnimationHook( "CalcMainActivity", pPlayer ) )
+    {
+        lua_pushvector( L, velocity );
+        if ( luasrc_pcall( L, 3, 2, 0 ) == 0 )
+        {
+            if ( lua_isnumber( L, -2 ) )
+                ideal = (Activity)lua_tointeger( L, -2 );
+            if ( lua_isnumber( L, -1 ) )
+                sequenceOverride = lua_tointeger( L, -1 );
+        }
+        lua_settop( L, stackTop );
+    }
 
-	UpdateNoclipLayer();
+    Activity translated = ideal;
+    CBaseCombatWeapon *pWeapon = pPlayer->GetActiveWeapon();
+    bool translatedByLua = false;
+    if ( HL2SB_PushPlayerAnimationHook( "TranslateActivity", pPlayer ) )
+    {
+        lua_pushinteger( L, ideal );
+        if ( luasrc_pcall( L, 3, 1, 0 ) == 0 && lua_isnumber( L, -1 ) )
+        {
+            translated = (Activity)lua_tointeger( L, -1 );
+            translatedByLua = true;
+        }
+        lua_settop( L, stackTop );
+    }
+    if ( !translatedByLua && pWeapon )
+        translated = pWeapon->ActivityOverride( ideal, NULL );
+    translated = HL2SB_NormalizePlayerActivity( ideal, translated );
 
-	// HL2SB: GMod-style vehicle animation state. Runs every frame but is a no-op
-	// (VEHICLE_ANIM_NONE, no pose parameter writes beyond a missing-parameter no-op)
-	// whenever the player is not in a vehicle, so ground/air/crouch/swim are untouched.
-	UpdateVehicleAnimation();
+    int desiredSequence = sequenceOverride;
+    const int currentSequence = pPlayer->GetSequence();
+    if ( desiredSequence < 0 )
+    {
+        if ( currentSequence >= 0 && currentSequence < pHdr->GetNumSeq() &&
+             pPlayer->GetSequenceActivity( currentSequence ) == translated )
+            desiredSequence = currentSequence;
+        else
+            desiredSequence = pPlayer->SelectWeightedSequence( translated );
+    }
+    if ( desiredSequence < 0 || desiredSequence >= pHdr->GetNumSeq() )
+        desiredSequence = 0;
+    if ( desiredSequence != currentSequence )
+    {
+        pPlayer->ResetSequence( desiredSequence );
+        pPlayer->SetCycle( 0.0f );
+    }
 
+    ComputePoseParam_BodyYaw();
+    ComputePoseParam_BodyPitch( pHdr );
+    ComputePoseParam_BodyLookYaw();
+    UpdateVehicleAnimation( false );
+
+    if ( HL2SB_PushPlayerAnimationHook( "UpdateAnimation", pPlayer ) )
+    {
+        lua_pushvector( L, velocity );
+        lua_pushnumber( L, pPlayer->GetSequenceGroundSpeed( pPlayer->GetSequence() ) );
+        luasrc_pcall( L, 4, 0, 0 );
+        lua_settop( L, stackTop );
+    }
 #ifdef CLIENT_DLL
-	GetOuter()->UpdateLookAt();
+    if ( !pPlayer->IsInAVehicle() )
+        pPlayer->UpdateLookAt();
 #endif
-
-	// HL2SB diagnostic: does the cycle advance on this realm, and with which
-	// sequence/rate/animtime? (See hl2sb_anim_debug above.)
-	if ( hl2sb_anim_debug.GetBool() )
-	{
-		static float s_flNextAnimPrint = 0.0f;
-		if ( gpGlobals->curtime >= s_flNextAnimPrint )
-		{
-			s_flNextAnimPrint = gpGlobals->curtime + 1.0f;
-
-			Vector vel;
-			GetOuterAbsVelocity( vel );
-
-			int iSequence = GetOuter()->GetSequence();
-
-			const char *pszLabel = "?";
-			const char *pszActivity = "?";
-			CStudioHdr *pStudioHdr = GetOuter()->GetModelPtr();
-			if ( pStudioHdr && iSequence >= 0 && iSequence < pStudioHdr->GetNumSeq() )
-			{
-				pszLabel = pStudioHdr->pSeqdesc( iSequence ).pszLabel();
-				pszActivity = ActivityList_NameForIndex( (int)GetOuter()->GetSequenceActivity( iSequence ) );
-				if ( !pszActivity )
-					pszActivity = "?";
-			}
-
-#ifdef CLIENT_DLL
-			const char *pszRealm = "cl";
-#else
-			const char *pszRealm = "sv";
-#endif
-
-			Msg( "[HL2SB anim/%s] model=%s seq=%d(%s) act=%s cycle=%.3f rate=%.2f animtime=%.3f curtime=%.3f speed=%.1f maxspeed=%.1f\n",
-				 pszRealm, pStudioHdr ? pStudioHdr->pszName() : "?", iSequence, pszLabel, pszActivity,
-				 GetOuter()->GetCycle(), GetOuter()->GetPlaybackRate(), GetOuter()->GetAnimTime(),
-				 gpGlobals->curtime, vel.Length2D(), GetOuter()->GetSequenceGroundSpeed( iSequence ) );
-
-			// HL2SB diagnostic (AGENTS.md 28): the third-person body does not follow
-			// the view. Print every yaw that could own the visible direction, on both
-			// realms, so whichever one is not tracking the view can be identified.
-			Msg( "[HL2SB yaw/%s] local=%.1f eye=%.1f render=%.1f feet=%.1f goal=%.1f torso=%.1f gait=%.1f\n",
-				 pszRealm, GetOuter()->GetLocalAngles()[YAW], GetOuter()->EyeAngles()[YAW],
-				 m_angRender[YAW], m_flCurrentFeetYaw, m_flGoalFeetYaw, m_flCurrentTorsoYaw, m_flGaitYaw );
-		}
-	}
+    if ( hl2sb_anim_debug.GetBool() )
+    {
+        static float nextPrint[MAX_PLAYERS + 1] = {};
+        int index = pPlayer->entindex();
+        if ( index > 0 && index <= MAX_PLAYERS &&
+             ( gpGlobals->curtime >= nextPrint[index] || nextPrint[index] > gpGlobals->curtime + 1.0f ) )
+        {
+            nextPrint[index] = gpGlobals->curtime + 1.0f;
+            Msg( "[HL2SB player animation] entity=%d sequence=%d cycle=%.4f rate=%.3f speed=%.1f\n",
+                 index, pPlayer->GetSequence(), pPlayer->GetCycle(), pPlayer->GetPlaybackRate(), velocity.Length2D() );
+        }
+    }
 }
 
 #ifdef CLIENT_DLL
@@ -1206,6 +1017,16 @@ void CHL2MP_Player::HL2SB_ClientResetGestureSlot( int iSlot )
 // CMultiPlayerAnimState::DoAnimationEvent CUSTOM_GESTURE case.
 void CHL2MP_Player::HL2SB_ClientDoAnimationEvent( int event, int nData )
 {
+	const int stackTop = L ? lua_gettop( L ) : 0;
+	if ( HL2SB_PushPlayerAnimationHook( "DoAnimationEvent", this ) )
+	{
+		lua_pushinteger( L, event );
+		lua_pushinteger( L, nData );
+		const bool handled = luasrc_pcall( L, 4, 1, 0 ) == 0 && lua_isnumber( L, -1 );
+		lua_settop( L, stackTop );
+		if ( handled )
+			return;
+	}
 	bool bDucking = ( GetFlags() & FL_DUCKING ) != 0;
 
 	switch ( event )
@@ -1247,10 +1068,7 @@ void CHL2MP_Player::HL2SB_ClientDoAnimationEvent( int event, int nData )
 		break;
 
 	default:
-		// JUMP/DIE/SPAWN/FLINCH etc: the fork's remote main-sequence state
-		// (jump pose, ragdoll) is already networked through m_nSequence, so
-		// these need no client gesture - identical net result to before the
-		// TE port.  Log under the debug switch instead of dropping silently.
+		// Events without a Lua answer or a native gesture mapping are diagnostic only.
 		if ( hl2sb_anim_debug.GetBool() )
 		{
 			Msg( "[HL2SB gesture/cl] unhandled event=%d data=%d (ent=%d)\n",
@@ -1513,115 +1331,43 @@ void CPlayerAnimState::EstimateYaw( void )
 //-----------------------------------------------------------------------------
 void CPlayerAnimState::ComputePoseParam_BodyYaw( void )
 {
-	// HL2SB: which leg blender does this model have?
-	//
-	// HL2MP's own animation models (models/player/male_anims.mdl, ...) use the
-	// 8-way "move_yaw" angle. GMod's animation models (models/m_anm.mdl,
-	// f_anm.mdl, z_anm.mdl - and every playermodel that $includemodels them) use
-	// TF2's 9-way move_x / move_y pair.
-	//
-	// HL2SB (2026-09-27): 9-way FIRST, move_yaw only as the fallback.  The old
-	// order (move_yaw first) broke every anime-style playermodel whose own rig
-	// carries a move_yaw pose parameter (miku / qiandai / hutao reference): the
-	// 8-way branch won, move_x/move_y were never written, and the f_anm gait
-	// sequences - 3x3 blends keyed on pose parameters 0/1 - stayed pinned to
-	// their static (0,0) sub-animation: the model glided around frozen in the
-	// first walk frame.  LookupPoseParameter searches the MERGED virtual-model
-	// pose list, so move_x/move_y resolve even when only the $includemodel'd
-	// animation model declares them.  GMod's own animstate is 9-way-only
-	// (server.dll: lookup move_x/move_y, cache, drive - no move_yaw
-	// branch at all); the move_yaw fallback here only covers HL2MP's own models.
-	int iMoveX = GetOuter()->LookupPoseParameter( "move_x" );
-	int iMoveY = GetOuter()->LookupPoseParameter( "move_y" );
-
-	int iYaw = -1;
-	if ( iMoveX < 0 || iMoveY < 0 )
-	{
-		iMoveX = iMoveY = -1;
-		iYaw = GetOuter()->LookupPoseParameter( "move_yaw" );
-		if ( iYaw < 0 )
-			return;
-	}
-
-	// view direction relative to movement
-	float flYaw;	 
-
-	EstimateYaw();
-
-	QAngle	angles = GetOuter()->GetLocalAngles();
-	float ang = angles[ YAW ];
-	if ( ang > 180.0f )
-	{
-		ang -= 360.0f;
-	}
-	else if ( ang < -180.0f )
-	{
-		ang += 360.0f;
-	}
-
-	// calc side to side turning
-	flYaw = ang - m_flGaitYaw;
-	// Invert for mapping into 8way blend
-	flYaw = -flYaw;
-	flYaw = flYaw - (int)(flYaw / 360) * 360;
-
-	if (flYaw < -180)
-	{
-		flYaw = flYaw + 360;
-	}
-	else if (flYaw > 180)
-	{
-		flYaw = flYaw - 360;
-	}
-	
-	if ( iYaw >= 0 )
-	{
-		GetOuter()->SetPoseParameter( iYaw, flYaw );
-	}
-	else
-	{
-		// 9-way blend, copied from CMultiPlayerAnimState::ComputePoseParam_MoveYaw
-		// (game/shared/Multiplayer/multiplayer_animstate.cpp:1539, the LEGANIM_9WAY
-		// branch). flYaw above is the same view-vs-movement yaw the 8-way path
-		// writes into move_yaw, so both paths share EstimateYaw()'s maths.
-		Vector vel;
-		GetOuterAbsVelocity( vel );
-		float flSpeed = vel.Length2D();
-
-		Vector2D vecMove( 0.0f, 0.0f );
-		if ( flSpeed > 0.5f )
-		{
-			// convert the yaw back into a vector ...
-			vecMove.x = cos( DEG2RAD( flYaw ) );
-			vecMove.y = -sin( DEG2RAD( flYaw ) );
-
-			// ... push the edges out to the -1..1 box ...
-			float flInvScale = MAX( fabs( vecMove.x ), fabs( vecMove.y ) );
-			if ( flInvScale != 0.0f )
-			{
-				vecMove.x /= flInvScale;
-				vecMove.y /= flInvScale;
-			}
-
-			// ... and scale by how fast we actually move versus the speed the
-			// sequence was authored for (otherwise slow movement plays a full
-			// stride at full amplitude).
-			float flMaxSpeed = GetOuter()->GetSequenceGroundSpeed( GetOuter()->GetSequence() );
-			if ( flMaxSpeed > flSpeed )
-			{
-				vecMove.x *= flSpeed / flMaxSpeed;
-				vecMove.y *= flSpeed / flMaxSpeed;
-			}
-		}
-
-		GetOuter()->SetPoseParameter( iMoveX, vecMove.x );
-		GetOuter()->SetPoseParameter( iMoveY, vecMove.y );
-	}
-
-#ifndef CLIENT_DLL
-		//Adrian: Make the model's angle match the legs so the hitboxes match on both sides.
-		GetOuter()->SetLocalAngles( QAngle( GetOuter()->GetAnimEyeAngles().x, m_flCurrentFeetYaw, 0 ) );
-#endif
+    CHL2MP_Player *pPlayer = GetOuter();
+    EstimateYaw();
+    const float yaw = AngleNormalize( m_flGaitYaw - pPlayer->GetAnimEyeAngles().y );
+    const int moveX = pPlayer->LookupPoseParameter( "move_x" );
+    const int moveY = pPlayer->LookupPoseParameter( "move_y" );
+    if ( moveX < 0 || moveY < 0 )
+    {
+        const int moveYaw = pPlayer->LookupPoseParameter( "move_yaw" );
+        if ( moveYaw >= 0 )
+            pPlayer->SetPoseParameter( moveYaw, yaw );
+        return;
+    }
+    Vector velocity;
+    GetOuterAbsVelocity( velocity );
+    const float speed = velocity.Length2D();
+    Vector2D direction( 0.0f, 0.0f );
+    if ( speed > 0.5f )
+    {
+        direction.x = cos( DEG2RAD( yaw ) );
+        direction.y = -sin( DEG2RAD( yaw ) );
+        const float scale = MAX( fabs( direction.x ), fabs( direction.y ) );
+        if ( scale > 0.0f )
+        {
+            direction.x /= scale;
+            direction.y /= scale;
+        }
+        pPlayer->SetPoseParameter( moveX, direction.x );
+        pPlayer->SetPoseParameter( moveY, direction.y );
+        const float fullSpeed = pPlayer->GetSequenceGroundSpeed( pPlayer->GetSequence() );
+        if ( fullSpeed > speed )
+        {
+            direction.x *= speed / fullSpeed;
+            direction.y *= speed / fullSpeed;
+        }
+    }
+    pPlayer->SetPoseParameter( moveX, direction.x );
+    pPlayer->SetPoseParameter( moveY, direction.y );
 }
 
 //-----------------------------------------------------------------------------
@@ -1629,22 +1375,13 @@ void CPlayerAnimState::ComputePoseParam_BodyYaw( void )
 //-----------------------------------------------------------------------------
 void CPlayerAnimState::ComputePoseParam_BodyPitch( CStudioHdr *pStudioHdr )
 {
-	// Get pitch from v_angle
-	float flPitch = GetOuter()->GetLocalAngles()[ PITCH ];
-
-	if ( flPitch > 180.0f )
-	{
-		flPitch -= 360.0f;
-	}
-	flPitch = clamp( flPitch, -90, 90 );
-
-	QAngle absangles = GetOuter()->GetAbsAngles();
-	absangles.x = 0.0f;
-	m_angRender = absangles;
-	m_angRender[ PITCH ] = m_angRender[ ROLL ] = 0.0f;
-
-	// See if we have a blender for pitch
-	GetOuter()->SetPoseParameter( pStudioHdr, "aim_pitch", flPitch );
+    const float pitch = AngleNormalize( GetOuter()->GetAnimEyeAngles().x );
+    const int aimPitch = GetOuter()->LookupPoseParameter( pStudioHdr, "aim_pitch" );
+    if ( aimPitch >= 0 )
+        GetOuter()->SetPoseParameter( pStudioHdr, aimPitch, pitch );
+    const int headPitch = GetOuter()->LookupPoseParameter( pStudioHdr, "head_pitch" );
+    if ( headPitch >= 0 )
+        GetOuter()->SetPoseParameter( pStudioHdr, headPitch, pitch );
 }
 
 //-----------------------------------------------------------------------------
@@ -1699,147 +1436,31 @@ int CPlayerAnimState::ConvergeAngles( float goal,float maxrate, float dt, float&
 
 void CPlayerAnimState::ComputePoseParam_BodyLookYaw( void )
 {
-	QAngle absangles = GetOuter()->GetAbsAngles();
-	absangles.y = AngleNormalize( absangles.y );
-	m_angRender = absangles;
-	m_angRender[ PITCH ] = m_angRender[ ROLL ] = 0.0f;
-
-	// See if we even have a blender for pitch
-	int upper_body_yaw = GetOuter()->LookupPoseParameter( "aim_yaw" );
-	if ( upper_body_yaw < 0 )
-	{
-		return;
-	}
-
-	// Assume upper and lower bodies are aligned and that we're not turning
-	float flGoalTorsoYaw = 0.0f;
-	int turning = TURN_NONE;
-	float turnrate = 360.0f;
-
-	Vector vel;
-	
-	GetOuterAbsVelocity( vel );
-
-	bool isMoving = ( vel.Length() > 1.0f ) ? true : false;
-
-	if ( !isMoving )
-	{
-		// Just stopped moving, try and clamp feet
-		if ( m_flLastTurnTime <= 0.0f )
-		{
-			m_flLastTurnTime	= gpGlobals->curtime;
-			m_flLastYaw			= GetOuter()->GetAnimEyeAngles().y;
-			// Snap feet to be perfectly aligned with torso/eyes
-			m_flGoalFeetYaw		= GetOuter()->GetAnimEyeAngles().y;
-			m_flCurrentFeetYaw	= m_flGoalFeetYaw;
-			m_nTurningInPlace	= TURN_NONE;
-		}
-
-		// If rotating in place, update stasis timer
-		if ( m_flLastYaw != GetOuter()->GetAnimEyeAngles().y )
-		{
-			m_flLastTurnTime	= gpGlobals->curtime;
-			m_flLastYaw			= GetOuter()->GetAnimEyeAngles().y;
-		}
-
-		if ( m_flGoalFeetYaw != m_flCurrentFeetYaw )
-		{
-			m_flLastTurnTime	= gpGlobals->curtime;
-		}
-
-		turning = ConvergeAngles( m_flGoalFeetYaw, turnrate, gpGlobals->frametime, m_flCurrentFeetYaw );
-
-		QAngle eyeAngles = GetOuter()->GetAnimEyeAngles();
-		QAngle vAngle = GetOuter()->GetLocalAngles();
-
-		// See how far off current feetyaw is from true yaw
-		float yawdelta = GetOuter()->GetAnimEyeAngles().y - m_flCurrentFeetYaw;
-		yawdelta = AngleNormalize( yawdelta );
-
-		bool rotated_too_far = false;
-
-		float yawmagnitude = fabs( yawdelta );
-
-		// If too far, then need to turn in place
-		if ( yawmagnitude > 45 )
-		{
-			rotated_too_far = true;
-		}
-
-		// Standing still for a while, rotate feet around to face forward
-		// Or rotated too far
-		// FIXME:  Play an in place turning animation
-		if ( rotated_too_far || 
-			( gpGlobals->curtime > m_flLastTurnTime + mp_facefronttime.GetFloat() ) )
-		{
-			m_flGoalFeetYaw		= GetOuter()->GetAnimEyeAngles().y;
-			m_flLastTurnTime	= gpGlobals->curtime;
-
-		/*	float yd = m_flCurrentFeetYaw - m_flGoalFeetYaw;
-			if ( yd > 0 )
-			{
-				m_nTurningInPlace = TURN_RIGHT;
-			}
-			else if ( yd < 0 )
-			{
-				m_nTurningInPlace = TURN_LEFT;
-			}
-			else
-			{
-				m_nTurningInPlace = TURN_NONE;
-			}
-
-			turning = ConvergeAngles( m_flGoalFeetYaw, turnrate, gpGlobals->frametime, m_flCurrentFeetYaw );
-			yawdelta = GetOuter()->GetAnimEyeAngles().y - m_flCurrentFeetYaw;*/
-
-		}
-
-		// Snap upper body into position since the delta is already smoothed for the feet
-		flGoalTorsoYaw = yawdelta;
-		m_flCurrentTorsoYaw = flGoalTorsoYaw;
-	}
-	else
-	{
-		m_flLastTurnTime = 0.0f;
-		m_nTurningInPlace = TURN_NONE;
-		m_flCurrentFeetYaw = m_flGoalFeetYaw = GetOuter()->GetAnimEyeAngles().y;
-		flGoalTorsoYaw = 0.0f;
-		m_flCurrentTorsoYaw = GetOuter()->GetAnimEyeAngles().y - m_flCurrentFeetYaw;
-	}
-
-
-	if ( turning == TURN_NONE )
-	{
-		m_nTurningInPlace = turning;
-	}
-
-	if ( m_nTurningInPlace != TURN_NONE )
-	{
-		// If we're close to finishing the turn, then turn off the turning animation
-		if ( fabs( m_flCurrentFeetYaw - m_flGoalFeetYaw ) < MIN_TURN_ANGLE_REQUIRING_TURN_ANIMATION )
-		{
-			m_nTurningInPlace = TURN_NONE;
-		}
-	}
-
-	// Rotate entire body into position
-	absangles = GetOuter()->GetAbsAngles();
-	absangles.y = m_flCurrentFeetYaw;
-	m_angRender = absangles;
-	m_angRender[ PITCH ] = m_angRender[ ROLL ] = 0.0f;
-
-	GetOuter()->SetPoseParameter( upper_body_yaw, clamp( m_flCurrentTorsoYaw, -60.0f, 60.0f ) );
-
-	/*
-	// FIXME: Adrian, what is this?
-	int body_yaw = GetOuter()->LookupPoseParameter( "body_yaw" );
-
-	if ( body_yaw >= 0 )
-	{
-		GetOuter()->SetPoseParameter( body_yaw, 30 );
-	}
-	*/
-
+    const float eyeYaw = AngleNormalize( GetOuter()->GetAnimEyeAngles().y );
+    Vector velocity;
+    GetOuterAbsVelocity( velocity );
+    if ( velocity.Length() > 1.0f )
+        m_flGoalFeetYaw = eyeYaw;
+    else if ( m_flLastTurnTime <= 0.0f )
+    {
+        m_flGoalFeetYaw = m_flCurrentFeetYaw = eyeYaw;
+        m_flLastTurnTime = gpGlobals->curtime;
+    }
+    else
+    {
+        const float delta = AngleNormalize( m_flGoalFeetYaw - eyeYaw );
+        if ( fabs( delta ) > 45.0f )
+            m_flGoalFeetYaw += delta > 0.0f ? -45.0f : 45.0f;
+    }
+    m_flGoalFeetYaw = AngleNormalize( m_flGoalFeetYaw );
+    const float delta = AngleNormalize( m_flGoalFeetYaw - m_flCurrentFeetYaw );
+    const float turn = gpGlobals->frametime * 720.0f * clamp( fabs( delta ) / 60.0f, 0.01f, 1.0f );
+    m_flCurrentFeetYaw = AngleNormalize( m_flCurrentFeetYaw + clamp( delta, -turn, turn ) );
+    m_flCurrentTorsoYaw = AngleNormalize( eyeYaw - m_flCurrentFeetYaw );
+    const int aimYaw = GetOuter()->LookupPoseParameter( "aim_yaw" );
+    if ( aimYaw >= 0 )
+        GetOuter()->SetPoseParameter( aimYaw, m_flCurrentTorsoYaw );
+    m_angRender.Init( 0.0f, m_flCurrentFeetYaw, 0.0f );
 }
 
 

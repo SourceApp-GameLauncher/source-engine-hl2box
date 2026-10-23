@@ -148,6 +148,7 @@ public:
 	virtual bool	Holster( CBaseCombatWeapon *pSwitchingTo );
 
 #ifdef CLIENT_DLL
+	virtual void	Simulate();
 	virtual void	OnDataChanged( DataUpdateType_t updateType );
 	virtual const char *GetScriptedClassname( void );
 #endif

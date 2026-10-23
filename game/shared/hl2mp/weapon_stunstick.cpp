@@ -59,9 +59,8 @@ public:
 	DECLARE_NETWORKCLASS(); 
 	DECLARE_PREDICTABLE();
 
-#ifndef CLIENT_DLL
 	DECLARE_ACTTABLE();
-#endif
+
 
 #ifdef CLIENT_DLL
 	virtual int				DrawModel( int flags );
@@ -150,8 +149,6 @@ LINK_ENTITY_TO_CLASS( weapon_stunstick, CWeaponStunStick );
 PRECACHE_WEAPON_REGISTER( weapon_stunstick );
 
 
-#ifndef CLIENT_DLL
-
 acttable_t	CWeaponStunStick::m_acttable[] =
 {
 	// ------------------------------------------------------------------
@@ -205,8 +202,6 @@ acttable_t	CWeaponStunStick::m_acttable[] =
 };
 
 IMPLEMENT_ACTTABLE(CWeaponStunStick);
-
-#endif
 
 
 //-----------------------------------------------------------------------------

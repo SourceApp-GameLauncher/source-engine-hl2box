@@ -167,6 +167,7 @@ END_DATADESC()
 //-----------------------------------------------------------------------------
 C_PropAirboat::C_PropAirboat()
 {
+	SetClassname( "prop_vehicle_airboat" );
 	m_vecEyeSpeed.Init();
 	m_flViewAngleDeltaTime = 0.0f;
 	m_pHeadlight = NULL;

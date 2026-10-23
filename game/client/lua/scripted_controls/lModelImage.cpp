@@ -66,6 +66,13 @@ struct IconImage
     bool queued, failed;
 };
 
+enum IconResult
+{
+    ICON_FAILED,
+    ICON_PENDING,
+    ICON_GENERATED
+};
+
 class IconPixels : public ITextureRegenerator
 {
 public:
@@ -109,8 +116,18 @@ public:
         SetPaintBorderEnabled(false);
     }
 
+    virtual ~LModelImage() { ReleasePreview(); }
+
+    void ReleasePreview()
+    {
+        C_BaseAnimating *entity = m_Preview.Get();
+        m_Preview = NULL;
+        if (entity) entity->Release();
+    }
+
     void SetModel(const char *model, int skin, const char *body)
     {
+        ReleasePreview();
         m_Model = model;
         m_Skin = skin;
         m_Body = body;
@@ -121,6 +138,7 @@ public:
 
     void SetSpawnIcon(const char *path)
     {
+        ReleasePreview();
         m_Model.clear();
         m_Path = path;
         for (size_t i = 0; i < m_Path.size(); ++i)
@@ -130,6 +148,7 @@ public:
 
     void Rebuild(lua_State *state, int options)
     {
+        ReleasePreview();
         m_Custom = options > 0 && lua_istable(state, options);
         m_Entity = NULL;
         if (m_Custom)
@@ -159,7 +178,7 @@ public:
     }
 
     virtual void Paint();
-    bool Generate(const std::string &path, int width, int height);
+    IconResult Generate(const std::string &path, int width, int height);
     bool VisibleInTree()
     {
         for (vgui::Panel *p = this; p; p = p->GetParent())
@@ -174,14 +193,17 @@ public:
     QAngle m_Angles;
     float m_Fov;
     CHandle<C_BaseAnimating> m_Entity;
+    CHandle<C_BaseAnimating> m_Preview;
     Vector m_Lightbox[6];
 };
 
 struct IconJob
 {
+    IconJob() : failures(0) {}
     vgui::DHANDLE<LModelImage> panel;
     std::string path;
     int width, height;
+    int failures;
 };
 
 std::map<std::string, IconImage> s_Images;
@@ -238,13 +260,24 @@ void LModelImage::Paint()
     }
 }
 
-bool LModelImage::Generate(const std::string &path, int width, int height)
+IconResult LModelImage::Generate(const std::string &path, int width, int height)
 {
-    if (m_Model.empty() || path.find("..") != std::string::npos || !m_lua_State || m_lua_State != L) return false;
+    if (m_Model.empty() || path.find("..") != std::string::npos || !m_lua_State || m_lua_State != L) return ICON_FAILED;
     C_BaseAnimating *entity = m_Custom ? m_Entity.Get() : NULL;
     bool ownsEntity = !entity;
-    if (!entity) entity = g_pClientSideEntityManager->CreateClientSideEntity(m_Model.c_str(), RENDER_GROUP_OTHER);
-    if (!entity) return false;
+    if (ownsEntity)
+    {
+        entity = m_Preview.Get();
+        if (!entity)
+        {
+            entity = g_pClientSideEntityManager->CreateClientSideEntity(m_Model.c_str(), RENDER_GROUP_OTHER);
+            m_Preview = entity;
+            if (entity) entity->AddEffects(EF_NODRAW);
+        }
+    }
+    if (!entity) return ICON_FAILED;
+    CStudioHdr *header = entity->GetModelPtr();
+    if (entity->IsDynamicModelLoading() || !header || !header->SequencesAvailable()) return ICON_PENDING;
     if (ownsEntity)
     {
         entity->AddEffects(EF_NODRAW);
@@ -253,7 +286,9 @@ bool LModelImage::Generate(const std::string &path, int width, int height)
             if (m_Body[i] >= '0' && m_Body[i] <= '9') entity->SetBodygroup(i, m_Body[i] - '0');
         int sequence = entity->LookupSequence("idle_all_01");
         if (sequence < 0) sequence = entity->LookupSequence("ragdoll");
-        if (sequence >= 0) entity->ResetSequence(sequence);
+        if (sequence < 0 && header->GetNumSeq() > 0) sequence = 0;
+        if (sequence < 0) { ReleasePreview(); return ICON_FAILED; }
+        entity->ResetSequence(sequence);
         entity->SetAbsOrigin(vec3_origin);
         entity->SetAbsAngles(vec3_angle);
     }
@@ -295,13 +330,17 @@ bool LModelImage::Generate(const std::string &path, int width, int height)
     CUtlVector<unsigned char> pixels;
     bool rendered = positioned && HL2SB_RenderSpawnIcon(entity, camera, width, height,
         m_Custom ? m_Lightbox : NULL, png, pixels);
-    if (ownsEntity) entity->Release();
-    if (!rendered) return false;
+    if (ownsEntity) ReleasePreview();
+    if (!rendered) return ICON_FAILED;
+    bool hasPixels = false;
+    for (int i = 3; i < pixels.Count(); i += 4)
+        if (pixels[i] != 0) { hasPixels = true; break; }
+    if (!hasPixels) return ICON_FAILED;
     std::string filename = "materials/" + path;
     char directory[MAX_PATH];
     Q_ExtractFilePath(filename.c_str(), directory, sizeof(directory));
     filesystem->CreateDirHierarchy(directory, "MOD");
-    if (!filesystem->WriteFile(filename.c_str(), "MOD", png)) return false;
+    if (!filesystem->WriteFile(filename.c_str(), "MOD", png)) return ICON_FAILED;
     IconImage &image = s_Images[path];
     bool hadTexture = image.texture >= 0;
     if (LoadImage(path, image) && hadTexture)
@@ -321,7 +360,7 @@ bool LModelImage::Generate(const std::string &path, int width, int height)
             lua_pushstring(L, path.c_str());
         END_LUA_CALL_HOOK(2, 0);
     }
-    return true;
+    return ICON_GENERATED;
 }
 
 LModelImage *CheckImage(lua_State *state)
@@ -357,15 +396,23 @@ void HL2SB_ProcessModelImages()
         IconImage &image = s_Images[job.path];
         image.queued = false;
         LModelImage *panel = job.panel.Get();
-        if (!panel || panel->m_lua_State != L || panel->m_Path != job.path || !panel->VisibleInTree()) continue;
+        if (!panel || panel->m_lua_State != L || panel->m_Path != job.path) continue;
+        if (!panel->VisibleInTree()) { panel->ReleasePreview(); continue; }
         if (!panel->m_Force && LoadImage(job.path, image))
         {
+            panel->ReleasePreview();
             if (Plat_FloatTime() >= deadline) break;
             continue;
         }
-        bool generated = panel->Generate(job.path, job.width, job.height);
+        IconResult result = panel->Generate(job.path, job.width, job.height);
+        if (result == ICON_PENDING || (result == ICON_FAILED && ++job.failures < 3))
+        {
+            image.queued = true;
+            s_Jobs.push_back(job);
+            break;
+        }
         panel->m_Force = false;
-        image.failed = !generated || !LoadImage(job.path, image);
+        image.failed = result != ICON_GENERATED || !LoadImage(job.path, image);
         break;
     }
 }

@@ -94,9 +94,8 @@ public:
 		return 0.5f; 
 	}
 	
-#ifndef CLIENT_DLL
 	DECLARE_ACTTABLE();
-#endif
+
 
 private:
 	CNetworkVar( float,	m_flSoonestPrimaryAttack );
@@ -136,7 +135,6 @@ END_PREDICTION_DATA()
 LINK_ENTITY_TO_CLASS( weapon_pistol, CWeaponPistol );
 PRECACHE_WEAPON_REGISTER( weapon_pistol );
 
-#ifndef CLIENT_DLL
 acttable_t CWeaponPistol::m_acttable[] = 
 {
 	// ------------------------------------------------------------------
@@ -206,8 +204,6 @@ acttable_t CWeaponPistol::m_acttable[] =
 
 
 IMPLEMENT_ACTTABLE( CWeaponPistol );
-
-#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Constructor

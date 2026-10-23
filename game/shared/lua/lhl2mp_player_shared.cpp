@@ -117,7 +117,7 @@ static int CHL2MP_Player_CanSprint (lua_State *L) {
 
 static int CHL2MP_Player_AnimRestartMainSequence (lua_State *L) {
   CHL2MP_Player *pPlayer = luaL_checkhl2mpplayer(L, 1);
-  pPlayer->ResetSequence( pPlayer->GetSequence() );
+  pPlayer->m_flAnimTime = gpGlobals->curtime;
   pPlayer->SetCycle( 0 );
   return 0;
 }
@@ -314,18 +314,12 @@ static int CHL2MP_Player_DoCustomAnimEvent (lua_State *L) {
 }
 
 // GMod: Player:TranslateWeaponActivity( act ) - the active weapon's acttable.
-// Server-side it is the real CBaseCombatCharacter translation; the client
-// answers with the input activity (the fork's player animation is
-// server-authoritative, so nothing client-side consumes the result today).
+// The active weapon supplies the same activity translation on both realms.
 static int CHL2MP_Player_TranslateWeaponActivity (lua_State *L) {
   CHL2MP_Player *pPlayer = luaL_checkhl2mpplayer(L, 1);
   Activity act = (Activity)luaL_checkint(L, 2);
-#ifndef CLIENT_DLL
-  lua_pushinteger( L, pPlayer->Weapon_TranslateActivity( act ) );
-#else
-  (void)pPlayer;
-  lua_pushinteger( L, act );
-#endif
+  CBaseCombatWeapon *pWeapon = pPlayer->GetActiveWeapon();
+  lua_pushinteger( L, pWeapon ? pWeapon->ActivityOverride( act, NULL ) : act );
   return 1;
 }
 

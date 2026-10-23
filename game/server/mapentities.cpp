@@ -275,6 +275,54 @@ bool HL2SB_IsEntityCreatedByMap( CBaseEntity *pEntity )
 	return false;
 }
 
+// Reserve IDs while parsing, before spawn hierarchy sorting or callbacks.
+// Filtered map entries keep their slot so cleanup preserves surviving IDs.
+static CUtlVector<CBaseHandle> s_HL2SBMapCreationOrder;
+static const int HL2SB_FIRST_MAP_CREATION_ID = 1235;
+static int s_nHL2SBMapCreationID = HL2SB_FIRST_MAP_CREATION_ID - 1;
+
+class CHL2SBMapCreationSystem : public CAutoGameSystem
+{
+public:
+	void LevelInitPreEntity()
+	{
+		s_HL2SBMapCreationOrder.RemoveAll();
+		s_nHL2SBMapCreationID = HL2SB_FIRST_MAP_CREATION_ID - 1;
+	}
+	void LevelShutdownPostEntity()
+	{
+		s_HL2SBMapCreationOrder.RemoveAll();
+	}
+};
+static CHL2SBMapCreationSystem s_HL2SBMapCreationSystem;
+
+static void HL2SB_RecordMapCreationID( CBaseEntity *pEntity )
+{
+	const int index = ++s_nHL2SBMapCreationID - HL2SB_FIRST_MAP_CREATION_ID;
+	while ( s_HL2SBMapCreationOrder.Count() <= index )
+		s_HL2SBMapCreationOrder.AddToTail( CBaseHandle() );
+	s_HL2SBMapCreationOrder[index] = pEntity->GetRefEHandle();
+}
+
+static const char *HL2SB_ParseMapEntity( CBaseEntity *&pEntity, const char *pEntData,
+	IMapEntityFilter *pFilter, bool bRecordMapCreationID );
+
+int HL2SB_MapCreationID( CBaseEntity *pEntity )
+{
+	if ( pEntity == NULL )
+		return -1;
+
+	const CBaseHandle &handle = pEntity->GetRefEHandle();
+	CUtlVector<CBaseHandle> &list = s_HL2SBMapCreationOrder;
+	for ( int i = 0; i < list.Count(); ++i )
+	{
+		if ( list[i] == handle )
+			return HL2SB_FIRST_MAP_CREATION_ID + i;
+	}
+	return -1;
+}
+
+
 
 void SpawnAllEntities( int nEntities, HierarchicalSpawn_t *pSpawnList, bool bActivateEntities )
 {
@@ -325,6 +373,7 @@ void SpawnAllEntities( int nEntities, HierarchicalSpawn_t *pSpawnList, bool bAct
 				// handle (index + serial), so a recycled edict slot can never
 				// answer "yes" for an entity spawned later through ents.Create.
 				HL2SB_MapSpawnedHandles().AddToTail( pEntity->GetRefEHandle() );
+
 			}
 		}
 	}
@@ -357,6 +406,7 @@ void MapEntity_ParseAllEntities(const char *pMapData, IMapEntityFilter *pFilter,
 
 	// HL2SB GMod compat: a fresh level means a fresh Entity:CreatedByMap set.
 	s_HL2SBMapSpawnedHandles.RemoveAll();
+	s_nHL2SBMapCreationID = HL2SB_FIRST_MAP_CREATION_ID - 1;
 
 	HierarchicalSpawnMapData_t *pSpawnMapData = new HierarchicalSpawnMapData_t[NUM_ENT_ENTRIES];
 	HierarchicalSpawn_t *pSpawnList = new HierarchicalSpawn_t[NUM_ENT_ENTRIES];
@@ -398,7 +448,7 @@ void MapEntity_ParseAllEntities(const char *pMapData, IMapEntityFilter *pFilter,
 		//
 		CBaseEntity *pEntity;
 		const char *pCurMapData = pMapData;
-		pMapData = MapEntity_ParseEntity(pEntity, pMapData, pFilter);
+		pMapData = HL2SB_ParseMapEntity(pEntity, pMapData, pFilter, true);
 		if (pEntity == NULL)
 			continue;
 
@@ -592,7 +642,8 @@ void MapEntity_PrecacheEntity( const char *pEntData, int &nStringSize )
 //			pEntData - Data block to parse to extract entity keys.
 // Output : Returns the current position in the entity data block.
 //-----------------------------------------------------------------------------
-const char *MapEntity_ParseEntity(CBaseEntity *&pEntity, const char *pEntData, IMapEntityFilter *pFilter)
+static const char *HL2SB_ParseMapEntity(CBaseEntity *&pEntity, const char *pEntData,
+	IMapEntityFilter *pFilter, bool bRecordMapCreationID)
 {
 	CEntityMapData entData( (char*)pEntData );
 	char className[MAPKEY_MAXLENGTH];
@@ -618,6 +669,8 @@ const char *MapEntity_ParseEntity(CBaseEntity *&pEntity, const char *pEntData, I
 		//
 		if (pEntity != NULL)
 		{
+			if ( bRecordMapCreationID )
+				HL2SB_RecordMapCreationID( pEntity );
 			pEntity->ParseMapData(&entData);
 		}
 		else
@@ -627,6 +680,8 @@ const char *MapEntity_ParseEntity(CBaseEntity *&pEntity, const char *pEntData, I
 	}
 	else
 	{
+		if ( bRecordMapCreationID )
+			++s_nHL2SBMapCreationID;
 		// Just skip past all the keys.
 		char keyName[MAPKEY_MAXLENGTH];
 		char value[MAPKEY_MAXLENGTH];
@@ -643,6 +698,12 @@ const char *MapEntity_ParseEntity(CBaseEntity *&pEntity, const char *pEntData, I
 	// Return the current parser position in the data block
 	//
 	return entData.CurrentBufferPosition();
+}
+
+const char *MapEntity_ParseEntity(CBaseEntity *&pEntity, const char *pEntData,
+	IMapEntityFilter *pFilter)
+{
+	return HL2SB_ParseMapEntity( pEntity, pEntData, pFilter, false );
 }
 
 

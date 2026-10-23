@@ -153,8 +153,6 @@ void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 				{
 					pHudSelection->OnWeaponPickup( this );
 				}
-
-				pPlayer->EmitSound( "Player.PickupWeapon" );
 			}
 		}
 	}
@@ -166,6 +164,10 @@ void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 			SetModelIndex( overrideModelIndex );
 		}
 	}
+
+	const int worldModel = GetWorldModelIndex();
+	if ( worldModel > 0 && worldModel != GetModelIndex() )
+		SetModelIndex( worldModel );
 
 	UpdateVisibility();
 
@@ -707,19 +709,12 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 // the weapon timings are on the view model and not the world model. That means the
 // server needs to use the view model, but the client wants to use the world model.
 //-----------------------------------------------------------------------------
-int C_BaseCombatWeapon::CalcOverrideModelIndex() 
-{ 
-	C_BasePlayer *localplayer = C_BasePlayer::GetLocalPlayer();
-	if ( localplayer && 
-		localplayer == GetOwner() &&
-		ShouldDrawLocalPlayerViewModel() )
-	{
-		return BaseClass::CalcOverrideModelIndex();
-	}
-	else
-	{
-		return GetWorldModelIndex();
-	}
+int C_BaseCombatWeapon::CalcOverrideModelIndex()
+{
+    // The weapon entity supplies world attachments even while its owner's
+    // separate viewmodel is visible. Prediction must preserve that model too.
+    const int worldModel = GetWorldModelIndex();
+    return worldModel > 0 ? worldModel : BaseClass::CalcOverrideModelIndex();
 }
 
 //-----------------------------------------------------------------------------

@@ -1146,8 +1146,44 @@ void Panel::OnChildSettingsApplied( KeyValues *pInResourceData, Panel *pChild  )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+// Weak panel handles avoid retaining windows or reusing state after deletion.
+static CUtlVector<PHandle> s_ManualPaintPanels;
+static Panel *s_ManualPaintRoot = NULL;
+
+void HL2SB_PanelSetPaintedManually(Panel *panel, bool manual)
+{
+	for (int i = s_ManualPaintPanels.Count() - 1; i >= 0; --i)
+	{
+		Panel *entry = s_ManualPaintPanels[i].Get();
+		if (!entry || entry == panel) s_ManualPaintPanels.Remove(i);
+	}
+	if (manual) s_ManualPaintPanels[s_ManualPaintPanels.AddToTail()].Set(panel);
+}
+
+static bool HL2SB_PanelIsPaintedManually(Panel *panel)
+{
+	for (int i = s_ManualPaintPanels.Count() - 1; i >= 0; --i)
+	{
+		Panel *entry = s_ManualPaintPanels[i].Get();
+		if (!entry) s_ManualPaintPanels.Remove(i);
+		else if (entry == panel) return true;
+	}
+	return false;
+}
+
+void HL2SB_PanelPaintManual(Panel *panel)
+{
+	Panel *previous = s_ManualPaintRoot;
+	if (previous == panel) return;
+	s_ManualPaintRoot = panel;
+	surface()->PaintTraverseEx(panel->GetVPanel(), false);
+	s_ManualPaintRoot = previous;
+}
+
 void Panel::PaintTraverse( bool repaint, bool allowForce )
 {
+	if (this != s_ManualPaintRoot && HL2SB_PanelIsPaintedManually(this)) return;
+
 	if ( m_bWorldPositionCurrentFrame )
 	{
 		surface()->SolveTraverse( GetVPanel() );

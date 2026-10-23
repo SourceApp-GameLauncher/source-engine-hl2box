@@ -905,6 +905,10 @@ void CBaseScripted::Spawn( void )
 	// nextbots.)  GMod transmits scripted entities regardless of a model.
 	AddEFlags( EFL_FORCE_CHECK_TRANSMIT );
 
+	// Scripted entities receive damage events by default; Initialize may
+	// replace the mode when the entity needs built-in health handling.
+	m_takedamage = DAMAGE_EVENTS_ONLY;
+
 	InitScriptedEntity();
 
 	// HL2SB GMod compat (2026-10-21): a scripted entity that comes to life is

@@ -219,6 +219,9 @@ void WeaponsResource::LoadWeaponSprites( WEAPON_FILE_INFO_HANDLE hWeaponFileInfo
 //-----------------------------------------------------------------------------
 CHudTexture *WeaponsResource::GetAmmoIconFromWeapon( int iAmmoId )
 {
+	if ( iAmmoId < 0 )
+		return NULL;
+
 	C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
 	if ( !player )
 		return NULL;

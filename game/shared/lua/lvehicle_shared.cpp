@@ -700,6 +700,57 @@ int Vehicle_GetVehicleClass (lua_State *L) {
   return 1;
 }
 
+// Resolve the registered seat callback in each realm after its class arrives.
+void HL2SB_ResolveVehicleAnimation( CBaseEntity *pEntity )
+{
+  if ( L == NULL || pEntity == NULL )
+    return;
+  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>( pEntity );
+  const char *pszClass = pDriveable ? pDriveable->HL2SB_GetVehicleClass()
+                                  : HL2SB_PodGetVehicleClass( pEntity );
+  if ( pszClass == NULL || pszClass[0] == '\0' )
+    return;
+  const int stackTop = lua_gettop( L );
+  if ( !lua_isrefvalid( L, pEntity->m_nTableReference ) )
+  {
+    lua_newtable( L );
+    pEntity->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+  }
+  lua_getref( L, pEntity->m_nTableReference );
+  const int instance = lua_gettop( L );
+  lua_getfield( L, instance, "HandleAnimation" );
+  const bool missing = lua_isnil( L, -1 ) ||
+    ( lua_isboolean( L, -1 ) && lua_toboolean( L, -1 ) );
+  lua_pop( L, 1 );
+  if ( missing )
+  {
+    // Discard the no-handler sentinel before resolving replicated seat data.
+    lua_pushnil( L );
+    lua_setfield( L, instance, "HandleAnimation" );
+    lua_getglobal( L, "list" );
+    if ( lua_istable( L, -1 ) )
+    {
+      lua_getfield( L, -1, "GetEntry" );
+      if ( lua_isfunction( L, -1 ) )
+      {
+        lua_pushliteral( L, "Vehicles" );
+        lua_pushstring( L, pszClass );
+        if ( luasrc_pcall( L, 2, 1, 0 ) == 0 && lua_istable( L, -1 ) )
+        {
+          lua_getfield( L, -1, "Members" );
+          if ( lua_istable( L, -1 ) )
+          {
+            lua_getfield( L, -1, "HandleAnimation" );
+            if ( lua_isfunction( L, -1 ) )
+              lua_setfield( L, instance, "HandleAnimation" );
+          }
+        }
+      }
+    }
+  }
+  lua_settop( L, stackTop );
+}
+
 static int Vehicle_HasBoost (lua_State *L) {
 #ifdef CLIENT_DLL
   /* HL2SB: real engine data - m_nHasBoost is networked. */

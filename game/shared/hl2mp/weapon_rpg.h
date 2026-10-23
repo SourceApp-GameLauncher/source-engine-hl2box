@@ -290,9 +290,8 @@ public:
 	void	SetPredictingMissile(bool enabled) { m_bClientPredictingMissile = enabled; }
 #endif
 
-#ifndef CLIENT_DLL
 	DECLARE_ACTTABLE();
-#endif
+
 
 protected:
 

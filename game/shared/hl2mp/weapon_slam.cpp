@@ -92,6 +92,7 @@ BEGIN_DATADESC( CWeapon_SLAM )
 
 END_DATADESC()
 
+#endif
 acttable_t	CWeapon_SLAM::m_acttable[] = 
 {
 	// ------------------------------------------------------------------
@@ -140,7 +141,6 @@ acttable_t	CWeapon_SLAM::m_acttable[] =
 };
 
 IMPLEMENT_ACTTABLE(CWeapon_SLAM);
-#endif
 
 
 void CWeapon_SLAM::Spawn( )

@@ -127,18 +127,15 @@ void CHudAmmo::UpdatePlayerAmmo( C_BasePlayer *player )
 	hudlcd->SetGlobalStat( "(weapon_print_name)", wpn ? wpn->GetPrintName() : " " );
 	hudlcd->SetGlobalStat( "(weapon_name)", wpn ? wpn->GetName() : " " );
 
-	// HL2SB (2026-10-01): the stock rule "no primary ammo type -> hide the
-	// ammo panel" is HL2 content talking (crowbar, medigun...), but a GMod
-	// SWEP with Primary.Ammo = "" can still own a CLIP -- weapon_medkit
-	// keeps its charge in Clip1 (100..0) and its whole ammo HUD vanished
-	// under the stock rule. GMod semantics: a clip is displayable ammo.
-	if ( !wpn || !player || ( !wpn->UsesPrimaryAmmo() && !wpn->UsesClipsForAmmo1() ) )
+	m_iconPrimaryAmmo = NULL;
+	if ( !wpn || !player )
 	{
 		hudlcd->SetGlobalStat( "(ammo_primary)", "n/a" );
         hudlcd->SetGlobalStat( "(ammo_secondary)", "n/a" );
 
 		SetPaintEnabled(false);
 		SetPaintBackgroundEnabled(false);
+		m_hCurrentActiveWeapon = NULL;
 		return;
 	}
 
@@ -153,36 +150,19 @@ void CHudAmmo::UpdatePlayerAmmo( C_BasePlayer *player )
 			hudlcd->SetGlobalStat( "(ammo_secondary)", "n/a" );
 			SetPaintEnabled(false);
 			SetPaintBackgroundEnabled(false);
+			m_hCurrentActiveWeapon = NULL;
 			return;
 		}
 	}
 #endif
 
-	SetPaintEnabled(true);
-	SetPaintBackgroundEnabled(true);
-
-	// Get our icons for the ammo types
-	m_iconPrimaryAmmo = gWR.GetAmmoIconFromWeapon( wpn->GetPrimaryAmmoType() );
-
-	// get the ammo in our clip
-	int ammo1 = wpn->Clip1();
-	int ammo2;
-	if (ammo1 < 0)
-	{
-		// we don't use clip ammo, just use the total ammo count
-		ammo1 = player->GetAmmoCount(wpn->GetPrimaryAmmoType());
-		ammo2 = 0;
-	}
-	else
-	{
-		// we use clip ammo, so the second ammo is the total ammo
-		ammo2 = player->GetAmmoCount(wpn->GetPrimaryAmmoType());
-	}
+	int ammo1 = -1;
+	int ammo2 = -1;
+	bool bCustomDisplay = false;
 
 #ifdef LUA_SDK
-	// wiki: WEAPON:CustomAmmoDisplay() -> table -- Draw / PrimaryClip /
-	// PrimaryAmmo override what the stock ammo HUD shows (HL2's layout is a
-	// fixed clip|reserve pair, so the Secondary* fields have no slot here).
+	// A custom display owns its values. Missing fields stay hidden rather
+	// than inheriting an unrelated native ammo type or reserve count.
 	{
 		CHL2MPScriptedWeapon *pScripted = dynamic_cast<CHL2MPScriptedWeapon *>( wpn );
 		if ( pScripted )
@@ -192,22 +172,56 @@ void CHudAmmo::UpdatePlayerAmmo( C_BasePlayer *player )
 			int nReserveOverride = -1;
 			if ( pScripted->DispatchCustomAmmoDisplay( &bDraw, &nClipOverride, &nReserveOverride ) )
 			{
-				if ( !bDraw )
+				bCustomDisplay = true;
+				if ( !bDraw || ( nClipOverride < 0 && nReserveOverride < 0 ) )
 				{
 					hudlcd->SetGlobalStat( "(ammo_primary)", "n/a" );
 					hudlcd->SetGlobalStat( "(ammo_secondary)", "n/a" );
 					SetPaintEnabled(false);
 					SetPaintBackgroundEnabled(false);
+					m_hCurrentActiveWeapon = NULL;
 					return;
 				}
-				if ( nClipOverride >= 0 )
-					ammo1 = nClipOverride;
-				if ( nReserveOverride >= 0 )
-					ammo2 = nReserveOverride;
+				ammo1 = nClipOverride;
+				ammo2 = nReserveOverride;
 			}
 		}
 	}
 #endif
+
+	if ( !bCustomDisplay )
+	{
+		// Native weapons require an actual ammo type, regardless of clip size.
+		if ( !wpn->UsesPrimaryAmmo() )
+		{
+			hudlcd->SetGlobalStat( "(ammo_primary)", "n/a" );
+			hudlcd->SetGlobalStat( "(ammo_secondary)", "n/a" );
+			SetPaintEnabled(false);
+			SetPaintBackgroundEnabled(false);
+			m_hCurrentActiveWeapon = NULL;
+			return;
+		}
+
+		ammo1 = wpn->Clip1();
+		const int nReserve = player->GetAmmoCount( wpn->GetPrimaryAmmoType() );
+		ammo2 = ammo1 < 0 ? -1 : nReserve;
+		if ( ammo1 < 0 )
+			ammo1 = nReserve;
+		m_iconPrimaryAmmo = gWR.GetAmmoIconFromWeapon( wpn->GetPrimaryAmmoType() );
+	}
+
+	SetPaintEnabled(true);
+	SetPaintBackgroundEnabled(true);
+	const bool bShowPrimary = ammo1 >= 0;
+	const bool bShowReserve = ammo2 >= 0;
+	if ( wpn != m_hCurrentActiveWeapon || bShowPrimary != ShouldDisplayValue()
+		|| bShowReserve != ShouldDisplaySecondaryValue() )
+	{
+		g_pClientMode->GetViewportAnimationController()->StartAnimationSequence(
+			bShowReserve ? "WeaponUsesClips" : "WeaponDoesNotUseClips" );
+	}
+	SetShouldDisplayValue( bShowPrimary );
+	SetShouldDisplaySecondaryValue( bShowReserve );
 
 	hudlcd->SetGlobalStat( "(ammo_primary)", VarArgs( "%d", ammo1 ) );
 	hudlcd->SetGlobalStat( "(ammo_secondary)", VarArgs( "%d", ammo2 ) );
@@ -223,18 +237,6 @@ void CHudAmmo::UpdatePlayerAmmo( C_BasePlayer *player )
 		// diferent weapon, change without triggering
 		SetAmmo(ammo1, false);
 		SetAmmo2(ammo2, false);
-
-		// update whether or not we show the total ammo display
-		if (wpn->UsesClipsForAmmo1())
-		{
-			SetShouldDisplaySecondaryValue(true);
-			g_pClientMode->GetViewportAnimationController()->StartAnimationSequence("WeaponUsesClips");
-		}
-		else
-		{
-			g_pClientMode->GetViewportAnimationController()->StartAnimationSequence("WeaponDoesNotUseClips");
-			SetShouldDisplaySecondaryValue(false);
-		}
 
 		g_pClientMode->GetViewportAnimationController()->StartAnimationSequence("WeaponChanged");
 		m_hCurrentActiveWeapon = wpn;
@@ -255,6 +257,7 @@ void CHudAmmo::UpdateVehicleAmmo( C_BasePlayer *player, IClientVehicle *pVehicle
 
 	SetPaintEnabled(true);
 	SetPaintBackgroundEnabled(true);
+	SetShouldDisplayValue(true);
 
 	// get the ammo in our clip
 	int ammo1 = pVehicle->GetPrimaryAmmoClip();
@@ -389,9 +392,7 @@ void CHudAmmo::Paint( void )
 {
 	BaseClass::Paint();
 
-	// HL2SB: also draw the ammo icon in the HL2MP-built client (Valve's
-	// stock HL2MP HUD compiles the icon out with `#ifndef HL2MP`, leaving the
-	// label + numbers and a blank space where the ammo icon belongs).
+#ifndef HL2MP
 	if ( m_hCurrentVehicle == NULL && m_iconPrimaryAmmo )
 	{
 		int nLabelHeight;
@@ -404,6 +405,7 @@ void CHudAmmo::Paint( void )
 		
 		m_iconPrimaryAmmo->DrawSelf( x, y, GetFgColor() );
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------

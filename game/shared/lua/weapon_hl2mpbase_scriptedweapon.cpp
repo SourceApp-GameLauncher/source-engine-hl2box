@@ -878,6 +878,44 @@ static void HL2SB_EnsureInitialWeaponDeploy( CHL2MPScriptedWeapon *pWeapon )
 #endif
 }
 
+void CHL2MPScriptedWeapon::Simulate()
+{
+	CHandle<CHL2MPScriptedWeapon> guard = this;
+	BaseClass::Simulate();
+	if ( guard.Get() != this || L == NULL || m_nTableReference < 0 )
+		return;
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	if ( !pOwner || !pOwner->IsAlive() || pOwner->GetActiveWeapon() != this )
+		return;
+	if ( pOwner == CBasePlayer::GetLocalPlayer() && !pOwner->GetViewModel( m_nViewModelIndex, false ) )
+		return;
+
+	HL2SB_EnsureInitialWeaponDeploy( this );
+	if ( guard.Get() != this )
+		return;
+	lua_getref( L, m_nTableReference );
+	if ( !lua_istable( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+	lua_pushliteral( L, "__hl2sb_client_think_frame" );
+	lua_rawget( L, -2 );
+	const bool bAlreadyThought = lua_isnumber( L, -1 ) && lua_tointeger( L, -1 ) == gpGlobals->framecount;
+	lua_pop( L, 1 );
+	if ( bAlreadyThought )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+	lua_pushliteral( L, "__hl2sb_client_think_frame" );
+	lua_pushinteger( L, gpGlobals->framecount );
+	lua_rawset( L, -3 );
+	lua_pop( L, 1 );
+	BEGIN_LUA_CALL_WEAPON_METHOD( "Think" );
+	END_LUA_CALL_WEAPON_METHOD( 0, 0 );
+}
+
 void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged( updateType );
@@ -911,6 +949,36 @@ void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 			luasrc_LuaInfoMsgF( "[HL2SB wp] CLIENT weapon bound ent=%d refAfter=%d vmidx=%d\n",
 				entindex(), (int)m_nTableReference, (int)m_iViewModelIndex );
 		}
+	}
+
+	// A server-confirmed switch also reaches clients that did not predict it.
+	// Notify Lua without holstering the replacement weapon's shared viewmodel.
+	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	if ( L != NULL && m_nTableReference >= 0 && m_iState != WEAPON_IS_ACTIVE &&
+		pOwner != NULL && pOwner == CBasePlayer::GetLocalPlayer() )
+	{
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) )
+		{
+			lua_pushliteral( L, "__hl2sb_client_deploy_attempted" );
+			lua_rawget( L, -2 );
+			const bool bDeployed = lua_toboolean( L, -1 ) != 0;
+			lua_pop( L, 1 );
+			if ( bDeployed )
+			{
+				lua_pushliteral( L, "__hl2sb_client_deploy_attempted" );
+				lua_pushboolean( L, false );
+				lua_rawset( L, -3 );
+				lua_pop( L, 1 );
+				BEGIN_LUA_CALL_WEAPON_METHOD( "Holster" );
+					lua_pushweapon( L, pOwner->GetActiveWeapon() );
+				END_LUA_CALL_WEAPON_METHOD( 1, 0 );
+			}
+			else
+				lua_pop( L, 1 );
+		}
+		else
+			lua_pop( L, 1 );
 	}
 
 	// Network activation can precede the client's scripted weapon binding.
@@ -2128,6 +2196,19 @@ bool CHL2MPScriptedWeapon::Holster( CBaseCombatWeapon *pSwitchingTo )
 	END_LUA_CALL_WEAPON_METHOD( 1, 1 );
 
 	RETURN_LUA_VETO();
+#ifdef CLIENT_DLL
+	if ( L != NULL && m_nTableReference >= 0 )
+	{
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) )
+		{
+			lua_pushliteral( L, "__hl2sb_client_deploy_attempted" );
+			lua_pushboolean( L, false );
+			lua_rawset( L, -3 );
+		}
+		lua_pop( L, 1 );
+	}
+#endif
 #endif
 
 	return BaseClass::Holster( pSwitchingTo );
@@ -2143,8 +2224,10 @@ void CHL2MPScriptedWeapon::ItemPostFrame( void )
 #endif
 #if defined ( LUA_SDK )
 	// GMod calls SWEP:Think() every frame while the weapon is active.
+#ifndef CLIENT_DLL
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Think" );
 	END_LUA_CALL_WEAPON_METHOD( 0, 0 );
+#endif
 
 	// ...and SWEP:Tick() every frame as well.  GMod weapons put their per-frame
 	// prediction-safe work there, and weapon_fists lands its melee from it:
@@ -2732,7 +2815,7 @@ bool CHL2MPScriptedWeapon::DispatchDrawWeaponSelection( int x, int y, int wide, 
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat (wiki): WEAPON:CustomAmmoDisplay() -> table with
 // Draw (boolean), PrimaryClip / PrimaryAmmo / SecondaryClip / SecondaryAmmo
-// (numbers, -1 = leave the engine value).  HL2's ammo HUD is a fixed
+// (numbers, -1 = hide the value).  HL2's ammo HUD is a fixed
 // clip|reserve pair, so only Draw / PrimaryClip / PrimaryAmmo have a slot
 // here (hud_ammo.cpp consumes them).
 //-----------------------------------------------------------------------------

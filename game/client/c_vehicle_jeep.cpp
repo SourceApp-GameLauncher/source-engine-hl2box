@@ -35,6 +35,7 @@ END_RECV_TABLE()
 //-----------------------------------------------------------------------------
 C_PropJeep::C_PropJeep()
 {
+	SetClassname( "prop_vehicle_jeep" );
 	m_vecEyeSpeed.Init();
 	m_flViewAngleDeltaTime = 0.0f;
 	m_pHeadlight = NULL;

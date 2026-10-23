@@ -63,9 +63,9 @@ public:
 
 	const WeaponProficiencyInfo_t *GetProficiencyValues();
 
-#ifndef CLIENT_DLL
 	DECLARE_ACTTABLE();
 
+#ifndef CLIENT_DLL
 	int CapabilitiesGet(void) { return bits_CAP_WEAPON_RANGE_ATTACK1; }
 	void Operator_HandleAnimEvent(animevent_t *pEvent, CBaseCombatCharacter *pOperator);
 	void FireNPCPrimaryAttack(CBaseCombatCharacter *pOperator, Vector &vecShootOrigin, Vector &vecShootDir);
@@ -92,7 +92,6 @@ END_PREDICTION_DATA()
 LINK_ENTITY_TO_CLASS(weapon_smg1, CWeaponSMG1);
 PRECACHE_WEAPON_REGISTER(weapon_smg1);
 
-#ifndef CLIENT_DLL
 acttable_t	CWeaponSMG1::m_acttable[] =
 {
 	// ------------------------------------------------------------------
@@ -198,7 +197,6 @@ acttable_t	CWeaponSMG1::m_acttable[] =
 };
 
 IMPLEMENT_ACTTABLE(CWeaponSMG1);
-#endif
 
 //=========================================================
 CWeaponSMG1::CWeaponSMG1()
