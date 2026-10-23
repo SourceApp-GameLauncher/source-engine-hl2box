@@ -5,6 +5,9 @@
 // $NoKeywords: $
 //=============================================================================//
 #include "cbase.h"
+#ifdef LUA_SDK
+#include "lua/hl2sb_playerbuttons.h"
+#endif
 #include "prediction.h"
 #include "igamemovement.h"
 #include "prediction_private.h"
@@ -844,6 +847,9 @@ void CPrediction::RunCommand( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	// Set globals appropriately
 	gpGlobals->curtime		= player->m_nTickBase * TICK_INTERVAL;
 	gpGlobals->frametime	= m_bEnginePaused ? 0 : TICK_INTERVAL;
+#ifdef LUA_SDK
+	if (!m_bEnginePaused) HL2SB_RunPlayerButtons(player, ucmd);
+#endif
 
 	g_pGameMovement->StartTrackPredictionErrors( player );
 

@@ -9,6 +9,9 @@
 
 
 #include "cbase.h"
+#ifdef LUA_SDK
+#include "lua/hl2sb_playerbuttons.h"
+#endif
 #include "kbutton.h"
 #include "usercmd.h"
 #include "in_buttons.h"
@@ -577,6 +580,9 @@ bool HL2SB_PhysgunIsHolding( void );
 
 int CInput::KeyEvent( int down, ButtonCode_t code, const char *pszCurrentBinding )
 {
+#ifdef LUA_SDK
+	HL2SB_PlayerButtonEvent(code, down != 0);
+#endif
 	// Deal with camera intercepting the mouse
 	if ( ( code == MOUSE_LEFT ) || ( code == MOUSE_RIGHT ) )
 	{
@@ -1407,6 +1413,10 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 	m_EntityGroundContact.RemoveAll();
 #endif
 
+
+#ifdef LUA_SDK
+	HL2SB_CapturePlayerButtons(cmd, active);
+#endif
 	pVerified->m_cmd = *cmd;
 	pVerified->m_crc = cmd->GetChecksum();
 }

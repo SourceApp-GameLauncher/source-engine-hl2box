@@ -12,6 +12,7 @@
 #include "vcollide_parse.h"
 #include "entitylist.h"
 #include "physobj.h"
+#include "physconstraint_lua.h"
 #include "hierarchy.h"
 #include "game.h"
 #include "ndebugoverlay.h"
@@ -259,6 +260,18 @@ bool PointIsNearer( IPhysicsObject *pObject1, const Vector &point1, const Vector
 
 void CPhysicsSpring::GetSpringObjectConnections( string_t nameStart, string_t nameEnd, IPhysicsObject **pStart, IPhysicsObject **pEnd )
 {
+	if (HL2SB_GetPhysConstraintObject(this, 0, pStart))
+	{
+		HL2SB_GetPhysConstraintObject(this, 1, pEnd);
+		if (*pStart && *pEnd)
+		{
+			CBaseEntity *first = static_cast<CBaseEntity *>((*pStart)->GetGameData());
+			CBaseEntity *second = static_cast<CBaseEntity *>((*pEnd)->GetGameData());
+			if (first) g_pNotify->AddEntity(this, first);
+			if (second) g_pNotify->AddEntity(this, second);
+		}
+		return;
+	}
 	IPhysicsObject *pStartObject = FindPhysicsObjectByName( STRING(nameStart), this );
 	IPhysicsObject *pEndObject = FindPhysicsObjectByName( STRING(nameEnd), this );
 

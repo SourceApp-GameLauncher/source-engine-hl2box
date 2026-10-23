@@ -65,6 +65,7 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 
 static ConVar cl_SetupAllBones( "cl_SetupAllBones", "0" );
@@ -619,6 +620,9 @@ void C_ClientRagdoll::SetupWeights( const matrix3x4_t *pBoneToWorld, int nFlexWe
 			modelrender->SetViewTarget( GetModelPtr(), GetBody(), tmp );
 		}
 	}
+#ifdef LUA_SDK
+	HL2SB_ApplyFlexManipulation(this, nFlexWeightCount, pFlexWeights, pFlexDelayedWeights);
+#endif
 }
 
 void C_ClientRagdoll::Release( void )
@@ -1387,7 +1391,7 @@ float C_BaseAnimating::GetPoseParameter( int iPoseParameter )
 	if ( pStudioHdr == NULL )
 		return 0.0f;
 
-	if ( pStudioHdr->GetNumPoseParameters() < iPoseParameter )
+	if ( iPoseParameter >= pStudioHdr->GetNumPoseParameters() || iPoseParameter >= MAXSTUDIOPOSEPARAM )
 		return 0.0f;
 
 	if ( iPoseParameter < 0 )
@@ -1455,6 +1459,16 @@ void C_BaseAnimating::GetCachedBoneMatrix( int boneIndex, matrix3x4_t &out )
 //-----------------------------------------------------------------------------
 // Purpose:	move position and rotation transforms into global matrices
 //-----------------------------------------------------------------------------
+bool C_BaseAnimating::IsBoneMatrixAvailable( int iBone, bool bForWrite )
+{
+	CStudioHdr *hdr = GetModelPtr();
+	if ( !hdr || iBone < 0 || iBone >= hdr->numbones() ||
+		iBone >= m_CachedBoneData.Count() || !m_BoneAccessor.GetBoneArrayForWrite() )
+		return false;
+	const int mask = bForWrite ? m_BoneAccessor.GetWritableBones() : m_BoneAccessor.GetReadableBones();
+	return ( mask & hdr->boneFlags( iBone ) ) != 0;
+}
+
 void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quaternion *q, const matrix3x4_t &cameraTransform, int boneMask, CBoneBitList &boneComputed )
 {
 	VPROF_BUDGET( "C_BaseAnimating::BuildTransformations", VPROF_BUDGETGROUP_CLIENT_ANIMATION );
@@ -1594,8 +1608,11 @@ void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quater
 			ApplyBoneMatrixTransform( GetBoneForWrite( i ) );
 		}
 	}
-	
-	
+
+#if defined( LUA_SDK )
+	extern void HL2SB_RunEntityCallbacks( C_BaseAnimating *pEntity, const char *pszName );
+	HL2SB_RunEntityCallbacks( this, "BuildBonePositions" );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -2946,6 +2963,12 @@ bool C_BaseAnimating::SetupBones( matrix3x4_t *pBoneToWorldOut, int nMaxBones, i
 
 			StandardBlendingRules( hdr, pos, q, currentTime, bonesMaskNeedRecalc );
 
+#if defined( LUA_SDK )
+			extern void HL2SB_ApplyBonePoseManipulations( C_BaseAnimating *pEntity,
+				CStudioHdr *pHdr, Vector *pos, Quaternion *q );
+			HL2SB_ApplyBonePoseManipulations( this, hdr, pos, q );
+#endif
+
 			CBoneBitList boneComputed;
 			// don't calculate IK on ragdolls
 			if ( m_pIk && !IsRagdoll() )
@@ -2963,43 +2986,20 @@ bool C_BaseAnimating::SetupBones( matrix3x4_t *pBoneToWorldOut, int nMaxBones, i
 			RemoveFlag( EFL_SETTING_UP_BONES );
 			ControlMouth( hdr );
 
-			// HL2SB (sbrust): replay the stored bone manipulations HERE, inside
-			// the rebuild branch -- the array was just rebuilt, so the relative
-			// offsets apply exactly once and a cache-hit pass leaves the
-			// previously manipulated array untouched.  The replay used to sit
-			// in the common tail below, where every cache hit doubled the
-			// offsets once the per-frame stamp was lifted (the stretched FPB
-			// body regression).
-			extern void HL2SB_ApplyBoneManipulations( C_BaseAnimating *pEntity );
-			HL2SB_ApplyBoneManipulations( this );
 		}
 		
 		if( !( oldReadableBones & BONE_USED_BY_ATTACHMENT ) && ( boneMask & BONE_USED_BY_ATTACHMENT ) )
 		{
 			SetupBones_AttachmentHelper( hdr );
 		}
-	}
-
 #if defined( LUA_SDK )
-	// HL2SB GMod compat (2026-09-24): GMod fires the "BuildBonePositions"
-	// entity callback (Entity:AddCallback) at the end of bone building.  At
-	// this point BuildTransformations has filled the live bone accessor, so
-	// callbacks can read bones with GetBoneMatrix and rewrite them with
-	// SetBoneMatrix before anything renders or copies them (First Person Body
-	// mirrors the player's bones onto its shadow body this way).  A no-op
-	// unless some entity actually registered callbacks.
-	{
-		extern void HL2SB_RunEntityCallbacks( C_BaseAnimating *pEntity, const char *pszName );
-		// HL2SB (sbrust): the stored bone manipulations are replayed INSIDE the
-		// rebuild branch (just above, after BuildTransformations) -- the array
-		// there is freshly rebuilt so the relative offsets apply exactly once.
-		// The replay used to sit in this common tail, where a cache-hit pass
-		// re-applied it onto the already-manipulated live array: once the
-		// per-frame stamp was lifted the offsets doubled every cache hit and
-		// First Person Body's +10000 head translation stretched the whole body.
-		HL2SB_RunEntityCallbacks( this, "BuildBonePositions" );
-	}
+		// Callbacks may replace complete matrices or change stored scales.
+		// Apply those scales once to the completed build, never on cache hits.
+		extern void HL2SB_ApplyBoneScaleManipulations( C_BaseAnimating *pEntity,
+			CStudioHdr *pHdr, int boneMask );
+		HL2SB_ApplyBoneScaleManipulations( this, hdr, m_BoneAccessor.GetReadableBones() );
 #endif
+	}
 
 	// Do they want to get at the bone transforms? If it's just making sure an aiment has
 	// its bones setup, it doesn't need the transforms yet.
@@ -6031,8 +6031,10 @@ float C_BaseAnimating::SetPoseParameter( CStudioHdr *pStudioHdr, int iParameter,
 		return flValue;
 	}
 
-	if (iParameter >= 0)
+	if ( iParameter >= 0 && iParameter < pStudioHdr->GetNumPoseParameters() && iParameter < MAXSTUDIOPOSEPARAM )
 	{
+		if ( !IsFinite( flValue ) )
+			flValue = 0.0f;
 		float flNewValue;
 		flValue = Studio_SetPoseParameter( pStudioHdr, iParameter, flValue, flNewValue );
 		m_flPoseParameter[ iParameter ] = flNewValue;

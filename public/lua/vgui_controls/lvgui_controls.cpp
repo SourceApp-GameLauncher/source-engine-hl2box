@@ -71,6 +71,11 @@ static int lua_vgui_Create (lua_State *L) {
 
   lua_call(L, lua_gettop(L) - nBase, 1);
   lua_vgui_RememberPanel(L, -1);
+  if (lua_isuserdata(L, -1)) {
+    // Hover notifications are native; do not wrap a partially built base class.
+    lua_pushboolean(L, true);
+    lua_setfield(L, -2, "HL2SBTooltipWired");
+  }
   return 1;
 }
 

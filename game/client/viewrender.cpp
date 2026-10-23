@@ -2543,42 +2543,7 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 		// Draw the in-game stuff based on the actual viewport being used
 		render->VGui_Paint( PAINT_INGAMEPANELS );
 
-#ifdef LUA_SDK
-		// HL2SB GMod compat (2026-09-25): GM:HUDPaint on the main HUD path.
-		// Until now the hook only fired from the scripted HUD viewport control;
-		// GMod fires it every frame while the 2D HUD context is up, so addons
-		// drawing debug overlays/meters via hook.Add("HUDPaint", ...) show up.
-		// Runs after the stock HUD elements, still inside Push2DView.
-		// HL2SB (2026-10-03): this pump is also the once-per-main-view-frame
-		// anchor for hl2sb_framestats - frame intervals are measured between
-		// consecutive runs of this block (a monitor view re-running it shows
-		// up as extra short intervals in the average, by design).
-		bool bFrameStats = HL2SB_FrameStats_Enabled();
-		double flHookStart = 0.0;
-		if ( bFrameStats )
-		{
-			HL2SB_FrameStats_FramePulse();
-			flHookStart = Plat_FloatTime();
-		}
 
-		// HL2SB (2026-10-08): GMod's HUD prelude, fired here for the same
-		// "2D context is up" reason as HUDPaint below.  GMod order is
-		// PreDrawHUD, HUDPaintBackground, HUDPaint, PostDrawHUD; the first two
-		// had no dispatch point on this fork.
-		BEGIN_LUA_CALL_HOOK( "PreDrawHUD" );
-		END_LUA_CALL_HOOK( 0, 0 );
-		BEGIN_LUA_CALL_HOOK( "HUDPaintBackground" );
-		END_LUA_CALL_HOOK( 0, 0 );
-
-		BEGIN_LUA_CALL_HOOK( "HUDPaint" );
-		END_LUA_CALL_HOOK( 0, 0 );
-		if ( bFrameStats )
-			HL2SB_FrameStats_NoteLuaHook( "HUDPaint", Plat_FloatTime() - flHookStart );
-
-		// HL2SB (2026-10-08): closing half of the GMod HUD sequence.
-		BEGIN_LUA_CALL_HOOK( "PostDrawHUD" );
-		END_LUA_CALL_HOOK( 0, 0 );
-#endif
 
 		// maybe paint the main menu and cursor too if we're in stereo hud mode
 		if( bPaintMainMenu )

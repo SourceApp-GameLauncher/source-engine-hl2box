@@ -1922,6 +1922,8 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	// TODO(port): make Material a real engine binding, then move this call back
 	// to the top of the pass (see the plan's "engine-side" rule).
 	luasrc_dofile_includes( L, "init.lua" );
+	// Original spawnicon camera helpers must exist before native ModelImage jobs.
+	luasrc_dofile_includes( L, "util/client.lua" );
 
 	luasrc_dofolder( L, LUA_PATH_GAME_SHARED );
 	luasrc_dofolder( L, LUA_PATH_GAME_CLIENT );

@@ -35,6 +35,11 @@ LUA_BINDING_BEGIN( Localizations, Find, "library", "Finds a localized string." )
 	}
 
 	wchar_t *pTranslation = g_pVGuiLocalize->Find( token );
+	// Older stock scripts use this name for the current weapon_fists phrase.
+	const char *pKey = token[0] == '#' ? token + 1 : token;
+	if ( !pTranslation && !Q_stricmp( pKey, "GMOD_Fists" ) )
+		pTranslation = g_pVGuiLocalize->Find( "weapon_fists" );
+
 	if ( !pTranslation )
 	{
 		lua_pushnil( L );
@@ -61,7 +66,19 @@ LUA_BINDING_BEGIN( Localizations, AddString, "library", "Adds a localized string
 	translationBuffer[0] = 0;
 	V_UTF8ToUnicode( translation, translationBuffer, sizeof( translationBuffer ) );
 
+	// Native text drawing reads the localization dictionary directly.
+	const char *pKey = token[0] == '#' ? token + 1 : token;
+	bool bUpdateLegacyFists = false;
+	if ( !Q_stricmp( pKey, "weapon_fists" ) )
+	{
+		const wchar_t *pLegacy = g_pVGuiLocalize->Find( "GMOD_Fists" );
+		const wchar_t *pPrevious = g_pVGuiLocalize->Find( "weapon_fists" );
+		bUpdateLegacyFists = !pLegacy || ( pPrevious && !wcscmp( pLegacy, pPrevious ) );
+	}
+
 	g_pVGuiLocalize->AddString( token, translationBuffer, "" );
+	if ( bUpdateLegacyFists )
+		g_pVGuiLocalize->AddString( "GMOD_Fists", translationBuffer, "" );
 	return 0;
 }
 LUA_BINDING_END()

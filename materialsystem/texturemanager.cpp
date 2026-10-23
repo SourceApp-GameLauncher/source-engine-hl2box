@@ -2094,7 +2094,7 @@ ITextureInternal *CTextureManager::LoadTexture( const char *pTextureName, const 
 
 			if ( pImageTexture )
 			{
-				Msg( "[HL2SB] image texture \"%s\" (%dx%d)\n", pTextureName, nImageWidth, nImageHeight );
+				DevMsg( "[HL2SB] image texture \"%s\" (%dx%d)\n", pTextureName, nImageWidth, nImageHeight );
 
 				// HL2SB (2026-10-02): insert into the dictionary right here, not
 				// only in the caller.  FindOrLoadTexture inserts after we return,

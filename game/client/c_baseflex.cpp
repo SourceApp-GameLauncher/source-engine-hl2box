@@ -22,6 +22,7 @@
 #include "toolframework_client.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 
 bool UseHWMorphVCDs();
@@ -1155,6 +1156,9 @@ void C_BaseFlex::SetupWeights( const matrix3x4_t *pBoneToWorld, int nFlexWeightC
 	{
 		SetupLocalWeights( pBoneToWorld, nFlexWeightCount, pFlexWeights, pFlexDelayedWeights );
 	}
+#ifdef LUA_SDK
+	HL2SB_ApplyFlexManipulation(this, nFlexWeightCount, pFlexWeights, pFlexDelayedWeights);
+#endif
 }
 
 

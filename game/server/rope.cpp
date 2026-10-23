@@ -33,6 +33,10 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CRopeKeyframe, DT_RopeKeyframe )
 	SendPropEHandle(SENDINFO(m_hEndPoint)),
 	SendPropInt( SENDINFO(m_iStartAttachment), 5, 0 ),
 	SendPropInt( SENDINFO(m_iEndAttachment), 5, 0 ),
+	SendPropVector(SENDINFO(m_vecStartOffset), -1, SPROP_COORD),
+	SendPropVector(SENDINFO(m_vecEndOffset), -1, SPROP_COORD),
+	SendPropInt(SENDINFO(m_iStartBone), 16),
+	SendPropInt(SENDINFO(m_iEndBone), 16),
 	
 	SendPropInt( SENDINFO(m_Slack), 12 ),
 	SendPropInt( SENDINFO(m_RopeLength), 15 ),
@@ -80,6 +84,13 @@ BEGIN_DATADESC( CRopeKeyframe )
 	DEFINE_FIELD( m_hEndPoint,		FIELD_EHANDLE ),
 	DEFINE_FIELD( m_iStartAttachment,	FIELD_SHORT ),
 	DEFINE_FIELD( m_iEndAttachment,	FIELD_SHORT ),
+	DEFINE_KEYFIELD(m_vecStartOffset, FIELD_VECTOR, "StartOffset"),
+	DEFINE_KEYFIELD(m_vecEndOffset, FIELD_VECTOR, "EndOffset"),
+	DEFINE_KEYFIELD(m_iStartBone, FIELD_INTEGER, "StartBone"),
+	DEFINE_KEYFIELD(m_iEndBone, FIELD_INTEGER, "EndBone"),
+	DEFINE_FIELD(m_bExplicitLength, FIELD_BOOLEAN),
+	DEFINE_FIELD(m_bStartOffsetNormalized, FIELD_BOOLEAN),
+	DEFINE_FIELD(m_bEndOffsetNormalized, FIELD_BOOLEAN),
 	
 	// Inputs
 	DEFINE_INPUTFUNC( FIELD_FLOAT,	"SetScrollSpeed",	InputSetScrollSpeed ),
@@ -101,6 +112,12 @@ CRopeKeyframe::CRopeKeyframe()
 	m_takedamage = DAMAGE_YES;
 
 	m_iStartAttachment = m_iEndAttachment = 0;
+	m_vecStartOffset.Init();
+	m_vecEndOffset.Init();
+	m_iStartBone = m_iEndBone = -1;
+	m_bExplicitLength = false;
+	m_bStartOffsetNormalized = false;
+	m_bEndOffsetNormalized = false;
 
 	m_Slack = 0;
 	m_Width = 2;
@@ -147,6 +164,54 @@ void CRopeKeyframe::SetAttachmentPoint( CBaseHandle &hOutEnt, short &iOutAttachm
 	}
 
 	EndpointsChanged();
+}
+
+void CRopeKeyframe::SetLuaEndpoint( bool start, CBaseEntity *entity )
+{
+	m_bCreatedFromMapFile = false;
+	if ( start )
+	{
+		m_bStartOffsetNormalized = false;
+		SetStartPoint( entity );
+	}
+	else
+	{
+		m_bEndOffsetNormalized = false;
+		SetEndPoint( entity );
+	}
+}
+
+void CRopeKeyframe::NormalizeLuaEndpointOffsets()
+{
+	CBaseEntity *entities[2] = { m_hStartPoint.Get(), m_hEndPoint.Get() };
+
+	for ( int point = 0; point < 2; ++point )
+	{
+		bool &normalized = point == 0 ? m_bStartOffsetNormalized : m_bEndOffsetNormalized;
+		if ( normalized )
+			continue;
+
+		CBaseEntity *entity = entities[point];
+		Vector &offset = point == 0 ? m_vecStartOffset.GetForModify() : m_vecEndOffset.GetForModify();
+		const int bone = point == 0 ? m_iStartBone.Get() : m_iEndBone.Get();
+		if ( entity && entity->entindex() != 0 && bone >= 0 )
+		{
+			CBaseAnimating *anim = entity->GetBaseAnimating();
+			const bool isRagdoll = anim && anim->IsRagdoll();
+			if ( !isRagdoll )
+			{
+				IPhysicsObject *objects[VPHYSICS_MAX_OBJECT_LIST_COUNT];
+				const int count = entity->VPhysicsGetObjectList( objects, ARRAYSIZE(objects) );
+				if ( bone < count && objects[bone] )
+				{
+					Vector world;
+					objects[bone]->LocalToWorld( &world, offset );
+					VectorITransform( world, entity->EntityToWorldTransform(), offset );
+				}
+			}
+		}
+		normalized = true;
+	}
 }
 
 
@@ -321,7 +386,7 @@ bool CRopeKeyframe::SetupHangDistance( float flHangDist )
 void CRopeKeyframe::Init()
 {
 	SetLocalAngles( vec3_angle );
-	RecalculateLength();
+	if (!m_bExplicitLength) RecalculateLength();
 
 	m_nSegments = clamp( (int) m_nSegments, 2, ROPE_MAX_SEGMENTS );
 
@@ -335,9 +400,21 @@ void CRopeKeyframe::Init()
 void CRopeKeyframe::Activate()
 {
 	BaseClass::Activate();
-	
-	if( !m_bCreatedFromMapFile )
+	if (!m_bCreatedFromMapFile)
+	{
+		NormalizeLuaEndpointOffsets();
+		if (m_iRopeMaterialModelIndex == -1) m_iRopeMaterialModelIndex = PrecacheModel("cable/cable.vmt");
+		EndpointsChanged();
+		Init();
 		return;
+	}
+	if (m_iStartBone >= 0 || m_iEndBone >= 0)
+	{
+		if (m_iRopeMaterialModelIndex == -1) m_iRopeMaterialModelIndex = PrecacheModel("cable/cable.vmt");
+		EndpointsChanged();
+		Init();
+		return;
+	}
 
 	// Legacy support..
 	if ( m_iRopeMaterialModelIndex == -1 )
@@ -403,11 +480,10 @@ void CRopeKeyframe::RecalculateLength( void )
 	// Get my entities
 	if( m_hEndPoint.Get() )
 	{
-		CBaseEntity *pStartEnt = m_hStartPoint.Get();
-		CBaseEntity *pEndEnt = m_hEndPoint.Get();
-
-		// Set the length
-		m_RopeLength = (int)( pStartEnt->GetAbsOrigin() - pEndEnt->GetAbsOrigin() ).Length();
+		// Include the selected local endpoints when measuring a scripted rope.
+		Vector start, end;
+		if (GetEndPointPos(0, start) && GetEndPointPos(1, end))
+			m_RopeLength = (int)(start - end).Length();
 	}
 	else
 	{
@@ -474,6 +550,29 @@ bool CRopeKeyframe::GetEndPointPos2( CBaseEntity *pAttached, int iAttachment, Ve
 
 bool CRopeKeyframe::GetEndPointPos( int iPt, Vector &v )
 {
+	int bone = iPt == 0 ? m_iStartBone.Get() : m_iEndBone.Get();
+	if (bone >= 0)
+	{
+		CBaseEntity *entity = iPt == 0 ? m_hStartPoint.Get() : m_hEndPoint.Get();
+		if (!entity) return false;
+		const Vector &offset = iPt == 0 ? m_vecStartOffset.Get() : m_vecEndOffset.Get();
+		if (entity->entindex() == 0) { v = offset; return true; }
+		CBaseAnimating *anim = entity->GetBaseAnimating();
+		if ( anim && anim->IsRagdoll() )
+		{
+			IPhysicsObject *objects[VPHYSICS_MAX_OBJECT_LIST_COUNT];
+			const int count = entity->VPhysicsGetObjectList( objects, ARRAYSIZE(objects) );
+			if ( bone < count && objects[bone] )
+				objects[bone]->LocalToWorld( &v, offset );
+			else
+				VectorTransform( offset, entity->EntityToWorldTransform(), v );
+		}
+		else
+		{
+			VectorTransform( offset, entity->EntityToWorldTransform(), v );
+		}
+		return true;
+	}
 	if ( iPt == 0 )
 		return GetEndPointPos2( m_hStartPoint, m_iStartAttachment, v );
 	else
@@ -662,6 +761,12 @@ void CRopeKeyframe::EnableWind( bool bEnable )
 
 bool CRopeKeyframe::KeyValue( const char *szKeyName, const char *szValue )
 {
+	if (!Q_stricmp(szKeyName, "Length"))
+	{
+		m_RopeLength = clamp(atoi(szValue), 0, 32767);
+		m_bExplicitLength = true;
+		return true;
+	}
 	if( stricmp( szKeyName, "Breakable" ) == 0 )
 	{
 		if( atoi( szValue ) == 1 )

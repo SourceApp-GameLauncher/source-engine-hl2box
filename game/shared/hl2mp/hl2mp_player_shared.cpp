@@ -1891,6 +1891,20 @@ void CPlayerAnimState::GetOuterAbsVelocity( Vector& vel )
 #endif
 }
 
+void HL2SB_GetPlayerDuckDurations( CBasePlayer *pPlayer, float &flDuck, float &flUnDuck )
+{
+	CHL2MP_Player *pHL2MPPlayer = dynamic_cast<CHL2MP_Player *>( pPlayer );
+	if ( pHL2MPPlayer )
+	{
+		flDuck = pHL2MPPlayer->m_flHL2SBDuckSpeed;
+		flUnDuck = pHL2MPPlayer->m_flHL2SBUnDuckSpeed;
+	}
+	if ( flDuck <= 0.0f )
+		flDuck = 0.01f;
+	if ( flUnDuck <= 0.0f )
+		flUnDuck = 0.01f;
+}
+
 
 // ---------------------------------------------------------------------------
 // HL2SB: name-pinned player locomotion sequences (declared in the .h).

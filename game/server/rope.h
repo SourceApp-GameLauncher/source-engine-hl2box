@@ -112,6 +112,8 @@ public:
 
 	void			SetStartPoint( CBaseEntity *pStartPoint, int attachment = 0 );
 	void			SetEndPoint( CBaseEntity *pEndPoint, int attachment = 0 );
+	void			SetLuaEndpoint( bool start, CBaseEntity *entity );
+	void			NormalizeLuaEndpointOffsets();
 
 	// See ROPE_PLAYER_WPN_ATTACH for info.
 	void			EnablePlayerWeaponAttach( bool bAttach );
@@ -171,6 +173,13 @@ private:
 	CNetworkHandle( CBaseEntity, m_hEndPoint );
 	CNetworkVar( short, m_iStartAttachment );	// StartAttachment/EndAttachment are attachment points.
 	CNetworkVar( short, m_iEndAttachment );
+	CNetworkVector(m_vecStartOffset);
+	CNetworkVector(m_vecEndOffset);
+	CNetworkVar(int, m_iStartBone);
+	CNetworkVar(int, m_iEndBone);
+	bool m_bExplicitLength;
+	bool m_bStartOffsetNormalized;
+	bool m_bEndOffsetNormalized;
 };
 
 

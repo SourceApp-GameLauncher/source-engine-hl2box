@@ -6,6 +6,7 @@
 //=============================================================================//
 
 #include "cbase.h"
+#include "physconstraint_lua.h"
 #include "entitylist.h"
 #include "physics.h"
 #include "vphysics/constraints.h"
@@ -202,7 +203,11 @@ void CPhysForce::Activate( void )
 
 	if ( m_attachedObject == NULL )
 	{
-		m_attachedObject = gEntList.FindEntityByName( NULL, m_nameAttach );
+		IPhysicsObject *object = NULL;
+		if (HL2SB_GetPhysConstraintObject(this, 0, &object))
+			m_attachedObject = object ? static_cast<CBaseEntity *>(object->GetGameData()) : NULL;
+		else
+			m_attachedObject = gEntList.FindEntityByName(NULL, m_nameAttach);
 	}
 	
 	// Let the derived class set up before we throw the switch
@@ -264,7 +269,7 @@ void CPhysForce::ActivateForce( void )
 	IPhysicsObject *pPhys = NULL;
 	if ( m_attachedObject )
 	{
-		pPhys = m_attachedObject->VPhysicsGetObject();
+		pPhys = HL2SB_GetAttachedPhysicsObject(this, m_attachedObject);
 	}
 	
 	if ( !pPhys )
@@ -295,7 +300,7 @@ void CPhysForce::ForceOff( void )
 	IPhysicsObject *pPhys = NULL;
 	if ( m_attachedObject )
 	{
-		pPhys = m_attachedObject->VPhysicsGetObject();
+		pPhys = HL2SB_GetAttachedPhysicsObject(this, m_attachedObject);
 		if ( pPhys )
 		{
 			pPhys->Wake();
@@ -693,7 +698,7 @@ CPhysMotor::~CPhysMotor()
 {
 	if ( m_attachedObject && m_pHinge )
 	{
-		IPhysicsObject *pPhys = m_attachedObject->VPhysicsGetObject();
+		IPhysicsObject *pPhys = HL2SB_GetAttachedPhysicsObject(this, m_attachedObject);
 		if ( pPhys )
 		{
 			PhysClearGameFlags(pPhys, FVPHYSICS_NO_PLAYER_PICKUP);
@@ -732,7 +737,7 @@ void CPhysMotor::TurnOn( void )
 	if ( !pAttached )
 		return;
 
-	IPhysicsObject *pPhys = pAttached->VPhysicsGetObject();
+	IPhysicsObject *pPhys = HL2SB_GetAttachedPhysicsObject(this, pAttached);
 	if ( pPhys )
 	{
 		m_pController->WakeObjects();
@@ -751,11 +756,14 @@ void CPhysMotor::Activate( void )
 	// This gets called after all objects spawn and after all objects restore
 	if ( m_attachedObject == NULL )
 	{
-		CBaseEntity *pAttach = gEntList.FindEntityByName( NULL, m_nameAttach );
+		IPhysicsObject *object = NULL;
+		CBaseEntity *pAttach = HL2SB_GetPhysConstraintObject(this, 0, &object)
+			? (object ? static_cast<CBaseEntity *>(object->GetGameData()) : NULL)
+			: gEntList.FindEntityByName(NULL, m_nameAttach);
 		if ( pAttach && pAttach->GetMoveType() == MOVETYPE_VPHYSICS )
 		{
 			m_attachedObject = pAttach;
-			IPhysicsObject *pPhys = m_attachedObject->VPhysicsGetObject();
+			IPhysicsObject *pPhys = HL2SB_GetAttachedPhysicsObject(this, m_attachedObject);
 			CalculateAcceleration();
 			matrix3x4_t matrix;
 			pPhys->GetPositionMatrix( &matrix );
@@ -769,7 +777,7 @@ void CPhysMotor::Activate( void )
 
 	if ( m_attachedObject )
 	{
-		IPhysicsObject *pPhys = m_attachedObject->VPhysicsGetObject();
+		IPhysicsObject *pPhys = HL2SB_GetAttachedPhysicsObject(this, m_attachedObject);
 
 		// create a hinge constraint for this object?
 		if ( m_spawnflags & SF_MOTOR_HINGE )
@@ -802,7 +810,7 @@ void CPhysMotor::Activate( void )
 		if ( !m_pController )
 		{
 			m_pController = physenv->CreateMotionController( &m_motor );
-			m_pController->AttachObject( m_attachedObject->VPhysicsGetObject(), false );
+			m_pController->AttachObject( HL2SB_GetAttachedPhysicsObject(this, m_attachedObject), false );
 
 			if ( m_spawnflags & SF_MOTOR_START_ON )
 			{
@@ -949,11 +957,12 @@ void CKeepUpright::Activate()
 		IPhysicsObject *pPhys;
 		if ( m_attachedObject )
 		{
-			pPhys = m_attachedObject->VPhysicsGetObject();
+			pPhys = HL2SB_GetAttachedPhysicsObject(this, m_attachedObject);
 		}
 		else
 		{
-			pPhys = FindPhysicsObjectByName( STRING(m_nameAttach), this );
+			if (!HL2SB_GetPhysConstraintObject(this, 0, &pPhys))
+				pPhys = FindPhysicsObjectByName(STRING(m_nameAttach), this);
 		}
 
 		if ( !pPhys )

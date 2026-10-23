@@ -17,6 +17,7 @@
 #include "physics_saverestore.h"
 #include "vphysics/constraints.h"
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 
 #ifdef _DEBUG
@@ -569,6 +570,9 @@ void C_ServerRagdoll::SetupWeights( const matrix3x4_t *pBoneToWorld, int nFlexWe
 			modelrender->SetViewTarget( GetModelPtr(), GetBody(), tmp );
 		}
 	}
+#ifdef LUA_SDK
+	HL2SB_ApplyFlexManipulation(this, nFlexWeightCount, pFlexWeights, pFlexDelayedWeights);
+#endif
 }
 
 

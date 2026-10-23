@@ -532,11 +532,9 @@ LUA_BINDING_BEGIN( CBaseAnimating, GetFlexBounds, "class", "Returns the min and 
     LocalFlexController_t iFlexController = ( LocalFlexController_t )flexControllerIndex;
     CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
 
-    Assert( pStudioHdr );
-
+    if (!pStudioHdr || flexControllerIndex < 0 || flexControllerIndex >= pStudioHdr->numflexcontrollers())
+        return 0;
     mstudioflexcontroller_t *flex = pStudioHdr->pFlexcontroller( iFlexController );
-
-    Assert( flex );
 
     lua_pushnumber( L, flex->min );
     lua_pushnumber( L, flex->max );

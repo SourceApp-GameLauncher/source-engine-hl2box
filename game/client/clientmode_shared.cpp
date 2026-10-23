@@ -879,6 +879,8 @@ void ClientModeShared::PostRenderVGui()
 			overlay->SetVisible(false);
 			BEGIN_LUA_CALL_HOOK( "PostRenderVGUI" );
 			END_LUA_CALL_HOOK( 0, 0 );
+			extern void HL2SB_ProcessModelImages();
+			HL2SB_ProcessModelImages();
 		}
 	}
 #endif
@@ -1233,7 +1235,10 @@ void ClientModeShared::Enable()
 		// It was never parented, sized or shown, so that hook never fired and
 		// Lua HUD code had no place to draw.
 		if ( m_pScriptedViewport )
+		{
 			m_pScriptedViewport->SetParent( pRoot );
+			m_pScriptedViewport->SetZPos( 1 );
+		}
 
 		// The Lua root panel is the default parent for every panel a script
 		// creates with vgui.Panel / vgui.Frame / vgui.ModelPanel.  Disable()
@@ -1241,7 +1246,10 @@ void ClientModeShared::Enable()
 		// panel created afterwards was a child of an invisible panel and never
 		// rendered.
 		if ( m_pClientLuaPanel )
+		{
 			m_pClientLuaPanel->SetParent( pRoot );
+			m_pClientLuaPanel->SetZPos( 2 );
+		}
 #endif
 	}
 

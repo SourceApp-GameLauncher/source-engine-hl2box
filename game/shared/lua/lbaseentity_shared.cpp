@@ -30,6 +30,9 @@
 #include "materialsystem/MaterialSystemUtil.h"
 #else
 #include "lbaseanimating.h"
+#include "physconstraint_lua.h"
+#include "hl2sb_motioncontroller.h"
+#include "rope.h"
 #include "player.h"					// HL2SB: Entity:GetViewEntity (CBasePlayer::m_hViewEntity)
 #ifdef CLIENT_DLL
 #include "c_baseflex.h"
@@ -59,6 +62,7 @@
 #include "physics_shared.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "lua/hl2sb_flexmanipulator.h"
 #include "tier0/memdbgon.h"
 
 
@@ -647,6 +651,14 @@ static int CBaseEntity_EmitSound (lua_State *L) {
 		// CBaseCombatWeapon::WeaponSound.
 		soundFilter.UsePredictionRules();
 #endif
+		if (!Q_stricmp(pSoundEnt->GetClassname(), "gmod_tool"))
+		{
+			static int soundDiagnostics = 0;
+			if (soundDiagnostics++ < 3)
+				Msg("[HL2SB tool sound] script=%s wave=%s entity=%d recipients=%d volume=%.2f level=%d\n",
+					pszSoundName, params.soundname, pSoundEnt->entindex(), soundFilter.GetRecipientCount(),
+					emit.m_flVolume, (int)emit.m_SoundLevel);
+		}
 		pSoundEnt->EmitSound( soundFilter, pSoundEnt->entindex(), emit );
 	}
 	else
@@ -1389,6 +1401,95 @@ static int CBaseEntity_GetRefTable (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_SetTable(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  lua_pushvalue(L, 2);
+  int reference = luaL_ref(L, LUA_REGISTRYINDEX);
+  if (entity->m_nTableReference >= 0) luaL_unref(L, LUA_REGISTRYINDEX, entity->m_nTableReference);
+  entity->m_nTableReference = reference;
+  lua_pushvalue(L, 1);
+  lua_setfield(L, 2, "Entity");
+  return 0;
+}
+
+static int CBaseEntity_SetEntity(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const char *field = luaL_checkstring(L, 2);
+  CBaseEntity *target = lua_toentity(L, 3);
+#ifndef CLIENT_DLL
+  CRopeKeyframe *rope = dynamic_cast<CRopeKeyframe *>(entity);
+  if (rope) {
+    if (!Q_stricmp(field, "StartEntity")) rope->SetLuaEndpoint(true, target);
+    else if (!Q_stricmp(field, "EndEntity")) rope->SetLuaEndpoint(false, target);
+  }
+#endif
+  return 0;
+}
+
+static int CBaseEntity_SetPhysConstraintObjects(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifndef CLIENT_DLL
+  IPhysicsObject *first = luaL_checkphysicsobject(L, 2);
+  IPhysicsObject *second = luaL_checkphysicsobject(L, 3);
+  HL2SB_SetPhysConstraintObjects(entity, first, second);
+#endif
+  return 0;
+}
+
+static int CBaseEntity_StartMotionController(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifndef CLIENT_DLL
+  if (PhysIsInCallback()) return luaL_error(L, "Cannot start a motion controller during a physics callback");
+  HL2SB_StartMotionController(entity);
+#endif
+  return 0;
+}
+
+static int CBaseEntity_StopMotionController(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifndef CLIENT_DLL
+  if (PhysIsInCallback()) return luaL_error(L, "Cannot stop a motion controller during a physics callback");
+  HL2SB_StopMotionController(entity);
+#endif
+  return 0;
+}
+
+static int CBaseEntity_AddToMotionController(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  IPhysicsObject *object = luaL_checkphysicsobject(L, 2);
+#ifndef CLIENT_DLL
+  if (PhysIsInCallback()) return luaL_error(L, "Cannot change a motion controller during a physics callback");
+  HL2SB_EditMotionController(entity, object, true);
+#endif
+  return 0;
+}
+
+static int CBaseEntity_RemoveFromMotionController(lua_State *L)
+{
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  IPhysicsObject *object = luaL_checkphysicsobject(L, 2);
+#ifndef CLIENT_DLL
+  if (PhysIsInCallback()) return luaL_error(L, "Cannot change a motion controller during a physics callback");
+  HL2SB_EditMotionController(entity, object, false);
+#endif
+  return 0;
+}
+
+static int Lua_SetPhysConstraintSystem(lua_State *L)
+{
+#ifndef CLIENT_DLL
+  HL2SB_SetPhysConstraintSystem(lua_toentity(L, 1));
+#endif
+  return 0;
+}
+
 static int CBaseEntity_GetSimulatingPlayer (lua_State *L) {
   lua_pushplayer(L, luaL_checkentity(L, 1)->GetSimulatingPlayer());
   return 1;
@@ -1594,6 +1695,46 @@ static int CBaseEntity_SetRenderMode (lua_State *L) {
       (lua_Number)kRenderNormal, (lua_Number)kRenderNone );
   if ( pEntity->GetRenderMode() != nMode )
     pEntity->SetRenderMode( nMode );
+  return 0;
+}
+
+static int CBaseEntity_GetRenderMode (lua_State *L) {
+  lua_pushinteger(L, (int)luaL_checkentity(L, 1)->GetRenderMode());
+  return 1;
+}
+
+static int CBaseEntity_GetFlexNum (lua_State *L)
+{
+  CBaseAnimating *anim = luaL_checkentity(L, 1)->GetBaseAnimating();
+  lua_pushinteger(L, anim ? anim->GetNumFlexControllers() : 0);
+  return 1;
+}
+
+static int CBaseEntity_GetFlexType (lua_State *L)
+{
+  CBaseAnimating *anim = luaL_checkentity(L, 1)->GetBaseAnimating();
+  const int index = luaL_checkint(L, 2);
+  if (!anim || index < 0 || index >= anim->GetNumFlexControllers())
+    return 0;
+  lua_pushstring(L, anim->GetFlexControllerType((LocalFlexController_t)index));
+  return 1;
+}
+
+static int CBaseEntity_HasFlexManipulatior (lua_State *L)
+{
+  lua_pushboolean(L, HL2SB_HasFlexManipulator(luaL_checkentity(L, 1)));
+  return 1;
+}
+
+static int CBaseEntity_GetFlexScale (lua_State *L)
+{
+  lua_pushnumber(L, HL2SB_GetFlexScale(luaL_checkentity(L, 1)));
+  return 1;
+}
+
+static int CBaseEntity_SetFlexScale (lua_State *L)
+{
+  HL2SB_SetFlexScale(luaL_checkentity(L, 1), (float)luaL_checknumber(L, 2));
   return 0;
 }
 
@@ -5688,31 +5829,12 @@ static int CBaseEntity_GetFlexIDByName (lua_State *L) {
 }
 
 static int CBaseEntity_SetFlexWeight (lua_State *L) {
-#ifdef CLIENT_DLL
-  C_BaseFlex *pFlex = dynamic_cast<C_BaseFlex *>( luaL_checkentity(L, 1)->GetBaseAnimating() );
-#else
-  CBaseFlex *pFlex = dynamic_cast<CBaseFlex *>( luaL_checkentity(L, 1)->GetBaseAnimating() );
-#endif
-  int i = luaL_checkint(L, 2);
-  if ( pFlex == NULL || i < 0 || i >= (int)pFlex->GetNumFlexControllers() )
-    return 0;
-  pFlex->SetFlexWeight( (LocalFlexController_t)i, (float)luaL_checknumber(L, 3) );
+  HL2SB_SetFlexWeight(luaL_checkentity(L, 1), luaL_checkint(L, 2), (float)luaL_checknumber(L, 3));
   return 0;
 }
 
 static int CBaseEntity_GetFlexWeight (lua_State *L) {
-#ifdef CLIENT_DLL
-  C_BaseFlex *pFlex = dynamic_cast<C_BaseFlex *>( luaL_checkentity(L, 1)->GetBaseAnimating() );
-#else
-  CBaseFlex *pFlex = dynamic_cast<CBaseFlex *>( luaL_checkentity(L, 1)->GetBaseAnimating() );
-#endif
-  int i = luaL_checkint(L, 2);
-  if ( pFlex == NULL || i < 0 || i >= (int)pFlex->GetNumFlexControllers() )
-  {
-    lua_pushnumber( L, 0 );
-    return 1;
-  }
-  lua_pushnumber( L, pFlex->GetFlexWeight( (LocalFlexController_t)i ) );
+  lua_pushnumber(L, HL2SB_GetFlexWeight(luaL_checkentity(L, 1), luaL_checkint(L, 2)));
   return 1;
 }
 
@@ -6010,6 +6132,13 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // answers nothing.
   {"GetRefTable", CBaseEntity_GetRefTable},
   {"GetTable", CBaseEntity_GetRefTable},
+  {"SetTable", CBaseEntity_SetTable},
+  {"StartMotionController", CBaseEntity_StartMotionController},
+  {"StopMotionController", CBaseEntity_StopMotionController},
+  {"AddToMotionController", CBaseEntity_AddToMotionController},
+  {"RemoveFromMotionController", CBaseEntity_RemoveFromMotionController},
+  {"SetEntity", CBaseEntity_SetEntity},
+  {"SetPhysConstraintObjects", CBaseEntity_SetPhysConstraintObjects},
   {"GetRenderColor", CBaseEntity_GetRenderColor},
   // HL2SB GMod compat: GMod's spellings of the same idea (a Color rather than a
   // normalised Vector), plus a material name that has no engine-side override.
@@ -6072,6 +6201,12 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetIK", CBaseEntity_SetIK},
   // HL2SB GMod compat batch (see the definitions above).
   {"SetRenderMode", CBaseEntity_SetRenderMode},
+  {"GetRenderMode", CBaseEntity_GetRenderMode},
+  {"GetFlexNum", CBaseEntity_GetFlexNum},
+  {"GetFlexType", CBaseEntity_GetFlexType},
+  {"HasFlexManipulatior", CBaseEntity_HasFlexManipulatior},
+  {"GetFlexScale", CBaseEntity_GetFlexScale},
+  {"SetFlexScale", CBaseEntity_SetFlexScale},
   {"SetModelScale", CBaseEntity_SetModelScale},
   {"GetModelScale", CBaseEntity_GetModelScale},
   {"GetCollisionBounds", CBaseEntity_GetCollisionBounds},
@@ -6460,6 +6595,7 @@ static const luaL_Reg ents_funcs[] = {
 
 static const luaL_Reg CBaseEntity_funcs[] = {
   {"CreateEntityByName", luasrc_CreateEntityByName},
+  {"SetPhysConstraintSystem", Lua_SetPhysConstraintSystem},
   {"EyePos", luasrc_EyePos},
   // HL2SB: GMod's BroadcastLua( code ) -- server realm broadcasts to every
   // connected player through the same lua_run_cl transport; client realm

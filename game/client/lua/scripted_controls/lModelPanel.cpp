@@ -805,7 +805,6 @@ static int luasrc_ModelPanel( lua_State *L )
 
 static const luaL_Reg ModelPanel_funcs[] = {
 	{"ModelPanel", luasrc_ModelPanel},
-	{"ModelImage", luasrc_ModelPanel},
 	{NULL, NULL}
 };
 
@@ -827,5 +826,7 @@ LUALIB_API int luaopen_vgui_ModelPanel( lua_State *L )
 	lua_setfield( L, -2, "__type" );		/* metatable.__type = "panel" */
 	luaL_register( L, "vgui", ModelPanel_funcs );
 	lua_pop( L, 2 );
+	extern void HL2SB_RegisterModelImage(lua_State *state);
+	HL2SB_RegisterModelImage(L);
 	return 1;
 }

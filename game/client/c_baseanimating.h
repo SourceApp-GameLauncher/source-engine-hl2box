@@ -401,6 +401,7 @@ public:
 	// Wrappers for CBoneAccessor.
 	const matrix3x4_t&				GetBone( int iBone ) const;
 	matrix3x4_t&					GetBoneForWrite( int iBone );
+	bool                            IsBoneMatrixAvailable( int iBone, bool bForWrite );
 
 	// Used for debugging. Will produce asserts if someone tries to setup bones or
 	// attachments before it's allowed.

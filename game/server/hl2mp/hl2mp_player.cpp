@@ -152,6 +152,8 @@ IMPLEMENT_SERVERCLASS_ST(CHL2MP_Player, DT_HL2MP_Player)
 	SendPropFloat( SENDINFO( m_flHL2SBRunSpeed ) ),
 	SendPropFloat( SENDINFO( m_flHL2SBSlowWalkSpeed ) ),
 	SendPropFloat( SENDINFO( m_flHL2SBJumpPower ) ),
+	SendPropFloat( SENDINFO_NOCHECK( m_flHL2SBDuckSpeed ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO_NOCHECK( m_flHL2SBUnDuckSpeed ), 0, SPROP_NOSCALE ),
 	// HL2SB (2026-09-27): the taunt clock.  GMod's client reads the very same
 	// float through IsPlayingTaunt() to run the taunt camera and gate the act
 	// command, so it has to replicate.
@@ -327,12 +329,12 @@ CHL2MP_Player::CHL2MP_Player() : m_PlayerAnimState( this )
 	m_flHL2SBWalkSpeed = 150.0f;
 	m_flHL2SBRunSpeed = 400.0f;
 	m_flHL2SBSlowWalkSpeed = 100.0f;
-	m_flHL2SBJumpPower = 0.0f;	// 0 = engine default (SetJumpPower writes 200)
+	m_flHL2SBJumpPower = 200.0f;
 
 	// HL2SB: stored-only GMod knobs (GMod defaults).
 	m_flHL2SBCrouchedWalkSpeed = 0.34f;
-	m_flHL2SBDuckSpeed = 0.4f;
-	m_flHL2SBUnDuckSpeed = 0.4f;
+	m_flHL2SBDuckSpeed = 0.3f;
+	m_flHL2SBUnDuckSpeed = 0.3f;
 	m_flHL2SBLadderClimbSpeed = 100.0f;
 	m_flHL2SBStepSize = 18.0f;
 	m_bHL2SBAllowWeaponsInVehicle = false;

@@ -2442,11 +2442,26 @@ class CLogicCollisionPair : public CLogicalEntity
 {
 	DECLARE_CLASS( CLogicCollisionPair, CLogicalEntity );
 public:
+	CLogicCollisionPair() : m_nameAttach1(NULL_STRING), m_nameAttach2(NULL_STRING),
+		m_disabled(false), m_succeeded(false), m_disableOnRemove(false) {}
+
+	void UpdateOnRemove()
+	{
+		if (m_succeeded && m_disabled && !m_disableOnRemove) EnableCollisions(true);
+		BaseClass::UpdateOnRemove();
+	}
 
 	void EnableCollisions( bool bEnable )
 	{
-		IPhysicsObject *pPhysics0 = FindPhysicsObjectByNameOrWorld( m_nameAttach1, this );
-		IPhysicsObject *pPhysics1 = FindPhysicsObjectByNameOrWorld( m_nameAttach2, this );
+		IPhysicsObject *pPhysics0 = NULL, *pPhysics1 = NULL;
+		extern bool HL2SB_GetPhysConstraintObject(CBaseEntity *, int, IPhysicsObject **);
+		if (HL2SB_GetPhysConstraintObject(this, 0, &pPhysics0))
+			HL2SB_GetPhysConstraintObject(this, 1, &pPhysics1);
+		else
+		{
+			pPhysics0 = FindPhysicsObjectByNameOrWorld(m_nameAttach1, this);
+			pPhysics1 = FindPhysicsObjectByNameOrWorld(m_nameAttach2, this);
+		}
 
 		// need two different objects to do anything
 		if ( pPhysics0 && pPhysics1 && pPhysics0 != pPhysics1 )
@@ -2500,12 +2515,14 @@ private:
 	string_t		m_nameAttach2;
 	bool			m_disabled;
 	bool			m_succeeded;
+	bool            m_disableOnRemove;
 };
 
 BEGIN_DATADESC( CLogicCollisionPair )
 	DEFINE_KEYFIELD( m_nameAttach1, FIELD_STRING, "attach1" ),
 	DEFINE_KEYFIELD( m_nameAttach2, FIELD_STRING, "attach2" ),
 	DEFINE_KEYFIELD( m_disabled, FIELD_BOOLEAN, "startdisabled" ),
+	DEFINE_KEYFIELD( m_disableOnRemove, FIELD_BOOLEAN, "disable_on_remove" ),
 	DEFINE_FIELD( m_succeeded, FIELD_BOOLEAN ),
 
 	// Inputs

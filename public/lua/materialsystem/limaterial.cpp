@@ -507,6 +507,32 @@ static int luasrc_Material_server_IsError (lua_State *L) {
   return 1;
 }
 
+static bool HL2SB_ServerMaterialShader(const char *path, char *shader, int size, int depth)
+{
+  if (!path || depth > 8) return false;
+  char filename[MAX_PATH];
+  Q_snprintf(filename, sizeof(filename), "materials/%s", !Q_strnicmp(path, "materials/", 10) ? path + 10 : path);
+  Q_DefaultExtension(filename, ".vmt", sizeof(filename));
+  KeyValues *values = new KeyValues("Material");
+  bool found = values->LoadFromFile(filesystem, filename, "GAME");
+  if (found) {
+    if (!Q_stricmp(values->GetName(), "patch"))
+      found = HL2SB_ServerMaterialShader(values->GetString("include", ""), shader, size, depth + 1);
+    else Q_strncpy(shader, values->GetName(), size);
+  }
+  values->deleteThis();
+  return found;
+}
+
+static int luasrc_Material_server_GetShader(lua_State *L)
+{
+  lua_getfield(L, 1, "__path");
+  char shader[128] = "";
+  HL2SB_ServerMaterialShader(lua_tostring(L, -1), shader, sizeof(shader), 0);
+  lua_pushstring(L, shader);
+  return 1;
+}
+
 static int luasrc_Material_server_Zero (lua_State *L) {
   lua_pushnumber(L, 0);
   return 1;
@@ -543,6 +569,9 @@ static int luasrc_Material_server (lua_State *L) {
 
   lua_pushcfunction(L, luasrc_Material_server_GetString);
   lua_setfield(L, -2, "GetString");
+
+  lua_pushcfunction(L, luasrc_Material_server_GetShader);
+  lua_setfield(L, -2, "GetShader");
 
   lua_pushcfunction(L, luasrc_Material_server_IsError);
   lua_setfield(L, -2, "IsError");

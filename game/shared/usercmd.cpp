@@ -6,6 +6,9 @@
 //=============================================================================//
 
 #include "cbase.h"
+#ifdef LUA_SDK
+#include "lua/hl2sb_playerbuttons.h"
+#endif
 #include "usercmd.h"
 #include "bitbuf.h"
 #include "checksum_md5.h"
@@ -182,6 +185,10 @@ void WriteUsercmd( bf_write *buf, const CUserCmd *to, const CUserCmd *from )
 		buf->WriteOneBit( 0 );
 	}
 
+#ifdef LUA_SDK
+	HL2SB_WritePlayerButtons(buf, to);
+#endif
+
 #if defined( HL2_CLIENT_DLL )
 	if ( to->entitygroundcontact.Count() != 0 )
 	{
@@ -308,6 +315,10 @@ void ReadUsercmd( bf_read *buf, CUserCmd *move, CUserCmd *from )
 	{
 		move->m_mouseWheel = buf->ReadShort();
 	}
+
+#ifdef LUA_SDK
+	HL2SB_ReadPlayerButtons(buf, move);
+#endif
 
 #if defined( HL2_DLL )
 	if ( buf->ReadOneBit() )

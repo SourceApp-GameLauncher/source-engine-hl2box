@@ -18,6 +18,7 @@
 // HL2SB: game.AddParticles() below drives the particle system manager directly.
 #include "particles/particles.h"
 #include "filesystem.h"
+#include "tier1/CommandBuffer.h"
 // HL2SB: luaL_checkentity (SuppressHostEvents), the GMod global helpers
 // registered at the end, the NetworkVar shim (which hands a 0..1 Vector back for
 // a Vector-declared variable, a 0..255 Color otherwise) and the vector/color
@@ -1100,68 +1101,6 @@ static int lua_game_GetAmmoID (lua_State *L) {
   CAmmoDef *pAmmoDef = GetAmmoDef();
   lua_pushinteger( L, ( pAmmoDef != NULL && pszName != NULL && pszName[ 0 ] != '\0' )
     ? pAmmoDef->Index( pszName ) : -1 );
-  return 1;
-}
-
-//-----------------------------------------------------------------------------
-// HL2SB GMod compat: GMod's type().
-//
-// GMod reports the engine's own types - "Player", "Entity", "Weapon", "Vector",
-// "Angle", "Panel", "Color", "Material", "TakeDamageInfo", ... - where stock Lua
-// only knows "table"/"userdata".  GMod scripts branch on it constantly, and a
-// wrong answer is silent: it is exactly what made the fork's old Lua
-// weapon_base's post-frame bail out on its first line
-// (type( pPlayer ) ~= "entity") and left every SWEP clicking empty.
-//
-// The mapping is the same alias table the metatable registry uses, read in the
-// native -> GMod direction; a value whose metatable has no __name (a plain table,
-// a number, ...) falls through to Lua's own type().
-//-----------------------------------------------------------------------------
-static int lua_type_gmod (lua_State *L) {
-  // Only the types GMod's own type() actually reports.  GMod is deliberately
-  // conservative: engine handle classes like MessageWriter, FileHandle,
-  // NetChannelInfo or KeyValuesHandle still answer "userdata" there, and its own
-  // lua/includes/extensions/net.lua depends on that
-  // (type( v ) == "userdata" and getmetatable( v ) ~= nil).
-  static const char *s_pReportedTypes[] = {
-    "Entity", "Player", "Weapon", "NPC", "NextBot", "Vehicle",
-    "Vector", "Angle", "Matrix", "Color",
-    "Panel", "Material", "Texture", "PhysicsObject",
-    "EffectData", "Trace", "ConsoleVariable", "TakeDamageInfo",
-  };
-
-  int nType = lua_type( L, 1 );
-
-  if ( nType == LUA_TTABLE || nType == LUA_TUSERDATA ) {
-    if ( lua_getmetatable( L, 1 ) ) {
-      lua_getfield( L, -1, "__name" );                    // [metatable, name]
-      const char *pszNative = lua_tostring( L, -1 );
-
-      if ( pszNative != NULL ) {
-        for ( int i = 0; s_LuaMetatableAliases[i].pszGModName; ++i ) {
-          if ( Q_stricmp( s_LuaMetatableAliases[i].pszNativeName, pszNative ) ) {
-            continue;
-          }
-
-          for ( int j = 0; j < ARRAYSIZE( s_pReportedTypes ); ++j ) {
-            if ( !Q_stricmp( s_pReportedTypes[j], s_LuaMetatableAliases[i].pszGModName ) ) {
-              lua_pushstring( L, s_LuaMetatableAliases[i].pszGModName );
-              return 1;
-            }
-          }
-
-          break;
-        }
-      }
-
-      lua_pop( L, 2 );
-    }
-  }
-
-  // Lua's own type(), captured as this closure's upvalue.
-  lua_pushvalue( L, lua_upvalueindex( 1 ) );
-  lua_pushvalue( L, 1 );
-  lua_call( L, 1, 1 );
   return 1;
 }
 
@@ -2744,6 +2683,358 @@ static int HL2SB_Lua_EntityNetworkVarGet (lua_State *L) {
 ** line executes on the server console; client realm: on the local console,
 ** which is the realm "jpeg" needs.
 */
+// Parse the entire command stream, including commands after separators.
+static int lua_IsConCommandBlocked (lua_State *L) {
+  const char *pszText = luaL_checkstring(L, 1);
+  static const char *const blocked[] = {
+    "crosshair_setup",
+    "hud_fastswitch",
+    "hud_quickinfo",
+    "cl_crosshairstyle",
+    "cl_crosshairusealpha",
+    "cl_crosshairgap",
+    "cl_crosshairsize",
+    "cl_crosshairthickness",
+    "cl_crosshairdot",
+    "cl_crosshair_t",
+    "cl_crosshaircolor_r",
+    "cl_crosshaircolor_g",
+    "cl_crosshaircolor_b",
+    "cl_crosshairalpha",
+    "cl_crosshair_drawoutline",
+    "cl_crosshair_outlinethickness",
+    "sensitivity",
+    "cl_enable_loadingurl",
+    "cl_defaultweapon",
+    "cl_autowepswitch",
+    "fps_max",
+    "fps_max_menu",
+    "fps_max_nofocus",
+    "engine_no_focus_sleep",
+    "cl_downloadfilter",
+    "lookspring",
+    "lookstrafe",
+    "m_customaccel",
+    "m_customaccel_exponent",
+    "m_customaccel_scale",
+    "m_customaccel_max",
+    "m_mousespeed",
+    "m_mouseaccel1",
+    "m_mouseaccel2",
+    "m_yaw",
+    "m_pitch",
+    "m_forward",
+    "m_side",
+    "cl_software_cursor",
+    "cl_allowdownload",
+    "cl_allowupload",
+    "cl_logofile",
+    "mat_color_projection",
+    "mat_disable_d3d9ex",
+    "voice_enable",
+    "voice_scale",
+    "voice_avggain",
+    "voice_maxgain",
+    "voice_gain_rate",
+    "voice_gain_downward_multiplier",
+    "voice_gain_target",
+    "voice_gain_max",
+    "voice_fadeouttime",
+    "voice_forcemicrecord",
+    "voice_inputfromfile",
+    "voice_loopback",
+    "voice_modenable",
+    "voice_overdrive",
+    "voice_overdrivefadetime",
+    "voice_recordtofile",
+    "volume",
+    "volume_sfx",
+    "suitvolume",
+    "snd_musicvolume",
+    "snd_gain",
+    "snd_gain_max",
+    "snd_gain_min",
+    "snd_mixahead",
+    "snd_pitchquality",
+    "snd_ducktovolume",
+    "snd_duckerattacktime",
+    "snd_duckerreleasetime",
+    "snd_duckerthreshold",
+    "snd_mute_losefocus",
+    "snd_surround_speakers",
+    "dsp_slow_cpu",
+    "dsp_enhance_stereo",
+    "fov_desired",
+    "crosshair",
+    "cl_chatfilters",
+    "con_enable",
+    "con_bgalpha",
+    "con_border",
+    "con_filter_enable",
+    "con_filter_dupe",
+    "con_filter_text",
+    "con_filter_text_out",
+    "gmod_delete_temp_files",
+    "host_writeconfig",
+    "host_writeconfig_lua",
+    "mat_savechanges",
+    "cl_mouseenable",
+    "skill",
+    "cl_playerspraydisable",
+    "mp_flashlight",
+    "lua_strict",
+    "closecaption",
+    "cc_lang",
+    "cc_subtitles",
+    "cc_linger_time",
+    "cc_predisplay_time",
+    "mp_decals",
+    "muzzleflash_light",
+    "r_ambientboost",
+    "r_ambientmin",
+    "r_ambientfraction",
+    "r_ambientfactor",
+    "r_lightcachemodel",
+    "r_drawlightcache",
+    "zoom_sensitivity_ratio",
+    "cl_rumblescale",
+    "m_filter",
+    "cl_chatfilter_version",
+    "net_maxroutable",
+    "tv_nochat",
+    "windows_speaker_config",
+    "xbox_autothrottle",
+    "xbox_steering_deadzone",
+    "xbox_throttlespoof",
+    "xbox_throttlebias",
+    "func_break_max_pieces",
+    "cl_savescreenshotstosteam",
+    "texture_budget_background_alpha",
+    "texture_budget_panel_bottom_of_history_fraction",
+    "texture_budget_panel_height",
+    "texture_budget_panel_width",
+    "texture_budget_panel_x",
+    "texture_budget_panel_y",
+    "budget_averages_window",
+    "budget_background_alpha",
+    "budget_bargraph_background_alpha",
+    "budget_bargraph_range_ms",
+    "budget_history_numsamplesvisible",
+    "budget_history_range_ms",
+    "budget_panel_bottom_of_history_fraction",
+    "budget_panel_height",
+    "budget_panel_width",
+    "budget_panel_x",
+    "budget_panel_y",
+    "budget_peaks_window",
+    "budget_show_averages",
+    "budget_show_history",
+    "budget_show_peaks",
+    "net_graph",
+    "net_scale",
+    "net_graphheight",
+    "net_graphmsecs",
+    "net_graphpos",
+    "net_graphproportionalfont",
+    "net_graphshowinterp",
+    "net_graphshowlatency",
+    "net_graphsolid",
+    "net_graphtext",
+    "mat_forcehardwaresync",
+    "mat_forceaniso",
+    "mat_picmip",
+    "mat_trilinear",
+    "mat_antialias",
+    "mat_aaquality",
+    "mat_colorcorrection",
+    "mat_hdr_level",
+    "mat_vsync",
+    "mat_reducefillrate",
+    "mat_reduceparticles",
+    "r_shadowrendertotexture",
+    "r_rootlod",
+    "r_waterforceexpensive",
+    "r_waterforcereflectentities",
+    "mat_forcemanagedtextureintohardware",
+    "mat_managedtextures",
+    "mat_monitorgamma",
+    "mat_monitorgamma_tv_enabled",
+    "mat_powersavingsmode",
+    "mat_requires_rt_alloc_first",
+    "mat_supportflashlight",
+    "r_worldlights",
+    "r_teeth",
+    "r_shader_srgb",
+    "mat_dump_rts",
+    "sv_cheats",
+    "mat_setvideomode",
+    "mat_viewportscale",
+    "mat_viewportupscale",
+    "connect",
+    "gm_video",
+    "cancelselect",
+    "gmod_language",
+    "cef_credits",
+    "gmod_tos",
+    "gmod_privacy",
+    "gmod_modding",
+    "gmod_servers",
+    "whereis",
+    "path",
+    "fs_tellmeyoursecrets",
+    "fs_warning_level",
+    "fs_printopenfiles ",
+    "fs_report_sync_opens",
+    "fs_monitor_read_from_pack",
+    "gm_demo_to_video",
+    "mem_force_flush",
+    "scene_flush",
+    "startdemos",
+    "nextdemo",
+    "startmovie",
+    "playdemo",
+    "editdemo",
+    "timedemo",
+    "spike",
+    "timedemoquit",
+    "demo_quitafterplayback",
+    "contimes",
+    "con_drawnotify",
+    "developer",
+    "exec",
+    "bind",
+    "bind_mac",
+    "bindtoggle",
+    "unbind",
+    "unbind_mac",
+    "unbindall",
+    "alias",
+    "ent_fire",
+    "ent_setname",
+    "name",
+    "quit",
+    "quti",
+    "exit",
+    "killserver",
+    "lua_run",
+    "lua_run_cl",
+    "lua_open",
+    "lua_cookieclear",
+    "lua_showerrors_cl",
+    "lua_showerrors_sv",
+    "lua_openscript",
+    "lua_openscript_cl",
+    "lua_redownload",
+    "lua_reloadents",
+    "lua_reloadents_cl",
+    "lua_error_url",
+    "gamemode_reload",
+    "gamemode_reload_cl",
+    "clear",
+    "rcon_password",
+    "rcon_address",
+    "echo",
+    "test_randomchance",
+    "test_startscript",
+    "toggle",
+    "incrementvar",
+    "multvar",
+    "gameui_hide",
+    "gameui_preventescapetoshow",
+    "mat_texture_limit",
+    "mat_crosshair_explorer",
+    "mat_dxlevel",
+    "toggleconsole",
+    "showconsole",
+    "hideconsole",
+    "plugin_load",
+    "sv_logsdir",
+    "sv_logfilename_format",
+    "sv_log_storetime",
+    "logaddress_add",
+    "log",
+    "askconnect_accept",
+    "lightprobe",
+    "buildcubemaps",
+    "gameui_show_dialog",
+    "menu_reload",
+    "debug_dump",
+    "servercfgfile",
+    "lservercfgfile",
+    "+voicerecord",
+    "mat_texture_list_txlod_sync",
+    "building_cubemaps",
+    "setinfo",
+    "cl_ignorepackets",
+    "vcr_verbose",
+    "tv_relay",
+    "tv_retry",
+    "+mat_texture_list",
+    "mat_texture_list",
+    "mat_texture_list_content_path",
+    "mat_crosshair_edit",
+    "mat_crosshair_explorer",
+    "startupmenu",
+    "movie_fixwave",
+    "cl_cloud_settings",
+    "stuffcmds",
+    "mat_texture_save_fonts",
+    "load",
+    "physics_budget",
+    "physics_highlight_active",
+    "physics_report_active",
+    "physics_constraints",
+    "physics_debug_entity",
+    "physics_select",
+    "surfaceprop",
+    "cl_particle_stats_start",
+    "cl_particle_stats_stop",
+    "cl_particle_stats_trigger_count",
+    "filesystem_unbuffered_io",
+    "filesystem_buffer_size",
+    "filesystem_native",
+    "filesystem_max_stdio_read",
+    "filesystem_report_buffered_io",
+    "hud_autoreloadscript",
+    "hud_freezecamhide",
+    "hud_reloadscheme",
+    "mat_bufferprimitives",
+    "sdl_displayindex",
+    "snd_buildcache",
+    "__screenshot_internal",
+    "devshots_screenshot",
+    "mem_max_heapsize",
+    "datacachesize",
+    "con_logfile",
+    "vprof_record_start",
+    "vprof_record_stop",
+    "test_loop",
+    "plugin_load",
+    "sv_allow_wait_command",
+  };
+  CCommandBuffer buffer;
+  buffer.SetWaitEnabled(false);
+  buffer.AddText(pszText);
+  buffer.BeginProcessingCommands(1);
+  bool bBlocked = false;
+  while ( buffer.DequeueNextCommand() ) {
+    const CCommand &args = buffer.GetCommand();
+    if ( args.ArgC() == 0 )
+      continue;
+    if ( gpGlobals->maxClients < 2 && !Q_stricmp(args[0], "retry") )
+      bBlocked = true;
+    for ( int i = 0; i < ARRAYSIZE(blocked) && !bBlocked; ++i )
+      if ( !Q_stricmp(args[0], blocked[i]) )
+        bBlocked = true;
+    for ( int i = 1; i < args.ArgC() && !bBlocked; ++i )
+      if ( !Q_stricmp(args[i], "con_logfile") || !Q_stricmp(args[i], "quitnoconfirm") )
+        bBlocked = true;
+  }
+  buffer.EndProcessingCommands();
+  lua_pushboolean(L, bBlocked);
+  return 1;
+}
+
 static int HL2SB_Lua_EngineCommand (lua_State *L) {
   const char *pszCommand = luaL_checkstring( L, 1 );
   if ( pszCommand == NULL || pszCommand[ 0 ] == '\0' )
@@ -3857,6 +4148,8 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_setglobal( L, "HL2SB_EntityNetworkVar" );
   lua_pushcfunction( L, HL2SB_Lua_EntityNetworkVarNotify );
   lua_setglobal( L, "HL2SB_EntityNetworkVarNotify" );
+  lua_pushcfunction( L, lua_IsConCommandBlocked );
+  lua_setglobal( L, "IsConCommandBlocked" );
   lua_pushcfunction( L, HL2SB_Lua_EngineCommand );
   lua_setglobal( L, "HL2SB_EngineCommand" );
 
@@ -3892,11 +4185,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     lua_pop( L, 1 );
   }
 
-  /* GMod's type(): keep the real one as an upvalue and install the wrapper in its
-  ** place (see lua_type_gmod above). */
-  lua_getglobal( L, "type" );
-  lua_pushcclosure( L, lua_type_gmod, 1 );
-  lua_setglobal( L, "type" );
+  // The original Lua bootstrap installs named type reporting over the raw primitive.
 
 #ifndef CLIENT_DLL
   lua_pushcfunction( L, lua_SuppressHostEvents );

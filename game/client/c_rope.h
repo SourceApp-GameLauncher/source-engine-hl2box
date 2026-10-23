@@ -159,6 +159,7 @@ private:
 
 	void			ReceiveMessage( int classID, bf_read &msg );
 	bool			CalculateEndPointAttachment( C_BaseEntity *pEnt, int iAttachment, Vector &vPos, QAngle *pAngles );
+	bool CalculateLuaEndPoint(int point, Vector &position, QAngle *angles);
 
 
 private:
@@ -188,6 +189,10 @@ private:
 	EHANDLE			m_hEndPoint;
 	short			m_iStartAttachment;	// StartAttachment/EndAttachment are attachment points.
 	short			m_iEndAttachment;
+	Vector m_vecStartOffset;
+	Vector m_vecEndOffset;
+	int m_iStartBone;
+	int m_iEndBone;
 
 	unsigned char	m_Subdiv;			// Number of subdivions in between segments.
 
