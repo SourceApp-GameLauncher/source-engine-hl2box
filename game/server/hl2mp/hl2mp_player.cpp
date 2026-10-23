@@ -26,6 +26,7 @@
 #include "hl2sb_player_model_manager.h"
 #include "hl2sb_model_config.h"
 #include "igameevents.h"
+#include "hl2sb_pickupnotice.h"
 #endif
 #include "grenade_satchel.h"
 #include "eventqueue.h"
@@ -164,6 +165,10 @@ IMPLEMENT_SERVERCLASS_ST(CHL2MP_Player, DT_HL2MP_Player)
 	SendPropEHandle( SENDINFO( m_hHands ) ),
 
 	SendPropExclude( "DT_BaseAnimating", "m_flPoseParameter" ),
+	SendPropExclude( "DT_BaseAnimating", "m_flPlaybackRate" ),
+	SendPropExclude( "DT_BaseAnimating", "m_nSequence" ),
+	SendPropExclude( "DT_ServerAnimationData", "m_flCycle" ),
+	SendPropExclude( "DT_AnimTimeMustBeFirst", "m_flAnimTime" ),
 	SendPropExclude( "DT_BaseFlex", "m_viewtarget" ),
 	// HL2SB (2026-10-02): GMod excludes this too - gesture/overlay layers are
 	// never networked for players.  Every client builds them locally from the
@@ -815,6 +820,7 @@ void CHL2MP_Player::PostThink( void )
 		SetCollisionBounds( VEC_CROUCH_TRACE_MIN, VEC_CROUCH_TRACE_MAX );
 	}
 
+	m_angEyeAngles = EyeAngles();
 	m_PlayerAnimState.Update();
 
 	// HL2SB diagnostic: per-second dump of the SERVER-side gesture layers.
@@ -918,19 +924,6 @@ void CHL2MP_Player::PostThink( void )
 					}
 				}
 			}
-	}
-
-	// HL2SB (2026-09-27): GM:UpdateAnimation( ply, velocity, maxSeqGroundSpeed )
-	// - animations.lua:197.  The base gamemode writes SetPlaybackRate and the
-	// vehicle pose parameters here every frame, exactly like GMod; the client
-	// realm dispatches the same hook for its own pose/flex work (MouthMove).
-	{
-		float flGroundSpeed = GetSequenceGroundSpeed( GetSequence() );
-		BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
-			lua_pushplayer( L, this );
-			lua_pushvector( L, GetAbsVelocity() );
-			lua_pushnumber( L, flGroundSpeed );
-		END_LUA_CALL_HOOK( 3, 0 );
 	}
 
 	// Store the eye angles pitch so the client can compute its animation state correctly.
@@ -1275,447 +1268,21 @@ float CHL2MP_Player::GetPlayerMaxSpeed( void )
 // Set the activity based on an event or current state
 void CHL2MP_Player::SetAnimation( PLAYER_ANIM playerAnim )
 {
-	int animDesired;
-
-	float speed;
-
-	speed = GetAbsVelocity().Length2D();
-
-	// HL2SB: while riding a vehicle a passenger's velocity is the vehicle's, so the
-	// state machine below kept selecting the RUN sequences and the seated model looked
-	// like it was sprinting. GMod poses riders with the seat's OWN animation, which the
-	// seat entity carries as Members.HandleAnimation - for every chair / pod seat in
-	// GMod's list that is `player:SelectWeightedSequence( ACT_GMOD_SIT_ROLLERCOASTER )`
-	// (see HL2SB_SelectVehicleSitSequence). The whole chain - the vehicle's own seat pose
-	// and the sit_<holdtype> fallback - lives in HL2SB_ResolveSeatedSequence() so the
-	// CLIENT can resolve the very same sequence (it needs it to tell "still seated" from
-	// "the exit animation is running" - see UpdateVehicleAnimation()).
-	//
-	// HL2SB: THE PARENT TEST is what ends the seat pose on dismount. Leaving a vehicle
-	// runs the other way round from entering it: CBaseServerVehicle::HandlePassengerExit()
-	// starts the vehicle's exit animation and UNPARENTS the player at its START
-	// (vehicle_baseserver.cpp SetParent( NULL )), while CBasePlayer::LeaveVehicle() - the
-	// only place m_hVehicle is cleared - runs when that animation FINISHES. So for the
-	// 0.2-0.5s in between, IsInAVehicle() is still true and this branch kept re-pinning
-	// the sit sequence: the reported "the model stays in the seat pose for a moment after
-	// dismounting". GMod keys off exactly this condition
-	// (gamemodes/base/gamemode/animations.lua:144: "The player must have a parent to be in
-	// a vehicle. If there's no parent, we are in the exit anim, so don't do sitting in 3rd
-	// person anymore"), and the moment the test fails the normal path below (a few lines
-	// down - idle/walk/run) takes over, so a fresh gait is selected on the same frame.
-	if ( IsInAVehicle() && IsAlive() && GetMoveParent() != NULL )
-	{
-		// HL2SB: the reference resolves the seat pose IN LUA - animations.lua's
-		// HandlePlayerDriving runs the vehicle list entry's Members.HandleAnimation
-		// when it defines one (chairs: ACT_GMOD_SIT_ROLLERCOASTER) and otherwise
-		// answers from its hardcoded per-class table (jeep -> drive_jeep,
-		// airboat -> drive_airboat, prisoner pod (inner model) -> drive_pd,
-		// anything else -> sit_rollercoaster), with the sit_<holdtype> family
-		// overriding the plain sit when weapons are allowed in the vehicle.
-		// Dispatch GM:CalcMainActivity exactly like the unseated path and pin
-		// what the Lua answers; the C++ resolver only fills the gap when no Lua
-		// gamemode is there to answer.
-		Activity seatActivity = ACT_INVALID;
-		int animDesired = -1;
-		{
-			BEGIN_LUA_CALL_HOOK( "CalcMainActivity" );
-				lua_pushplayer( L, this );
-				lua_pushvector( L, GetAbsVelocity() );
-			END_LUA_CALL_HOOK( 2, 2 );
-
-			if ( lua_isnumber( L, -2 ) )
-			{
-				seatActivity = (Activity)lua_tointeger( L, -2 );
-				if ( lua_isnumber( L, -1 ) )
-					animDesired = lua_tointeger( L, -1 );
-			}
-			lua_pop( L, 2 );
-		}
-
-		if ( animDesired <= 0 )
-		{
-			animDesired = HL2SB_ResolveSeatedSequence( this, GetVehicleEntity(), &seatActivity );
-		}
-
-		if ( ( animDesired > 0 ) && ( animDesired != GetSequence() ) )
-		{
-			if ( GetActivity() != seatActivity )
-				SetActivity( seatActivity );
-
-			m_flPlaybackRate = 1.0f;
-			ResetSequence( animDesired );
-			SetCycle( 0 );
-		}
-
-		return;
-	}
-
-	
-	// bool bRunning = true;
-
-	//Revisit!
-/*	if ( ( m_nButtons & ( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT ) ) )
-	{
-		if ( speed > 1.0f && speed < hl2_normspeed.GetFloat() - 20.0f )
-		{
-			bRunning = false;
-		}
-	}*/
-
-	if ( GetFlags() & ( FL_FROZEN | FL_ATCONTROLS ) )
-	{
-		speed = 0;
-		playerAnim = PLAYER_IDLE;
-	}
-
-	// HL2SB: the die check must survive the Lua override below - a dying player
-	// never gets a main-sequence change (GMod's animstate handles death itself).
-	if ( playerAnim == PLAYER_DIE && m_lifeState == LIFE_ALIVE )
-		return;
-
-	Activity idealActivity = ACT_HL2MP_RUN;
-
-	// HL2SB (2026-09-27): GM:CalcMainActivity( ply, velocity ) -
-	// animations.lua:305.  Returns ( idealActivity, sequenceOverride ); -1
-	// override = "no sequence pin".  The ACT_MP_* ideal flows through the same
-	// weapon-acttable / name-pin chain below.  When the gamemode does not
-	// answer, the built-in HL2MP state machine (kept verbatim) runs.
-	int iLuaSeqOverride = -1;
-	bool bLuaIdeal = false;
-	{
-		BEGIN_LUA_CALL_HOOK( "CalcMainActivity" );
-			lua_pushplayer( L, this );
-			lua_pushvector( L, GetAbsVelocity() );
-		END_LUA_CALL_HOOK( 2, 2 );
-
-		if ( lua_isnumber( L, -2 ) )
-		{
-			bLuaIdeal = true;
-			idealActivity = (Activity)lua_tointeger( L, -2 );
-			if ( lua_isnumber( L, -1 ) )
-				iLuaSeqOverride = lua_tointeger( L, -1 );
-		}
-		lua_pop( L, 2 );
-	}
-
-	// HL2SB (2026-09-27): the EVENT dispatch below (jump / attack / reload) must run
-	// whether or not GM:CalcMainActivity answered.  GMod starts its attack and reload
-	// GESTURES from GM:DoAnimationEvent, and gating them on !bLuaIdeal meant that as
-	// soon as a gamemode defined CalcMainActivity (i.e. always - the ported
-	// animations.lua does) firing and reloading stopped animating the player at all.
-	// Only the built-in GAIT selection (idle/walk/run/crouch/swim) is skipped when
-	// Lua supplied the ideal.
-	//
-	// This could stand to be redone. Why is playerAnim abstracted from activity? (sjb)
-	if ( playerAnim == PLAYER_JUMP )
-	{
-		// HL2SB: the jump ANIMEVENT goes to Lua first (animations.lua:388 sets
-		// m_bJumping and restarts the main sequence); the ACT_HL2MP_JUMP
-		// selection below still runs so a gamemode without Lua keeps jumping.
-		HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_JUMP, 0 );
-
-		idealActivity = ACT_HL2MP_JUMP;
-	}
-	else if ( playerAnim == PLAYER_DIE )
-	{
-		if ( m_lifeState == LIFE_ALIVE )
-		{
-			return;
-		}
-	}
-	else if ( playerAnim == PLAYER_ATTACK1 )
-	{
-		// HL2SB: GMod plays attacks as a GESTURE_SLOT_ATTACK_AND_RELOAD gesture
-		// from GM:DoAnimationEvent (animations.lua:363), never touching the
-		// main sequence.  When Lua answers, the viewmodel activity the handler
-		// returned was already applied - done.
-		if ( HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_ATTACK_PRIMARY, 0 ) )
-		{
-			if ( hl2sb_anim_debug.GetBool() )
-			{
-				player_info_t info;
-				const char *pszName = engine->GetPlayerInfo( entindex(), &info ) ? info.name : "?";
-				Msg( "[HL2SB gesture/sv] ATTACK1 path=Lua (GM:DoAnimationEvent answered) ply=%d '%s'\n",
-					 entindex(), pszName );
-			}
-			return;
-		}
-
-		if ( hl2sb_anim_debug.GetBool() )
-		{
-			player_info_t info;
-			const char *pszName = engine->GetPlayerInfo( entindex(), &info ) ? info.name : "?";
-			Msg( "[HL2SB gesture/sv] ATTACK1 path=C++ fallback (no Lua handler) ply=%d '%s'\n",
-				 entindex(), pszName );
-		}
-
-		if ( GetActivity( ) == ACT_HOVER	||
-			 GetActivity( ) == ACT_SWIM		||
-			 GetActivity( ) == ACT_HOP		||
-			 GetActivity( ) == ACT_LEAP		||
-			 GetActivity( ) == ACT_DIESIMPLE )
-		{
-			idealActivity = GetActivity( );
-		}
-		else
-		{
-			idealActivity = ACT_HL2MP_GESTURE_RANGE_ATTACK;
-		}
-	}
-	else if ( playerAnim == PLAYER_RELOAD )
-	{
-		if ( HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_RELOAD, 0 ) )
-			return;
-
-		idealActivity = ACT_HL2MP_GESTURE_RELOAD;
-	}
-	else if ( playerAnim == PLAYER_IDLE || playerAnim == PLAYER_WALK )
-	{
-		// HL2SB: with a gamemode the gait ideal already came from
-		// GM:CalcMainActivity above, so the built-in machine is skipped.
-		if ( !bLuaIdeal )
-		{
-		// HL2SB: swimming is checked before the jump hold, exactly like GMod's
-		// CalcMainActivity order (animations.lua:113 HandlePlayerSwimming is
-		// after HandlePlayerJumping, but animations.lua:13 ends a jump as soon
-		// as WaterLevel() > 0, so dropping into water ends the jump pose).
-		// WaterLevel >= 2 and off the ground = swimming. The old commented block
-		// below posed ACT_HOVER / ACT_SWIM - singleplayer HL2 activities no
-		// player anim model carries. ACT_HL2MP_SWIM goes through the weapon
-		// acttable (ACT_HL2MP_SWIM_<holdtype>, e.g. weapon_357.cpp:95) and then
-		// HL2SB_SelectPlayerSequence pins "swimming_<holdtype>" / bare
-		// "swimming" - all shipped by GMod's m_anm/f_anm/z_anm (mdl-bound
-		// ACT_HL2MP_SWIM_* names, verified 2026-09-24).
-		if ( GetWaterLevel() >= WL_Waist && !( GetFlags() & FL_ONGROUND ) )
-		{
-			idealActivity = ACT_HL2MP_SWIM;
-		}
-		else if ( !( GetFlags() & FL_ONGROUND ) && GetActivity( ) == ACT_HL2MP_JUMP )	// Still jumping
-		{
-			idealActivity = GetActivity( );
-		}
-		/*
-		else if ( GetWaterLevel() > 1 )
-		{
-			if ( speed == 0 )
-				idealActivity = ACT_HOVER;
-			else
-				idealActivity = ACT_SWIM;
-		}
-		*/
-		else
-		{
-			if ( GetFlags() & FL_DUCKING )
-			{
-				if ( speed > 0 )
-				{
-					idealActivity = ACT_HL2MP_WALK_CROUCH;
-				}
-				else
-				{
-					idealActivity = ACT_HL2MP_IDLE_CROUCH;
-				}
-			}
-			else
-			{
-				if ( speed > 0 )
-				{
-					// HL2SB: GMod's walk/run split - "speed > 150 -> RUN,
-					// > 0.5 -> WALK" (gamemodes/base/gamemode/animations.lua:321) -
-					// with 20 units of hysteresis. Switching the activity switches
-					// the sequence and ResetSequence()s it, so a speed sitting right
-					// on the threshold used to restart the legs every frame (the same
-					// failure as AGENTS.md 20).
-					//
-					// Whether WALK can play at all is decided by the model: HL2MP's
-					// own anim models only ship run_*. HL2SB_SelectPlayerSequence()
-					// reports that with ACT_INVALID and the code below then keeps
-					// running.
-					const float flWalkRunThreshold = 150.0f;
-					const float flHysteresis = 20.0f;
-
-					bool bRunning = ( speed > flWalkRunThreshold );
-
-					if ( GetActivity() == ACT_HL2MP_WALK && speed < flWalkRunThreshold + flHysteresis )
-					{
-						bRunning = false;
-					}
-					else if ( GetActivity() == ACT_HL2MP_RUN && speed > flWalkRunThreshold - flHysteresis )
-					{
-						bRunning = true;
-					}
-
-					idealActivity = bRunning ? ACT_HL2MP_RUN : ACT_HL2MP_WALK;
-				}
-				else
-				{
-					idealActivity = ACT_HL2MP_IDLE;
-				}
-			}
-		}
-
-		idealActivity = TranslateTeamActivity( idealActivity );
-		}	// end if ( !bLuaIdeal )
-	}
-
-	if ( idealActivity == ACT_HL2MP_GESTURE_RANGE_ATTACK )
-	{
-		// HL2SB (2026-10-02): routed through the funnel so the GMod gesture
-		// broadcast (TE PlayerAnimEvent) fires for the no-Lua-gamemode path
-		// too; the funnel applies Weapon_TranslateActivity itself.
-		HL2SB_AnimRestartGesture( GESTURE_SLOT_ATTACK_AND_RELOAD, idealActivity, true );
-
-		// HL2SB (2026-09-30): Lua SWEPs skip this.  CBaseCombatWeapon::
-		// SetActivity is Valve's own "Oh man..." hack -- it flips the weapon
-		// to its WORLD model to resolve the range-attack sequence, flips back
-		// and forces that world-model sequence index onto the viewmodel
-		// (or force-idles it with SetCycle(0)+ResetSequenceInfo when the
-		// activity is missing, which is every combined SWEP model).  GMod
-		// never runs this for scripted weapons: the body fire gesture is the
-		// Lua animation layer's ACT_MP_* restart (visible in the probe log),
-		// and the extra per-shot model/sequence churn was the "plays another
-		// animation after each shot" report on the Nyan Gun.
-		CBaseCombatWeapon *pFireWeapon = GetActiveWeapon();
-		if ( pFireWeapon == NULL || !pFireWeapon->IsScripted() )
-		{
-			Weapon_SetActivity( Weapon_TranslateActivity( ACT_RANGE_ATTACK1 ), 0 );
-		}
-
-		return;
-	}
-	else if ( idealActivity == ACT_HL2MP_GESTURE_RELOAD )
-	{
-		// HL2SB (2026-10-02): funnel - same translation + gesture broadcast.
-		HL2SB_AnimRestartGesture( GESTURE_SLOT_ATTACK_AND_RELOAD, idealActivity, true );
-		return;
-	}
-	else
-	{
-		// HL2SB: pin the sequence by NAME ("run_pistol", "cwalk_ar2",
-		// "idle_gravgun", ... - see HL2SB_SelectPlayerSequence()) instead of
-		// trusting the activity -> hold type -> weighted-random-sequence chain.
-		Activity translatedActivity;
-		if ( bLuaIdeal )
-		{
-			// GMod order: the ACT_MP_* ideal goes through GM:TranslateActivity
-			// (animations.lua:348 - weapon acttable, then the IdleActivityTranslate
-			// ACT_HL2MP_* fallback).  No Lua answer -> plain weapon translation.
-			translatedActivity = HL2SB_TranslateActivityLua( idealActivity, Weapon_TranslateActivity( idealActivity ) );
-		}
-		else
-		{
-			translatedActivity = Weapon_TranslateActivity( idealActivity );
-		}
-
-		animDesired = HL2SB_SelectPlayerSequence( this, translatedActivity, idealActivity );
-
-		// HL2SB: a sequence override from GM:CalcMainActivity's second return
-		// (CalcSeqOverride in animations.lua) pins the sequence outright.
-		if ( iLuaSeqOverride > -1 )
-		{
-			animDesired = iLuaSeqOverride;
-		}
-		// A model with no walk animation (HL2MP's own anim models only ship run_*)
-		// answers ACT_INVALID here: keep running instead of dropping to
-		// sequence 0, which is what the old fallback chain would have done.
-		else if ( animDesired == -1 && ( idealActivity == ACT_HL2MP_WALK || idealActivity == ACT_MP_WALK ) )
-		{
-			idealActivity = ( idealActivity == ACT_MP_WALK ) ? ACT_MP_RUN : ACT_HL2MP_RUN;
-
-			translatedActivity = Weapon_TranslateActivity( idealActivity );
-			animDesired = HL2SB_SelectPlayerSequence( this, translatedActivity, idealActivity );
-		}
-
-		if (animDesired == -1)
-		{
-			animDesired = SelectWeightedSequence( translatedActivity );
-
-			if ( animDesired == -1 )
-			{
-				animDesired = SelectWeightedSequence( idealActivity );
-
-				if ( animDesired == -1 )
-				{
-					animDesired = 0;
-				}
-			}
-		}
-	
-		// HL2SB: the pin above is deterministic, so "am I already playing the
-		// sequence the pin wants" is a valid test again - and it has to happen
-		// BEFORE SetActivity(), which selects a sequence for the *base* activity
-		// (ACT_HL2MP_RUN -> the bare "run" sequence) and would otherwise make the
-		// test fail on every single frame: that was the real "legs freeze after a
-		// few frames" bug (AGENTS 20 / 27). ResetSequence() also bumps the sequence
-		// parity, which makes the CLIENT reset its own cycle on the next snapshot,
-		// so the freeze showed up on both realms.
-		if ( GetSequence() == animDesired )
-			return;
-
-		// HL2SB: remember whether the previous activity was a crouch one, so the
-		// stand<->crouch boundary below can cross-fade instead of hard-cutting. The
-		// client m_SequenceTransitioner only blends when the sequence changes without
-		// ResetSequence() re-zeroing the cycle every time; doing ResetSequence + SetCycle(0)
-		// on the crouch edge is what made ducking look a beat late.
-		//
-		// HL2SB: the GM:CalcMainActivity path hands us GMod's ACT_MP_CROUCH_IDLE /
-		// ACT_MP_CROUCHWALK, so the test has to accept both vocabularies - matching
-		// only ACT_HL2MP_* made bIsCrouch permanently false for Lua-driven animation,
-		// which re-zeroed the cycle on every crouch frame (visible as a stuttering
-		// crouch, and for hold types whose cwalk_* the model lacks it dropped to
-		// sequence 0).
-		const bool bWasCrouch = ( GetActivity() == ACT_HL2MP_IDLE_CROUCH ||
-								  GetActivity() == ACT_HL2MP_WALK_CROUCH ||
-								  GetActivity() == ACT_MP_CROUCH_IDLE ||
-								  GetActivity() == ACT_MP_CROUCHWALK );
-		const bool bIsCrouch  = ( idealActivity == ACT_HL2MP_IDLE_CROUCH ||
-								  idealActivity == ACT_HL2MP_WALK_CROUCH ||
-								  idealActivity == ACT_MP_CROUCH_IDLE ||
-								  idealActivity == ACT_MP_CROUCHWALK );
-
-		// Activity bookkeeping: GetActivity() is read by the jump case above and by
-		// the walk/run split. Only touch it when it really changes, so the sequence
-		// pinned above is not thrown away every frame.
-		if ( GetActivity() != idealActivity )
-			SetActivity( idealActivity );
-
-		m_flPlaybackRate = 1.0;
-
-		// HL2SB: GMod animations.lua:208 - "if we're under water we want to
-		// constantly be swimming": the stroke plays at velocity/sequence-ground-
-		// speed like land gaits would, never slower than half rate, so treading
-		// water keeps cycling instead of freezing on one frame.
-		if ( GetWaterLevel() >= WL_Waist && !( GetFlags() & FL_ONGROUND ) )
-		{
-			float flGroundSpeed = GetSequenceGroundSpeed( animDesired );
-			float flRate = ( speed > 0.2f && flGroundSpeed > 0.001f )
-								? ( speed / flGroundSpeed )
-								: 1.0f;
-			m_flPlaybackRate = clamp( flRate, 0.5f, 2.0f );
-		}
-
-		// GMod-style: on a stand<->crouch transition keep the phase we are on (do not
-		// restart at cycle 0) and let the client blend, so ducking is smooth instead of
-		// snapping to the crouch idles' first frame.
-		const bool bCrouchEdge = ( bWasCrouch != bIsCrouch );
-		const float flKeepCycle = bCrouchEdge ? GetCycle() : 0.0f;
-
-		ResetSequence( animDesired );
-		if ( bCrouchEdge )
-			SetCycle( flKeepCycle );
-		else
-			SetCycle( 0 );
-		return;
-	}
-
-	// Already using the desired animation?
-	if ( GetSequence() == animDesired )
-		return;
-
-	//Msg( "Set animation to %d\n", animDesired );
-	// Reset to first frame of desired animation
-	ResetSequence( animDesired );
-	SetCycle( 0 );
+    switch ( playerAnim )
+    {
+    case PLAYER_JUMP:
+        HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_JUMP, 0 );
+        TE_PlayerAnimEvent( this, PLAYERANIMEVENT_JUMP, 0 );
+        break;
+    case PLAYER_ATTACK1:
+        HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_ATTACK_PRIMARY, 0 );
+        break;
+    case PLAYER_RELOAD:
+        HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_RELOAD, 0 );
+        break;
+    default:
+        break;
+    }
 }
 
 
@@ -1771,6 +1338,7 @@ bool CHL2MP_Player::BumpWeapon( CBaseCombatWeapon *pWeapon )
 #ifdef HL2SB
 	// HL2SB: notify the client HUD that the local player picked up a weapon
 	// (drives the ported GMod pickup animation).  item = weapon classname.
+	if ( !HL2SB_IsPickupNoticeSuppressed( this ) )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
 		if ( event )
@@ -1778,6 +1346,7 @@ bool CHL2MP_Player::BumpWeapon( CBaseCombatWeapon *pWeapon )
 			event->SetInt( "userid", GetUserID() );
 			event->SetString( "item", pWeapon->GetClassname() );
 			event->SetInt( "amount", 0 );
+			event->SetBool( "weapon", true );
 			gameeventmanager->FireEvent( event );
 		}
 	}

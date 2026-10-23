@@ -266,7 +266,7 @@ bool CClientState::SetSignonState ( int state, int count )
 
 				// allow longer timeout
 				m_NetChannel->SetTimeout( SIGNON_TIME_OUT );
-				m_NetChannel->SetMaxBufferSize( true, NET_MAX_PAYLOAD );
+				m_NetChannel->SetMaxBufferSize( true, 256 * 1024 );
 				
 				// set user settings (rate etc)
 				NET_SetConVar convars;
@@ -328,7 +328,8 @@ bool CClientState::SetSignonState ( int state, int count )
 				if ( m_NetChannel )
 				{
 					m_NetChannel->SetTimeout( cl_timeout.GetFloat() );
-					m_NetChannel->SetMaxBufferSize( true, NET_MAX_DATAGRAM_PAYLOAD );
+					// GMod keeps reliable Lua traffic fragmentable after signon.
+					m_NetChannel->SetMaxBufferSize( true, 256 * 1024 );
 				}
 
 				HostState_OnClientConnected();

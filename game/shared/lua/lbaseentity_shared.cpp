@@ -1051,7 +1051,18 @@ static int CBaseEntity_GetInternalVariable (lua_State *L) {
     {
       typedescription_t &desc = pMap->dataDesc[i];
 
-      if ( desc.fieldName == NULL || Q_stricmp( desc.fieldName, pszName ) != 0 )
+      // GMod answers a lookup by the datamap member name OR by the keyvalue
+      // name (typedescription_t::externalName, the DEFINE_KEYFIELD string).
+      // Doors are the caller that needs the external names: the interactive
+      // doors addon reads "opendir", "distance", "spawnpos", "noise1" and
+      // "closesound" -- all keyvalue names that no member is called -- and
+      // func_door setup multiplies the spawnpos answer, so nil there is a
+      // script error, not a graceful default.
+      bool bNameMatch =
+        ( desc.externalName != NULL && Q_stricmp( desc.externalName, pszName ) == 0 ) ||
+        ( desc.fieldName != NULL && Q_stricmp( desc.fieldName, pszName ) == 0 );
+
+      if ( !bNameMatch )
         continue;
 
       if ( desc.flags & FTYPEDESC_PTR )
@@ -1315,7 +1326,11 @@ static int CBaseEntity_GetModel (lua_State *L) {
 
   if ( pszModelName == NULL )
     pszModelName = "";
-  lua_pushstring(L, pszModelName);
+  char normalizedModelName[512];
+  Q_strncpy( normalizedModelName, pszModelName, sizeof( normalizedModelName ) );
+  Q_FixSlashes( normalizedModelName, '/' );
+  Q_strlower( normalizedModelName );
+  lua_pushstring(L, normalizedModelName);
   return 1;
 }
 
@@ -2197,6 +2212,23 @@ static int CBaseEntity_CreatedByMap (lua_State *L) {
 #else
   luaL_checkentity(L, 1);
   lua_pushboolean(L, false);
+#endif
+  return 1;
+}
+
+/* Map IDs follow the BSP parse order, independently of spawn order and cleanup
+** filters. Runtime entities have no map ID. Client replication is not supplied
+** by this server-side map registry. */
+#ifndef CLIENT_DLL
+extern int HL2SB_MapCreationID (CBaseEntity *pEntity);
+#endif
+static int CBaseEntity_MapCreationID (lua_State *L) {
+#ifndef CLIENT_DLL
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  lua_pushinteger(L, HL2SB_MapCreationID(pEntity));
+#else
+  luaL_checkentity(L, 1);
+  lua_pushinteger(L, -1);
 #endif
   return 1;
 }
@@ -5276,7 +5308,12 @@ static const typedescription_t *HL2SB_FindDataDescField (CBaseEntity *pEntity, c
   for ( datamap_t *pMap = pEntity->GetDataDescMap(); pMap != NULL; pMap = pMap->baseMap ) {
     for ( int i = 0; i < pMap->dataNumFields; ++i ) {
       const typedescription_t *pField = &pMap->dataDesc[ i ];
-      if ( pField->fieldName != NULL && !Q_strcmp( pField->fieldName, pszName ) )
+      // Same dual-name rule as the reader: the interactive doors addon writes
+      // "opendir", "distance" and "speed" -- keyvalue names -- through
+      // Entity:SetSaveValue, alongside member names like "m_eDoorState".
+      if ( pField->externalName != NULL && !Q_stricmp( pField->externalName, pszName ) )
+        return pField;
+      if ( pField->fieldName != NULL && !Q_stricmp( pField->fieldName, pszName ) )
         return pField;
     }
   }
@@ -5508,7 +5545,15 @@ static bool HL2SB_SetDataDescField (lua_State *L, CBaseEntity *pEntity, typedesc
   case FIELD_BOOLEAN:
     if ( !lua_isboolean( L, nValueArg ) && !lua_isnumber( L, nValueArg ) )
       return false;
-    *(int *)pMember = lua_toboolean( L, nValueArg ) ? 1 : 0;
+    *(bool *)pMember = lua_toboolean( L, nValueArg ) != 0;
+    return true;
+
+  case FIELD_STRING:
+  case FIELD_MODELNAME:
+  case FIELD_SOUNDNAME:
+    if ( lua_type( L, nValueArg ) != LUA_TSTRING )
+      return false;
+    *(string_t *)pMember = AllocPooledString( lua_tostring( L, nValueArg ) );
     return true;
 
   case FIELD_SHORT:
@@ -5559,9 +5604,7 @@ static bool HL2SB_SetDataDescField (lua_State *L, CBaseEntity *pEntity, typedesc
   }
 
   default:
-    // FIELD_STRING / FIELD_EHANDLE / FIELD_CUSTOM and friends: writing those
-    // needs the pooled-string and entity-handle plumbing, so refuse rather than
-    // half-do it.  GetSaveTable refuses to read them the same way.
+    // Unsupported field types must not be written with a guessed layout.
     return false;
   }
 }
@@ -6045,6 +6088,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"EyePos", CBaseEntity_EyePosition},
   {"FireBullets", CBaseEntity_FireBullets},
   {"CreatedByMap", CBaseEntity_CreatedByMap},
+  {"MapCreationID", CBaseEntity_MapCreationID},
   {"GetModelBounds", CBaseEntity_GetModelBounds},
   {"GetRenderFX", CBaseEntity_GetRenderFX},
   {"SetRenderFX", CBaseEntity_SetRenderFX},

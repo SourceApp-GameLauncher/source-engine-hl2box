@@ -119,6 +119,10 @@ IMPLEMENT_CLIENTCLASS_DT(C_HL2MP_Player, DT_HL2MP_Player, CHL2MP_Player)
 END_RECV_TABLE()
 
 BEGIN_PREDICTION_DATA( C_HL2MP_Player )
+	// Player body animation advances at render time, outside command prediction.
+	DEFINE_PRED_FIELD( m_nSequence, FIELD_INTEGER, FTYPEDESC_PRIVATE | FTYPEDESC_OVERRIDE | FTYPEDESC_NOERRORCHECK ),
+	DEFINE_PRED_FIELD( m_flPlaybackRate, FIELD_FLOAT, FTYPEDESC_PRIVATE | FTYPEDESC_OVERRIDE | FTYPEDESC_NOERRORCHECK ),
+	DEFINE_PRED_FIELD( m_flCycle, FIELD_FLOAT, FTYPEDESC_PRIVATE | FTYPEDESC_OVERRIDE | FTYPEDESC_NOERRORCHECK ),
 	DEFINE_PRED_FIELD( m_fIsWalking, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 END_PREDICTION_DATA()
 
@@ -416,16 +420,6 @@ extern ConVar hl2sb_anim_debug;
 extern bool HL2SB_GetClientSideAnimListEntry( C_BaseAnimating *pAnim, int *pCount, unsigned int *pFlags );
 extern int g_nHL2SBCycleZeroCount[4];
 
-// HL2SB: last cycle this client advanced to, and the sequence it belongs to. Used
-// to detect a data update / interpolator running the cycle backwards (see the
-// snap-back in C_HL2MP_Player::UpdateClientSideAnimation). The local player is
-// unique, so file-scope state is enough. -1 means "nothing latched yet".
-static float s_flHL2SBLastCycle = -1.0f;
-static int s_nHL2SBLastSeq = -1;
-static int s_nHL2SBRollbacks = 0;
-static float s_flHL2SBLastRollbackMagnitude = 0.0f;
-
-
 // HL2SB (2026-09-27): GMod's taunt state on the client -- the replicated clock
 // (act command), same formula as the server (reference ).
 bool C_HL2MP_Player::HL2SB_IsPlayingTaunt( void )
@@ -689,221 +683,31 @@ const QAngle &C_HL2MP_Player::EyeAngles()
 // Purpose: 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-// Purpose: HL2SB: the per-frame player animation state update.
-//
-// HL2MP never overrode this. The client therefore ran the player animstate
-// exactly ONCE - from AddEntity(), i.e. when the entity entered the client's
-// list, standing still - so the movement pose parameters (move_x / move_y on
-// GMod's anim models, move_yaw on HL2MP's own), the aim/head parameters and the
-// playback rate were never written again on the client. The legs kept the pose
-// they had at that instant and did not follow the keyboard, while the cycle on
-// its own kept running.
-//
-// C_CSPlayer and C_DODPlayer / C_Portal_Player all override this the same way,
-// and CS's ordering note applies here too: the cycle has to be advanced before
-// the animstate looks at it, or the upper body synchronizes against a stale
-// cycle.
+// Purpose: Run one client-owned player animation update per frame.
 //-----------------------------------------------------------------------------
 void C_HL2MP_Player::UpdateClientSideAnimation()
 {
-	// HL2SB (2026-09-27): advance the client-local gesture layers (GMod TE
-	// architecture).  This override runs for EVERY player - local and remote -
-	// through m_bClientSideAnimation, which is exactly the set of players whose
-	// locally-built gesture layers need their cycle driven.
-	HL2SB_ClientAdvanceGestures();
-
-	// HL2SB diagnostic: this override IS the client-side animation entry point for
-	// this entity (it deliberately does not chain to the base class, the same way
-	// C_CSPlayer does not), so the "was it called" counter has to live here.
-	const bool bLocalPlayer = ( C_BasePlayer::GetLocalPlayer() == this );
-	if ( bLocalPlayer )
-		++g_nHL2SBClientSideAnimUpdates;
-
-	// HL2SB (2026-10-14): the reference client's vehicle branch, verbatim shape
-	// (win64 C_GMOD_Player::UpdateClientSideAnimation): while m_hVehicle is
-	// valid it dispatches GM:PlayerDriveAnimate(ply) and SKIPS the animstate
-	// Update - no aim_yaw / aim_pitch / head / body pose writes happen while
-	// driving, which is why the reference rider's arms stay centred on the
-	// wheel no matter where the view points.  Everything else here (the cycle
-	// advance - the seated sequence must keep playing - and the bookkeeping)
-	// runs in both branches.
-	const bool bDriving = ( GetVehicle() != NULL );
-
-	// One anim-state step for this frame.  Unseated: the full Update (gait pose
-	// machinery; GM:UpdateAnimation is dispatched at the tail below, after it).
-	// Driving: only the seat ORIENTATION half of UpdateVehicleAnimation runs
-	// (bWriteSeatedPose=false) - the reference writes no pose while driving, but
-	// this fork's drawn body orientation is m_angRender and that layer is its
-	// single writer while seated; skipping the whole Update froze the body at
-	// the angle it had before entering (reported as "sits at the wrong angle").
-	// If the seat layer folds itself to NONE - m_hVehicle still set but the
-	// player already unparented and done with the seat pose (the dismount
-	// animation window) - the full Update runs instead, so the exit anim keeps
-	// the normal machinery exactly as it did before the vehicle branch existed.
-	auto AnimStep = [&]()
-	{
-		if ( !bDriving )
-		{
-			m_PlayerAnimState.Update();
-			return;
-		}
-		m_PlayerAnimState.UpdateVehicleAnimation( false );
-		if ( m_PlayerAnimState.GetVehicleAnimState() == CPlayerAnimState::VEHICLE_ANIM_NONE )
-			m_PlayerAnimState.Update();
-	};
-
-	float flCycleBefore = GetCycle();
-	float flInterval = 0.0f;
-
-	// HL2SB: the client owns the cycle of the local player (AGENTS.md 27). If a
-	// snapshot, the interpolation var map or a stale m_flOldCycle ran it backwards
-	// inside the same sequence, put it back before advancing: otherwise the visible
-	// pose stays pinned on the first frame of the sequence while the counters still
-	// show frames being processed. A wrap (0.99 -> 0.01) is forward motion, not a
-	// rollback.
-	if ( bLocalPlayer && s_flHL2SBLastCycle >= 0.0f && GetSequence() == s_nHL2SBLastSeq )
-	{
-		const float flNow = GetCycle();
-		const bool bWrapped = ( s_flHL2SBLastCycle > 0.95f ) && ( flNow < 0.05f );
-		if ( !bWrapped && flNow < s_flHL2SBLastCycle - 0.002f )
-		{
-			++s_nHL2SBRollbacks;
-			s_flHL2SBLastRollbackMagnitude = s_flHL2SBLastCycle - flNow;
-			SetCycle( s_flHL2SBLastCycle );
-			flCycleBefore = s_flHL2SBLastCycle;
-		}
-	}
-
-	if ( GetSequence() != -1 )
-	{
-		// HL2SB: keep the cycle out of the interpolation var map. The interpolator
-		// (C_BaseEntity::Interpolate -> m_iv_flCycle.Interpolate) writes *m_pValue
-		// directly, so it can undo FrameAdvance without ever passing through
-		// SetCycle(), and RemoveBaseAnimatingInterpolatedVars() is only reached
-		// through UpdateRelevantInterpolatedVars().
-		RemoveVar( &m_flCycle, false );
-
-		// move frame forward
-		flInterval = FrameAdvance( 0.0f );	// 0 means to use the time we last advanced instead of a constant
-
-		// HL2SB: keep the client's own animation bookkeeping in sync. The engine
-		// relies on C_BaseAnimating::PreDataUpdate() for both of these, and that
-		// function does not run for the local player, so both "restores" were
-		// actively destroying the cycle we just advanced:
-		//   PostDataUpdate() -> SetCycle( m_flOldCycle )        (m_flOldCycle stayed 0)
-		//   OnDataChanged()  -> if ( m_bClientSideFrameReset != m_bLastClientSideFrameReset )
-		//                           ResetClientsideFrame()      (-> SetCycle( 0 ))
-		// The log showed exactly that: "before=0.0000" on every single FrameAdvance
-		// call while the server's cycle advanced normally. See AGENTS.md 27.
-		m_flOldCycle = GetCycle();
-		m_bLastClientSideFrameReset = m_bClientSideFrameReset;
-
-		// HL2SB: and keep the sequence parity bookkeeping in sync as well.
-		// C_BaseAnimating::PostDataUpdate() calls m_iv_flCycle.Reset() when the
-		// parity mismatches. That Reset() is NOT what eats the cycle - it only
-		// clears the history and re-seeds it with the current value
-		// (interpolatedvar.h:739-752, verified). It is kept in sync anyway because
-		// the same mismatch also force-adds a transition layer.
-		ClientSideAnimationChanged();
-
-		// HL2SB: the shared animstate derives the feet/body yaw from
-		// GetAnimEyeAngles() (= m_angEyeAngles) - see ComputePoseParam_BodyYaw().
-		// The client only refreshed that in C_HL2MP_Player::PostThink(), which does not
-		// run for the local player, so the whole yaw chain ran on 0 and the visible
-		// body stayed at yaw 0 in third person (it did not follow the view).
-		// Measured before this fix: client local/eye = 35.1 but render/feet/goal = 0.0,
-		// while the server had all of them at 35.1.
-		//
-		// NOTE: EyeAngles(), NOT LocalEyeAngles(). The 21:47 log still showed
-		// "[HL2SB yaw/cl] local=27.2 eye=27.2 render=0.0 feet=0.0 goal=0.0" - the eye
-		// value printed there IS EyeAngles(), while LocalEyeAngles() fed 0 into
-		// m_angEyeAngles, so EstimateYaw() left the feet yaw at 0 and the body faced
-		// world yaw 0 ("in third person the character faces sideways and cannot be
-		// corrected", also visible on foot, not just in a vehicle).
-		if ( bLocalPlayer )
-			m_angEyeAngles = EyeAngles();
-
-		// HL2SB: driving branch - see AnimStep above (reference behaviour).
-		AnimStep();
-
-		// latch old values
-		OnLatchInterpolatedVariables( LATCH_ANIMATION_VAR );
-
-		// HL2SB: remember the cycle this client advanced to, so the next call can
-		// tell a rollback from a wrap.
-		if ( bLocalPlayer )
-		{
-			s_flHL2SBLastCycle = GetCycle();
-			s_nHL2SBLastSeq = GetSequence();
-		}
-	}
-	else
-	{
-		AnimStep();
-	}
-
-	// HL2SB diagnostic: did the cycle move, and how big was the step? "before ==
-	// after" with an interval of ~0 means m_flAnimTime was already curtime when we
-	// were called, i.e. the step is taken away again (see AGENTS.md 27).
-	if ( bLocalPlayer && hl2sb_anim_debug.GetBool() )
-	{
-		static float s_flNextFramePrint = 0.0f;
-		if ( gpGlobals->curtime >= s_flNextFramePrint )
-		{
-			s_flNextFramePrint = gpGlobals->curtime + 1.0f;
-
-			// HL2SB: is m_flCycle still in the interpolation var map? The
-			// interpolator writes *m_pValue directly, so that is the one writer
-			// SetCycle() cannot see.
-			int bCycleInMap = 0;
-			VarMapping_t *pVarMap = GetVarMapping();
-			if ( pVarMap )
-			{
-				for ( int i = 0; i < pVarMap->m_Entries.Count(); ++i )
-				{
-					if ( pVarMap->m_Entries[i].data == &m_flCycle )
-					{
-						bCycleInMap = 1;
-						break;
-					}
-				}
-			}
-
-			Msg( "[HL2SB anim/cl] FrameAdvance: before=%.4f interval=%.4f after=%.4f rate=%.2f animtime=%.3f curtime=%.3f oldcycle=%.4f fsr=%d/%d updates=%d inmap=%d ivcur=%.4f rb=%d rbmag=%.3f z0=%d z1=%d z2=%d\n",
-				 flCycleBefore, flInterval, GetCycle(), m_flPlaybackRate, m_flAnimTime, gpGlobals->curtime,
-				 m_flOldCycle, m_bClientSideFrameReset ? 1 : 0, m_bLastClientSideFrameReset ? 1 : 0,
-				 g_nHL2SBClientSideAnimUpdates, bCycleInMap, m_iv_flCycle.GetCurrent(),
-				 s_nHL2SBRollbacks, s_flHL2SBLastRollbackMagnitude,
-				 g_nHL2SBCycleZeroCount[0], g_nHL2SBCycleZeroCount[1], g_nHL2SBCycleZeroCount[2] );
-		}
-	}
-
-	// HL2SB (2026-10-14): the reference's per-frame Lua call is split by state:
-	//   no vehicle -> GM:UpdateAnimation (dispatched from inside the animstate
-	//                 Update after its aim writes, i.e. Lua last - same order
-	//                 here because this runs after every Update() above);
-	//   vehicle    -> GM:PlayerDriveAnimate ONLY (hook id 93; the reference
-	//                 skips animstate Update and UpdateAnimation entirely while
-	//                 driving).  The base gamemode's PlayerDriveAnimate is an
-	//                 empty function for HL2 vehicles (sandbox's version only
-	//                 serves the drive.* library entities), so the net effect is
-	//                 "nobody writes pose while driving" - which is what keeps
-	//                 the arms on the wheel.
-	if ( L != NULL )
-	{
-		if ( bDriving )
-		{
-			BEGIN_LUA_CALL_HOOK( "PlayerDriveAnimate" );
-				lua_pushplayer( L, this );
-			END_LUA_CALL_HOOK( 1, 0 );
-		}
-
-		BEGIN_LUA_CALL_HOOK( "UpdateAnimation" );
-			lua_pushplayer( L, this );
-			lua_pushvector( L, GetAbsVelocity() );
-			lua_pushnumber( L, GetSequenceGroundSpeed( GetSequence() ) );
-		END_LUA_CALL_HOOK( 3, 0 );
-	}
+    if ( !m_bClientSideAnimation )
+        return;
+    const bool localPlayer = this == C_BasePlayer::GetLocalPlayer();
+    if ( localPlayer )
+    {
+        ++g_nHL2SBClientSideAnimUpdates;
+        m_angEyeAngles = EyeAngles();
+    }
+    // Main sequence and poses are selected before advancing the current cycle.
+    m_PlayerAnimState.Update();
+    HL2SB_ClientAdvanceGestures();
+    if ( GetSequence() >= 0 )
+    {
+        RemoveVar( &m_flCycle, false );
+        OnLatchInterpolatedVariables( LATCH_ANIMATION_VAR );
+        FrameAdvance( 0.0f );
+        m_flOldCycle = GetCycle();
+        m_bLastClientSideFrameReset = m_bClientSideFrameReset;
+        ClientSideAnimationChanged();
+        InvalidateBoneCache();
+    }
 }
 
 void C_HL2MP_Player::AddEntity( void )
@@ -914,12 +718,6 @@ void C_HL2MP_Player::AddEntity( void )
 	vTempAngles[PITCH] = m_angEyeAngles[PITCH];
 
 	SetLocalAngles( vTempAngles );
-		
-	// HL2SB (2026-10-14): while driving the animstate Update is skipped here
-	// too - see bDriving in UpdateClientSideAnimation() (the reference writes no
-	// player pose parameters while a vehicle handle is valid).
-	if ( GetVehicle() == NULL )
-		m_PlayerAnimState.Update();
 
 	// Zero out model pitch, blending takes care of all of it.
 	SetLocalAnglesDim( X_INDEX, 0 );

@@ -38,6 +38,25 @@ static CUtlVector<IServerNetworkable*> g_DeleteList;
 CGlobalEntityList gEntList;
 CBaseEntityList *g_pEntityList = &gEntList;
 
+#ifdef LUA_SDK
+static void HL2SB_InvalidateLuaEntityCache( CBaseEntity *pEntity )
+{
+	if ( L == NULL )
+		return;
+
+	lua_checkstack( L, 8 );
+	lua_getglobal( L, "InvalidateInternalEntityCache" );
+	if ( !lua_isfunction( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+
+	lua_pushboolean( L, pEntity != NULL && pEntity->IsPlayer() );
+	luasrc_pcall( L, 1, 0, 0 );
+}
+#endif
+
 class CAimTargetManager : public IEntityListener
 {
 public:
@@ -1110,6 +1129,9 @@ void CGlobalEntityList::OnAddEntity( IHandleEntity *pEnt, CBaseHandle handle )
 	
 	// NOTE: Must be a CBaseEntity on server
 	Assert( pBaseEnt );
+#ifdef LUA_SDK
+	HL2SB_InvalidateLuaEntityCache( pBaseEnt );
+#endif
 	//DevMsg(2,"Created %s\n", pBaseEnt->GetClassname() );
 	for ( i = m_entityListeners.Count()-1; i >= 0; i-- )
 	{
@@ -1148,6 +1170,9 @@ void CGlobalEntityList::NotifyCreateEntity( CBaseEntity *pEnt )
 	if ( !pEnt )
 		return;
 
+#ifdef LUA_SDK
+	HL2SB_InvalidateLuaEntityCache( pEnt );
+#endif
 	//DevMsg(2,"Deleted %s\n", pBaseEnt->GetClassname() );
 	for ( int i = m_entityListeners.Count()-1; i >= 0; i-- )
 	{
@@ -1181,6 +1206,10 @@ void CGlobalEntityList::NotifyRemoveEntity( CBaseHandle hEnt )
 	{
 		m_entityListeners[i]->OnEntityDeleted( pBaseEnt );
 	}
+
+#ifdef LUA_SDK
+	HL2SB_InvalidateLuaEntityCache( pBaseEnt );
+#endif
 }
 
 

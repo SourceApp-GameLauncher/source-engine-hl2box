@@ -2082,6 +2082,22 @@ static int CBasePlayer_SteamID (lua_State *L) {
   return 1;
 }
 
+// Persistent ownership requires a real account ID; entity slots are recycled.
+// GMod returns -1 when the player's Steam ID cannot be obtained.
+static int CBasePlayer_AccountID (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+
+  CSteamID steamID;
+  if ( pPlayer->GetSteamID( &steamID ) )
+  {
+    lua_pushinteger( L, (lua_Integer)steamID.GetAccountID() );
+    return 1;
+  }
+
+  lua_pushinteger( L, -1 );
+  return 1;
+}
+
 /*
 ** HL2SB GMod compat: the usergroup suite behind Player:IsAdmin().
 **
@@ -2815,6 +2831,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"SetWeaponColor", CBasePlayer_SetWeaponColor},
   {"SteamID", CBasePlayer_SteamID},
   {"SteamID64", CBasePlayer_SteamID64},
+  {"AccountID", CBasePlayer_AccountID},
   {"IsAdmin", CBasePlayer_IsAdmin},
   {"IsSuperAdmin", CBasePlayer_IsSuperAdmin},
   {"IsUserGroup", CBasePlayer_IsUserGroup},

@@ -897,6 +897,13 @@ void C_BaseAnimating::UpdateRelevantInterpolatedVars()
 void C_BaseAnimating::AddBaseAnimatingInterpolatedVars()
 {
 	AddVar( m_flEncodedController, &m_iv_flEncodedController, LATCH_ANIMATION_VAR, true );
+	// Player poses and cycle have no network history: each client owns them.
+	if ( IsPlayer() && m_bClientSideAnimation )
+	{
+		RemoveVar( m_flPoseParameter, false );
+		RemoveVar( &m_flCycle, false );
+		return;
+	}
 	AddVar( m_flPoseParameter, &m_iv_flPoseParameter, LATCH_ANIMATION_VAR, true );
 	
 	int flags = LATCH_ANIMATION_VAR;

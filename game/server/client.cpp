@@ -666,10 +666,8 @@ public:
 //-----------------------------------------------------------------------------
 void CPointServerCommand::InputCommand( inputdata_t& inputdata )
 {
-	if ( !inputdata.value.String()[0] )
-		return;
-
-	engine->ServerCommand( UTIL_VarArgs( "%s\n", inputdata.value.String() ) );
+	// GMod accepts this input without executing map-supplied console commands.
+	(void)inputdata;
 }
 
 BEGIN_DATADESC( CPointServerCommand )

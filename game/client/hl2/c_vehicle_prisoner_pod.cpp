@@ -209,6 +209,7 @@ void HL2SB_PodSetVehicleClass( CBaseEntity *pEntity, const char *pszClass )
 //-----------------------------------------------------------------------------
 C_PropVehiclePrisonerPod::C_PropVehiclePrisonerPod( void )
 {
+	SetClassname( "prop_vehicle_prisoner_pod" );
 	// HL2SB (sbrust): GMod's DT defaults (same trio as the server pod file).
 	m_bThirdPersonMode = false;
 	m_flCameraDistance = 0.0f;

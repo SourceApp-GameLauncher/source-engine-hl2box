@@ -965,48 +965,48 @@ void CHudKillFeed::FlushPickups( void )
 			continue;
 		}
 
-		// On expiry dispatch anyway with whatever we have: a nil entity makes
-		// the Lua adapter take its 0.2s active-weapon retry / item-row fallback
-		// ("the user always wants a notification").
 		m_PendingPickups.Remove( i );
+		if ( p.bWeapon && pWeapon == NULL )
+			continue;
 		PushPickupHook( p.iUserID, p.szItem, p.iAmount, p.bWeapon, pWeapon );
 	}
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Push the five-arg HUDItemPickedUp call (hook name by GMod id).
+// Purpose: Deliver the original pickup hooks with their native arguments.
 //-----------------------------------------------------------------------------
 void CHudKillFeed::PushPickupHook( int iUserID, const char *pszItem, int iAmount, bool bWeapon, C_BaseCombatWeapon *pPickupWeapon )
 {
 	if ( !cl_killfeed_lua.GetBool() )
 		return;
 
-	// HL2SB (2026-10-08): the raw event moved off the GMod name.  It used to
-	// dispatch as "HUDItemPickedUp" with these five raw values, which collided
-	// with the wiki contract of that name (one string) - addons hooking it saw
-	// a userid as the first argument.  The Lua adapter now receives this
-	// fork-private event and re-dispatches HUDItemPickedUp /
-	// HUDAmmoPickedUp / HUDWeaponPickedUp with their GMod signatures.
-	const char *pszHookName = "HL2SB_ItemPickup";
-	if ( pszHookName == NULL )
+	C_BasePlayer *pLocal = C_BasePlayer::GetLocalPlayer();
+	if ( pLocal == NULL || engine->GetPlayerForUserID( iUserID ) != pLocal->entindex() )
 		return;
 
-	BEGIN_LUA_CALL_HOOK( pszHookName );
-		lua_pushinteger( L, iUserID );
-		lua_pushstring( L, pszItem );
-		lua_pushinteger( L, iAmount );
-		// GMod's GM:HUDWeaponPickedUp receives the weapon ENTITY; the event
-		// only carries the classname, so it comes from the networked inventory.
-		if ( pPickupWeapon )
+	if ( bWeapon )
+	{
+		if ( pPickupWeapon == NULL )
+			return;
+		BEGIN_LUA_CALL_HOOK( "HUDWeaponPickedUp" );
 			lua_pushentity( L, pPickupWeapon );
-		else
-			lua_pushnil( L );
-		lua_pushboolean( L, bWeapon );
-	// Five values are pushed above (userid, item, amount, entity, weaponFlag).
-	// This was 3 when the weapon entity was added on 2026-09-26: pcall then
-	// grabbed the EVENT NAME STRING as the function - "attempt to call a
-	// string value" on every pickup, and the Lua handler never ran at all.
-	END_LUA_CALL_HOOK( 5, 0 );
+		END_LUA_CALL_HOOK( 1, 0 );
+		return;
+	}
+
+	const int nLength = Q_strlen( pszItem );
+	if ( nLength > 5 && !Q_stricmp( pszItem + nLength - 5, "_ammo" ) )
+	{
+		BEGIN_LUA_CALL_HOOK( "HUDAmmoPickedUp" );
+			lua_pushlstring( L, pszItem, nLength - 5 );
+			lua_pushinteger( L, iAmount );
+		END_LUA_CALL_HOOK( 2, 0 );
+		return;
+	}
+
+	BEGIN_LUA_CALL_HOOK( "HUDItemPickedUp" );
+		lua_pushstring( L, pszItem );
+	END_LUA_CALL_HOOK( 1, 0 );
 }
 
 #endif	// LUA_SDK

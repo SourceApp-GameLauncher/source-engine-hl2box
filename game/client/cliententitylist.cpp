@@ -12,6 +12,10 @@
 //-----------------------------------------------------------------------------
 #include "cbase.h"
 
+#ifdef LUA_SDK
+#include "luamanager.h"
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -22,6 +26,25 @@
 // Create interface
 static CClientEntityList s_EntityList;
 CBaseEntityList *g_pEntityList = &s_EntityList;
+
+#if defined ( LUA_SDK )
+static void HL2SB_InvalidateLuaEntityCache( C_BaseEntity *pEntity )
+{
+	if ( L == NULL )
+		return;
+
+	lua_checkstack( L, 8 );
+	lua_getglobal( L, "InvalidateInternalEntityCache" );
+	if ( !lua_isfunction( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+
+	lua_pushboolean( L, pEntity != NULL && pEntity->IsPlayer() );
+	luasrc_pcall( L, 1, 0, 0 );
+}
+#endif
 
 // Expose list to engine
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CClientEntityList, IClientEntityList, VCLIENTENTITYLIST_INTERFACE_VERSION, s_EntityList );
@@ -333,6 +356,9 @@ void CClientEntityList::OnAddEntity( IHandleEntity *pEnt, CBaseHandle handle )
 	C_BaseEntity *pBaseEntity = pUnknown->GetBaseEntity();
 	if ( pBaseEntity )
 	{
+		#if defined ( LUA_SDK )
+		HL2SB_InvalidateLuaEntityCache( pBaseEntity );
+		#endif
 		pCache->m_BaseEntitiesIndex = m_BaseEntities.AddToTail( pBaseEntity );
 
 		if ( pBaseEntity->ObjectCaps() & FCAP_SAVE_NON_NETWORKABLE  )
@@ -392,6 +418,10 @@ void CClientEntityList::OnRemoveEntity( IHandleEntity *pEnt, CBaseHandle handle 
 		{
 			m_entityListeners[i]->OnEntityDeleted( pBaseEntity );
 		}
+
+		#if defined ( LUA_SDK )
+		HL2SB_InvalidateLuaEntityCache( pBaseEntity );
+		#endif
 	}
 
 	if ( pCache->m_BaseEntitiesIndex != m_BaseEntities.InvalidIndex() )

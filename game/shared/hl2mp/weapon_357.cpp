@@ -37,9 +37,8 @@ public:
 	DECLARE_NETWORKCLASS(); 
 	DECLARE_PREDICTABLE();
 
-#ifndef CLIENT_DLL
 	DECLARE_ACTTABLE();
-#endif
+
 
 private:
 	
@@ -58,7 +57,6 @@ LINK_ENTITY_TO_CLASS( weapon_357, CWeapon357 );
 PRECACHE_WEAPON_REGISTER( weapon_357 );
 
 
-#ifndef CLIENT_DLL
 acttable_t CWeapon357::m_acttable[] = 
 {
 	// ------------------------------------------------------------------
@@ -114,8 +112,6 @@ acttable_t CWeapon357::m_acttable[] =
 
 
 IMPLEMENT_ACTTABLE( CWeapon357 );
-
-#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Constructor

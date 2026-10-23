@@ -1413,7 +1413,6 @@ END_PREDICTION_DATA()
 
 #endif
 
-#ifndef CLIENT_DLL
 acttable_t	CWeaponRPG::m_acttable[] =
 {
 	// ------------------------------------------------------------------
@@ -1474,8 +1473,6 @@ acttable_t	CWeaponRPG::m_acttable[] =
 };
 
 IMPLEMENT_ACTTABLE(CWeaponRPG);
-
-#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

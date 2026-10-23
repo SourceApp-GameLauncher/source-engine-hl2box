@@ -4768,6 +4768,7 @@ private:
 	doorCheck_e	GetOpenState( void );
 
 	void	InputSetRotationDistance ( inputdata_t &inputdata );			// Set the degree difference between open and closed
+	void	InputMoveToRotationDistance ( inputdata_t &inputdata );		// Set the degree difference and start moving there
 
 	void	CalcOpenAngles ( void );		// Subroutine to setup the m_angRotation QAngles based on the m_flDistance variable
 
@@ -4805,6 +4806,7 @@ BEGIN_DATADESC(CPropDoorRotating)
 	DEFINE_FIELD( m_angGoal, FIELD_VECTOR ),
 	DEFINE_FIELD( m_hDoorBlocker, FIELD_EHANDLE ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetRotationDistance", InputSetRotationDistance ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "MoveToRotationDistance", InputMoveToRotationDistance ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetSpeed", InputSetSpeed ),
 	//m_vecForwardBoundsMin
 	//m_vecForwardBoundsMax
@@ -5466,11 +5468,23 @@ int CPropDoorRotating::DrawDebugTextOverlays(void)
 void CPropDoorRotating::InputSetRotationDistance( inputdata_t &inputdata )
 {
 	m_flDistance = inputdata.value.Float();
-	
+
 	// Recalculate our open volume
 	CalcOpenAngles();
 	CalculateDoorVolume( GetLocalAngles(), m_angRotationOpenForward, &m_vecForwardBoundsMin, &m_vecForwardBoundsMax );
 	CalculateDoorVolume( GetLocalAngles(), m_angRotationOpenBack, &m_vecBackBoundsMin, &m_vecBackBoundsMax );
+}
+
+// GMod compat: applies the new rotation distance and starts (or retargets) the
+// opening move right away, so a script can drive the door to an arbitrary
+// angle by firing the input again with a new value.  The interactive doors
+// addon smooths its doors exactly this way, one Fire per tick.  Door state is
+// deliberately left alone here -- scripts that drive this input per tick also
+// manage the door state field themselves.
+void CPropDoorRotating::InputMoveToRotationDistance( inputdata_t &inputdata )
+{
+	InputSetRotationDistance( inputdata );
+	BeginOpening( NULL );
 }
 
 // Debug sphere
