@@ -165,10 +165,6 @@ void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 		}
 	}
 
-	const int worldModel = GetWorldModelIndex();
-	if ( worldModel > 0 && worldModel != GetModelIndex() )
-		SetModelIndex( worldModel );
-
 	UpdateVisibility();
 
 	m_iOldState = m_iState;
@@ -711,10 +707,17 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 //-----------------------------------------------------------------------------
 int C_BaseCombatWeapon::CalcOverrideModelIndex()
 {
-    // The weapon entity supplies world attachments even while its owner's
-    // separate viewmodel is visible. Prediction must preserve that model too.
-    const int worldModel = GetWorldModelIndex();
-    return worldModel > 0 ? worldModel : BaseClass::CalcOverrideModelIndex();
+	C_BasePlayer *localplayer = C_BasePlayer::GetLocalPlayer();
+	if ( localplayer &&
+		localplayer == GetOwner() &&
+		ShouldDrawLocalPlayerViewModel() )
+	{
+		return BaseClass::CalcOverrideModelIndex();
+	}
+	else
+	{
+		return GetWorldModelIndex();
+	}
 }
 
 //-----------------------------------------------------------------------------
