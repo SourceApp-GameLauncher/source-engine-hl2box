@@ -112,6 +112,10 @@ public:
 	// Lua taunt camera and IsPlayingTaunt() key off this on the client.
 	CNetworkVar( float, m_flHL2SBTauntEnd );
 
+	CNetworkVar( int, m_iHL2SBPlayerClassID );
+	int			HL2SB_GetPlayerClassID( void ) const { return m_iHL2SBPlayerClassID; }
+	void			HL2SB_SetPlayerClassID( int nClassID ) { m_iHL2SBPlayerClassID = nClassID; }
+
 	// HL2SB (2026-09-27): recv side of GMod's hands handle (server sends the
 	// gmod_hands entity; GM:PostDrawViewModel draws it from GetHands()).
 	CNetworkHandle( C_BaseEntity, m_hHands );

@@ -159,6 +159,7 @@ IMPLEMENT_SERVERCLASS_ST(CHL2MP_Player, DT_HL2MP_Player)
 	// float through IsPlayingTaunt() to run the taunt camera and gate the act
 	// command, so it has to replicate.
 	SendPropFloat( SENDINFO( m_flHL2SBTauntEnd ) ),
+	SendPropInt( SENDINFO( m_iHL2SBPlayerClassID ), 16, SPROP_UNSIGNED ),
 	// HL2SB (2026-09-27): the hands entity handle.  GMod's datadesc prop is
 	// "m_Hands"; this fork's pair is self-consistently named m_hHands (nothing
 	// external parses the datatable, so only the pair matching matters).
@@ -335,6 +336,7 @@ CHL2MP_Player::CHL2MP_Player() : m_PlayerAnimState( this )
 	m_flHL2SBRunSpeed = 400.0f;
 	m_flHL2SBSlowWalkSpeed = 100.0f;
 	m_flHL2SBJumpPower = 200.0f;
+	m_iHL2SBPlayerClassID = 0;
 
 	// HL2SB: stored-only GMod knobs (GMod defaults).
 	m_flHL2SBCrouchedWalkSpeed = 0.34f;
@@ -651,87 +653,28 @@ void CHL2MP_Player::SetPlayerTeamModel( void )
 
 void CHL2MP_Player::SetPlayerModel( void )
 {
-	const char *szModelName = NULL;
-	const char *pszCurrentModelName = modelinfo->GetModelName( GetModel());
+    // cl_playermodel stores the registered name; model paths are resolved locally.
+    const char *requested = engine->GetClientConVarValue( entindex(), "cl_playermodel" );
+    const HL2SB_ModelConfig_t *config = requested && requested[0]
+        ? HL2SB_GetModelConfigByName( requested ) : NULL;
+    const char *model = config ? config->szPlayerModel : requested;
+    if ( model == NULL || model[0] == '\0' || !ValidatePlayerModel( model ) )
+        model = HL2SB_DEFAULT_PLAYERMODEL;
 
-	szModelName = engine->GetClientConVarValue( engine->IndexOfEdict( edict() ), "cl_playermodel" );
-
+    if ( CBaseEntity::PrecacheModel( model ) <= 0 )
+    {
+        model = HL2SB_DEFAULT_PLAYERMODEL;
+        CBaseEntity::PrecacheModel( model );
+    }
+    m_iModelType = Q_stristr( model, "models/player/human" ) ? TEAM_REBELS : TEAM_COMBINE;
+    SetModel( model );
+    SetupPlayerSoundsByModel( model );
 #ifdef HL2SB
-	// Precache the model before using it
-	if ( szModelName && szModelName[0] )
-	{
-		int idx = modelinfo->GetModelIndex( szModelName );
-		if ( idx == -1 )
-		{
-			Msg( "[HL2SB] Precaching model: %s\n", szModelName );
-			CBaseEntity::PrecacheModel( szModelName );
-		}
-	}
+    HL2SB_ModelManager_ApplyAppearance( this );
 #endif
-
-	if ( ValidatePlayerModel( szModelName ) == false )
-	{
-		char szReturnString[512];
-
-		if ( ValidatePlayerModel( pszCurrentModelName ) == false )
-		{
-			pszCurrentModelName = HL2SB_DEFAULT_PLAYERMODEL;
-		}
-
-		Q_snprintf( szReturnString, sizeof (szReturnString ), "cl_playermodel %s\n", pszCurrentModelName );
-		engine->ClientCommand ( edict(), szReturnString );
-
-		szModelName = pszCurrentModelName;
-	}
-
-	// HL2SB (2026-09-27): no per-team override any more - GMod semantics, the
-	// convar wins.  m_iModelType only classifies the model for the sound prefix.
-	if ( Q_strlen( szModelName ) == 0 )
-	{
-		szModelName = HL2SB_DEFAULT_PLAYERMODEL;
-	}
-
-	if ( Q_stristr( szModelName, "models/player/human") )
-	{
-		m_iModelType = TEAM_REBELS;
-	}
-	else
-	{
-		m_iModelType = TEAM_COMBINE;
-	}
-
-	int modelIndex = modelinfo->GetModelIndex( szModelName );
-
-	if ( modelIndex == -1 )
-	{
-		szModelName = HL2SB_DEFAULT_PLAYERMODEL;
-		m_iModelType = TEAM_COMBINE;
-
-		char szReturnString[512];
-
-		Q_snprintf( szReturnString, sizeof (szReturnString ), "cl_playermodel %s\n", szModelName );
-		engine->ClientCommand ( edict(), szReturnString );
-	}
-
-	SetModel( szModelName );
-	SetupPlayerSoundsByModel( szModelName );
-
-#ifdef HL2SB
-	// HL2SB: and then the appearance - cl_playerbodygroups / cl_playerskin /
-	// cl_playercolor / cl_weaponcolor, written by the player model selector's
-	// Bodygroups and Colors tabs.
-	//
-	// It has to be HERE, and AFTER SetModel(): SetModel() resets the bodygroups to
-	// the model's own defaults.  Nothing in the tree called
-	// HL2SB_ApplyClientAppearance() before (the manager entry points it hangs off,
-	// HL2SB_ModelManager_PlayerSpawn / _ClientSettingsChanged, are never called), so
-	// the sliders only ever changed the preview - the world model kept its hat even
-	// after respawning (2026-09-17, user report).
-	HL2SB_ModelManager_ApplyAppearance( this );
-#endif
-
-	m_flNextModelChangeTime = gpGlobals->curtime + MODEL_CHANGE_INTERVAL;
+    m_flNextModelChangeTime = gpGlobals->curtime + MODEL_CHANGE_INTERVAL;
 }
+
 
 void CHL2MP_Player::SetupPlayerSoundsByModel( const char *pModelName )
 {

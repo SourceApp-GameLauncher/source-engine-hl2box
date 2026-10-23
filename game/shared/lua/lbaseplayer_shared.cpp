@@ -53,6 +53,7 @@ extern bool HL2SB_GetWorldClickDirection( Vector &direction, const CViewSetup *s
 // HL2SB: Player:IsSprinting reads the live CHL2_Player::m_fIsSprinting state
 // (CHL2MP_Player derives from CHL2_Player).
 #include "hl2_player.h"
+#include "hl2mp_player.h"
 // HL2SB: Player:Ping reads the server-side player resource
 // (LevelInit creates the player_manager entity, see gameinterface.cpp).
 #include "player_resource.h"
@@ -1489,6 +1490,58 @@ static int CBasePlayer_WeaponCount (lua_State *L) {
 static int CBasePlayer_Alive (lua_State *L) {
   lua_pushboolean(L, lua_toplayer(L, 1)->IsAlive());
   return 1;
+}
+
+static int CBasePlayer_GetClassID (lua_State *L) {
+#ifdef CLIENT_DLL
+  C_HL2MP_Player *pPlayer = dynamic_cast<C_HL2MP_Player *>(luaL_checkplayer(L, 1));
+#else
+  CHL2MP_Player *pPlayer = dynamic_cast<CHL2MP_Player *>(luaL_checkplayer(L, 1));
+#endif
+  lua_pushinteger(L, pPlayer ? pPlayer->HL2SB_GetPlayerClassID() : 0);
+  return 1;
+}
+
+static int CBasePlayer_SetClassID (lua_State *L) {
+  int nClassID = clamp(luaL_checkint(L, 2), 0, 0xffff);
+#ifdef CLIENT_DLL
+  C_HL2MP_Player *pPlayer = dynamic_cast<C_HL2MP_Player *>(luaL_checkplayer(L, 1));
+#else
+  CHL2MP_Player *pPlayer = dynamic_cast<CHL2MP_Player *>(luaL_checkplayer(L, 1));
+#endif
+  if (pPlayer) pPlayer->HL2SB_SetPlayerClassID(nClassID);
+  return 0;
+}
+
+static int CBasePlayer_InstallDataTable (lua_State *L) {
+  luaL_checkplayer(L, 1);
+  return 0;
+}
+
+// Spawn hooks receive the base Player metatable as well as the HL2MP one.
+// Both must resolve the same replicated hands handle.
+static int CBasePlayer_GetHands (lua_State *L) {
+#ifdef CLIENT_DLL
+  C_HL2MP_Player *pPlayer = dynamic_cast<C_HL2MP_Player *>(luaL_checkplayer(L, 1));
+#else
+  CHL2MP_Player *pPlayer = dynamic_cast<CHL2MP_Player *>(luaL_checkplayer(L, 1));
+#endif
+  if (pPlayer && pPlayer->HL2SB_GetHandsEntity())
+    lua_pushentity(L, pPlayer->HL2SB_GetHandsEntity());
+  else
+    lua_pushnil(L);
+  return 1;
+}
+
+static int CBasePlayer_SetHands (lua_State *L) {
+#ifdef CLIENT_DLL
+  C_HL2MP_Player *pPlayer = dynamic_cast<C_HL2MP_Player *>(luaL_checkplayer(L, 1));
+#else
+  CHL2MP_Player *pPlayer = dynamic_cast<CHL2MP_Player *>(luaL_checkplayer(L, 1));
+#endif
+  if (pPlayer)
+    pPlayer->HL2SB_SetHandsEntity(lua_isnoneornil(L, 2) ? NULL : lua_toentity(L, 2));
+  return 0;
 }
 
 static int CBasePlayer_GetHull (lua_State *L) {
@@ -2949,6 +3002,11 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"WeaponCount", CBasePlayer_WeaponCount},
   {"Alive", CBasePlayer_Alive},
   {"IsAlive", CBasePlayer_Alive},
+  {"GetClassID", CBasePlayer_GetClassID},
+  {"SetClassID", CBasePlayer_SetClassID},
+  {"InstallDataTable", CBasePlayer_InstallDataTable},
+  {"GetHands", CBasePlayer_GetHands},
+  {"SetHands", CBasePlayer_SetHands},
   {"GetHull", CBasePlayer_GetHull},
   {"SetHull", CBasePlayer_SetHull},
   {"GetHullDuck", CBasePlayer_GetHullDuck},

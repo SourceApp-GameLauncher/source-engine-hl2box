@@ -2182,7 +2182,7 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 	// other dofolder call site.
 	//-----------------------------------------------------------------------------
 	static const char *s_pHL2SBFirst[] = {
-		"hook.lua", "net.lua", "timer.lua", "concommand.lua",
+		"baseclass.lua", "hook.lua", "net.lua", "timer.lua", "concommand.lua",
 		"player_manager.lua", "player.lua", "entity_iter.lua",
 		"saverestore.lua", "scripted_ents.lua", "weapons.lua",
 		"duplicator.lua", "numpad.lua", "construct.lua", "constraint.lua",

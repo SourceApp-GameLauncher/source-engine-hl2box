@@ -1435,6 +1435,13 @@ void CHLClient::Shutdown( void )
 	TermSmokeFogOverlay();
 	view->Shutdown();
 	g_pParticleSystemMgr->UncacheAllParticleSystems();
+	// ModelImage owns VGUI texture IDs and material pointers outside the
+	// material system. Discard them before the map unload invalidates materials.
+	{
+		extern void HL2SB_InvalidateModelImages();
+		HL2SB_InvalidateModelImages();
+	}
+
 	UncacheAllMaterials();
 
 	IGameSystem::ShutdownAllSystems();
@@ -2179,6 +2186,13 @@ void CHLClient::LevelShutdown( void )
 	// character loadout screen that can be viewed when we're not connected to a server
 	g_pParticleSystemMgr->UncacheAllParticleSystems();
 #endif
+	// ModelImage owns VGUI texture IDs and material pointers outside the
+	// material system. Discard them before the map unload invalidates materials.
+	{
+		extern void HL2SB_InvalidateModelImages();
+		HL2SB_InvalidateModelImages();
+	}
+
 	UncacheAllMaterials();
 
 #ifdef _XBOX

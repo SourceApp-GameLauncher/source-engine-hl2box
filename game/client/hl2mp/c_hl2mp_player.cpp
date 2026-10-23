@@ -115,6 +115,7 @@ IMPLEMENT_CLIENTCLASS_DT(C_HL2MP_Player, DT_HL2MP_Player, CHL2MP_Player)
 	RecvPropFloat( RECVINFO( m_flHL2SBDuckSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBUnDuckSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBTauntEnd ) ),
+	RecvPropInt( RECVINFO( m_iHL2SBPlayerClassID ) ),
 	RecvPropEHandle( RECVINFO( m_hHands ) ),
 END_RECV_TABLE()
 

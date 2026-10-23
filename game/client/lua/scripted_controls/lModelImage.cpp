@@ -217,7 +217,10 @@ bool LoadImage(const std::string &path, IconImage &image)
     bool found = false;
     IMaterialVar *baseTexture = material->FindVar("$basetexture", &found, false);
     if (!found || !baseTexture || !baseTexture->IsTexture() || IsErrorTexture(baseTexture->GetTextureValue())) return false;
-    if (image.texture < 0) image.texture = vgui::surface()->CreateNewTextureID(true);
+    // VGUI's writable texture path installs its own pixel regenerator. Image
+    // materials already own one, which must survive rebinding and map changes.
+    if (image.texture < 0 || !vgui::surface()->IsTextureIDValid(image.texture))
+        image.texture = vgui::surface()->CreateNewTextureID(false);
     g_pMatSystemSurface->DrawSetTextureMaterial(image.texture, material);
     image.material = material;
     return true;
@@ -237,6 +240,18 @@ void LModelImage::Paint()
     }
     if (m_Path.empty()) return;
     IconImage &image = s_Images[m_Path];
+    if (image.material)
+    {
+        bool found = false;
+        IMaterialVar *baseTexture = image.material->FindVar("$basetexture", &found, false);
+        if (image.material->IsErrorMaterial() || !found || !baseTexture ||
+            !baseTexture->IsTexture() || IsErrorTexture(baseTexture->GetTextureValue()) ||
+            image.texture < 0 || !vgui::surface()->IsTextureIDValid(image.texture))
+        {
+            image.material = NULL;
+            image.failed = false;
+        }
+    }
     if (m_Force)
     {
         image.failed = false;
@@ -415,6 +430,18 @@ void HL2SB_ProcessModelImages()
         image.failed = result != ICON_GENERATED || !LoadImage(job.path, image);
         break;
     }
+}
+
+void HL2SB_InvalidateModelImages()
+{
+    s_Jobs.clear();
+    for (std::map<std::string, IconImage>::iterator it = s_Images.begin(); it != s_Images.end(); ++it)
+    {
+        int texture = it->second.texture;
+        if (texture >= 0 && vgui::surface()->IsTextureIDValid(texture))
+            vgui::surface()->DestroyTextureID(texture);
+    }
+    s_Images.clear();
 }
 
 void HL2SB_RegisterModelImage(lua_State *state)

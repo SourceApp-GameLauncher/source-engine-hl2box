@@ -183,6 +183,10 @@ public:
 	// is `curtime <= end && end != curtime`, and the act camera keys off it.
 	CNetworkVar( float, m_flHL2SBTauntEnd );
 
+	CNetworkVar( int, m_iHL2SBPlayerClassID );
+	int			HL2SB_GetPlayerClassID( void ) const { return m_iHL2SBPlayerClassID; }
+	void			HL2SB_SetPlayerClassID( int nClassID ) { m_iHL2SBPlayerClassID = nClassID; }
+
 	// HL2SB (2026-09-27): GMod's hands handle.  reference: a replicated
 	// EHandle in the player datadesc ("m_Hands", right next to
 	// m_PlayerColor/m_WeaponColor); GetHands/SetHands resolve/write it, the
