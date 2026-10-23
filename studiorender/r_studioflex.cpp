@@ -647,10 +647,6 @@ ITexture* CStudioRender::RenderGlintTexture( const eyeballstate_t *pState,
 	bool bPrevClippingEnabled = pRenderContext->EnableClipping( false );
 	bool bInFlashlightMode = pRenderContext->GetFlashlightMode();
 
-	if ( bInFlashlightMode )
-	{
-		DisableScissor();
-	}
 	pRenderContext->ClearColor4ub( 0, 0, 0, 0 );
 	pRenderContext->ClearBuffers( true, false, false );
 

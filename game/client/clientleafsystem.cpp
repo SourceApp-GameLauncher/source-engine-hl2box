@@ -932,6 +932,23 @@ inline bool CClientLeafSystem::ShouldRenderableReceiveShadow( ClientRenderHandle
 	if( !( renderable.m_Flags & ( RENDER_FLAGS_BRUSH_MODEL | RENDER_FLAGS_STATIC_PROP | RENDER_FLAGS_STUDIO_MODEL ) ) )
 		return false;
 
+	if ( nShadowFlags & SHADOW_FLAGS_FLASHLIGHT )
+	{
+		// View models and their hands use a separate camera projection.
+		if ( IsViewModelRenderGroup( (RenderGroup_t)renderable.m_RenderGroup ) )
+			return false;
+
+		IClientUnknown *pUnknown = renderable.m_pRenderable->GetIClientUnknown();
+		C_BaseEntity *pEntity = pUnknown != NULL ? pUnknown->GetBaseEntity() : NULL;
+		for ( int depth = 0; pEntity != NULL && depth < 64; ++depth )
+		{
+			C_BaseAnimating *pAnimating = pEntity->GetBaseAnimating();
+			if ( pAnimating != NULL && pAnimating->IsViewModel() )
+				return false;
+			pEntity = pEntity->GetMoveParent();
+		}
+	}
+
 	return renderable.m_pRenderable->ShouldReceiveProjectedTextures( nShadowFlags );
 }
 

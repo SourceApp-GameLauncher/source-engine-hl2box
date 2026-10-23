@@ -799,8 +799,12 @@ void C_HL2MP_Player::AddEntity( void )
 
 ShadowType_t C_HL2MP_Player::ShadowCastType( void ) 
 {
-	if ( !IsVisible() )
-		 return SHADOWS_NONE;
+	if ( !IsVisible() || IsEffectActive( EF_NOSHADOW ) )
+		return SHADOWS_NONE;
+
+	static ConVarRef drawOwnShadow( "cl_drawownshadow" );
+	if ( IsLocalPlayer() && !C_BasePlayer::ShouldDrawLocalPlayer() && !drawOwnShadow.GetBool() )
+		return SHADOWS_NONE;
 
 	return SHADOWS_RENDER_TO_TEXTURE_DYNAMIC;
 }

@@ -386,8 +386,7 @@ void CStudioRender::GenerateMorphAccumulator( mstudiomodel_t *pSubModel )
 	if ( nActiveMeshCount == 0 )
 		return;
 
-	// HACK - Just turn off scissor for this model if it is doing morph accumulation
-	DisableScissor();
+
 
 	// Next, accumulate morphs for appropriate meshes
 	CMatRenderContextPtr pRenderContext( g_pMaterialSystem );
@@ -472,30 +471,6 @@ int CStudioRender::R_StudioRenderFinal( IMatRenderContext *pRenderContext,
 	return numTrianglesRendered;
 }
 
-static ConVar r_flashlightscissor( "r_flashlightscissor", "1", 0 );
-
-void CStudioRender::EnableScissor( FlashlightState_t *state )
-{
-	CMatRenderContextPtr pRenderContext( g_pMaterialSystem );
-
-	// Only scissor into the backbuffer
-	if ( r_flashlightscissor.GetBool() && state->DoScissor() && ( pRenderContext->GetRenderTarget() == NULL ) )
-	{
-		pRenderContext->SetScissorRect( state->GetLeft(), state->GetTop(), state->GetRight(), state->GetBottom(), true );
-	}
-}
-
-void CStudioRender::DisableScissor()
-{
-	CMatRenderContextPtr pRenderContext( g_pMaterialSystem );
-	// Scissor even if we're not shadow depth mapping
-	if ( r_flashlightscissor.GetBool() )
-	{
-		pRenderContext->SetScissorRect( -1, -1, -1, -1, false );
-	}
-}
-
-
 //-----------------------------------------------------------------------------
 // Draw shadows
 //-----------------------------------------------------------------------------
@@ -522,13 +497,11 @@ void CStudioRender::DrawShadows( const DrawModelInfo_t& info, int flags, int bon
 			Assert( m_ShadowState[i].m_pFlashlightState && m_ShadowState[i].m_pWorldToTexture );
 			pRenderContext->SetFlashlightStateEx( *m_ShadowState[i].m_pFlashlightState, *m_ShadowState[i].m_pWorldToTexture, m_ShadowState[i].m_pFlashlightDepthTexture );
 
-			EnableScissor( m_ShadowState[i].m_pFlashlightState );
 
 			R_StudioRenderModel( pRenderContext, info.m_Skin, info.m_Body, info.m_HitboxSet, info.m_pClientEntity,
 				info.m_pHardwareData->m_pLODs[info.m_Lod].ppMaterials, 
 				info.m_pHardwareData->m_pLODs[info.m_Lod].pMaterialFlags, flags, boneMask, info.m_Lod, info.m_pColorMeshes );
 
-			DisableScissor();
 		}
 	}
 	pRenderContext->SetFlashlightMode( false );
@@ -581,11 +554,9 @@ void CStudioRender::DrawFlashlightDecals( const DrawModelInfo_t& info, int lod )
 			Assert( m_ShadowState[i].m_pFlashlightState && m_ShadowState[i].m_pWorldToTexture );
 			pRenderContext->SetFlashlightStateEx( *m_ShadowState[i].m_pFlashlightState, *m_ShadowState[i].m_pWorldToTexture, m_ShadowState[i].m_pFlashlightDepthTexture );
 
-			EnableScissor( m_ShadowState[i].m_pFlashlightState );
 
 			DrawDecal( info, lod, info.m_Body );
 
-			DisableScissor();
 		}
 	}
 	pRenderContext->SetFlashlightMode( false );
