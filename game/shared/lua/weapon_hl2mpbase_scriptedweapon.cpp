@@ -2815,7 +2815,7 @@ bool CHL2MPScriptedWeapon::DispatchDrawWeaponSelection( int x, int y, int wide, 
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat (wiki): WEAPON:CustomAmmoDisplay() -> table with
 // Draw (boolean), PrimaryClip / PrimaryAmmo / SecondaryClip / SecondaryAmmo
-// (numbers, -1 = leave the engine value).  HL2's ammo HUD is a fixed
+// (numbers, -1 = hide the value).  HL2's ammo HUD is a fixed
 // clip|reserve pair, so only Draw / PrimaryClip / PrimaryAmmo have a slot
 // here (hud_ammo.cpp consumes them).
 //-----------------------------------------------------------------------------

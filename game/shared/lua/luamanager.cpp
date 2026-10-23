@@ -3704,6 +3704,8 @@ bool luasrc_SetGamemode (const char *gamemode) {
 	  // HL2SB: GMod scripts refer to the gamemode table as GAMEMODE.
 	  lua_getglobal(L, "_GAMEMODE");
 	  lua_setglobal(L, "GAMEMODE");
+	  lua_pushstring(L, gamemode);
+	  lua_setglobal(L, "GAMEMODE_NAME");
 	  // HL2SB: the base gamemode's content directory is shared by every
 	  // gamemode (GMod keeps its base entities in gamemodes/base/entities), so
 	  // mount and scan it first - the active gamemode still wins on collisions.
