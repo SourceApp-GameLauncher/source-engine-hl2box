@@ -914,6 +914,10 @@ void CPrediction::RunCommand( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	}
 	else
 	{
+#if defined( LUA_SDK )
+        extern void HL2SB_LuaVehicleMove( CBasePlayer *, CBaseEntity *, CMoveData * );
+        HL2SB_LuaVehicleMove( player, pVehicle->GetVehicleEnt(), g_pMoveData );
+#endif
 		pVehicle->ProcessMovement( player, g_pMoveData );
 	}
 

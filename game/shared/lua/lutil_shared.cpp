@@ -331,6 +331,9 @@ public:
 		if ( !pEntity->ShouldCollide( m_nCollisionGroup, contentsMask ) )
 			return false;
 
+		if ( !g_pGameRules->ShouldCollide( m_nCollisionGroup, pEntity->GetCollisionGroup() ) )
+			return false;
+
 		if ( m_ignoreList.Count() > 0 )
 		{
 			for ( int i = 0; i < m_ignoreList.Count(); ++i )

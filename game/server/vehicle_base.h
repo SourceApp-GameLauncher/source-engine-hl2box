@@ -310,7 +310,6 @@ public:
 	float	HL2SB_GetCameraDistance( void ) const { return m_flCameraDistance; }
 	void	HL2SB_SetThirdPersonMode( bool bEnable ) { m_bThirdPersonMode = bEnable; }
 	void	HL2SB_SetCameraDistance( float flDistance ) { m_flCameraDistance = flDistance; }
-	void	HL2SB_UpdateCameraState( CBasePlayer *pDriver );
 
 	// HL2SB (sbrust): the vehicle TABLE name -- GMod's list "Vehicles" key for
 	// the seat pose lookup (animations.lua HandlePlayerDriving reads

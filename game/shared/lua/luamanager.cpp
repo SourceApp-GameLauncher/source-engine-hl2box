@@ -2334,6 +2334,17 @@ static int HL2SB_LoadLuaFile (lua_State *L, const char *filename, bool execute) 
 	LuaMakeRelative( szRelative, sizeof( szRelative ) );
 	filename = szRelative;
 
+	char fullPath[MAX_PATH] = { 0 };
+	if ( filesystem )
+		filesystem->RelativePathToFullPath( filename, "MOD", fullPath, sizeof( fullPath ) );
+	if ( luasrc_PathInDisabledAddon( filename ) || luasrc_PathInDisabledAddon( fullPath ) )
+	{
+		luasrc_LuaInfoMsgF( "[Lua] %s: addon is DISABLED - skipped\n", filename );
+		if ( !execute )
+			luaL_loadstring( L, "" );
+		return 0;
+	}
+
 	LuaAutoRefreshTrack( filename );
 
 	// GLua syntax compat: stock GMod scripts (and many workshop SWEPs) use

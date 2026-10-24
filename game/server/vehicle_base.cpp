@@ -439,49 +439,7 @@ CPropVehicleDriveable::CPropVehicleDriveable( void ) :
 	Q_strncpy( m_szVehicleClass.GetForModify(), "", 64 );
 }
 
-//-----------------------------------------------------------------------------
-// HL2SB (sbrust): the single server writer for the vehicle third person camera
-// state -- the C++ port of GMod's base-gamemode GM:VehicleMove
-// (gamemodes/base/gamemode/init.lua).  Runs in the driver's ItemPostFrame on the
-// driveable vehicle (CBaseServerVehicle / the prisoner pod's own server vehicle),
-// exactly once per seated server tick:
-//
-//   * CTRL (IN_DUCK) flips the mode on the press EDGE, as GMod does with
-//     mv:KeyPressed( IN_DUCK ).  m_pCurrentCommand is already gone by
-//     ItemPostFrame, and the pressed edge can be consumed by other systems
-//     during the move, so the held bit is shadowed one tick and the edge is
-//     computed here -- the same observable behavior (AGENTS: the exit trigger
-//     reads the raw held bits for exactly this reason).
-//   * The mouse wheel drives the camera distance multiplier with GMod's own
-//     formula, newdist = dist - wheel * 0.03 * (1.1 + dist), clamped [-1, 10].
-//     -1 means radius * (1 - 1) = right on top of the vehicle.
-//
-// Both values are the vehicle's CNetworkVars (DT stream); the client camera
-// (GM:CalcVehicleView in the deathmatch gamemode) only reads them.  A fast
-// tap press+release within a single server tick is not an edge here (GMod's
-// per-command edge would catch it at high cmdrate) -- the same class of input
-// loss every held-bit consumer in this engine already has.
-//-----------------------------------------------------------------------------
-void CPropVehicleDriveable::HL2SB_UpdateCameraState( CBasePlayer *pDriver )
-{
-	if ( pDriver == NULL )
-		return;
 
-	const bool bDuckHeld = ( pDriver->m_nButtons & IN_DUCK ) != 0;
-	if ( bDuckHeld && !m_bHL2SBDuckHeld )
-	{
-		m_bThirdPersonMode = !m_bThirdPersonMode;
-	}
-	m_bHL2SBDuckHeld = bDuckHeld;
-
-	const int iWheel = pDriver->HL2SB_GetUserCmdMouseWheel();
-	if ( iWheel != 0 )
-	{
-		float flDistance = m_flCameraDistance;
-		flDistance = clamp( flDistance - iWheel * 0.03f * ( 1.1f + flDistance ), -1.0f, 10.0f );
-		m_flCameraDistance = flDistance;
-	}
-}
 
 //-----------------------------------------------------------------------------
 // Purpose: 

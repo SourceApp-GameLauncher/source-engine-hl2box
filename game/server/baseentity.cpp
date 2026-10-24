@@ -3766,6 +3766,14 @@ int CBaseEntity::DispatchUpdateTransmitState()
 //-----------------------------------------------------------------------------
 int CBaseEntity::ShouldTransmit( const CCheckTransmitInfo *pInfo )
 {
+	if ( IsEFlagSet( EFL_TRANSMIT_WITH_PARENT ) )
+	{
+		CBaseEntity *pParent = GetMoveParent();
+		if ( !pParent || ( pParent->DispatchUpdateTransmitState() & FL_EDICT_DONTSEND ) )
+			return FL_EDICT_DONTSEND;
+		return pParent->ShouldTransmit( pInfo );
+	}
+
 	int fFlags = DispatchUpdateTransmitState();
 
 	if ( fFlags & FL_EDICT_PVSCHECK )

@@ -898,6 +898,16 @@ static const luaL_Reg QAnglemeta[] = {
 
 
 static int luasrc_QAngle (lua_State *L) {
+  if ( lua_gettop( L ) >= 1 && lua_isuserdata( L, 1 ) )
+  {
+    void *pAngle = luaL_testudata( L, 1, "QAngle" );
+    if ( pAngle != NULL )
+    {
+      lua_pushangle( L, *(QAngle *)pAngle );
+      return 1;
+    }
+  }
+
   lua_pushangle(L, QAngle((vec_t)luaL_optnumber(L, 1, 0.0f), (vec_t)luaL_optnumber(L, 2, 0.0f), (vec_t)luaL_optnumber(L, 3, 0.0f)));
   return 1;
 }

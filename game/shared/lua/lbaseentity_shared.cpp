@@ -5919,6 +5919,9 @@ static int CBaseEntity_SetTransmitWithParent (lua_State *L) {
     pEnt->AddEFlags( EFL_TRANSMIT_WITH_PARENT );
   else
     pEnt->RemoveEFlags( EFL_TRANSMIT_WITH_PARENT );
+#ifdef GAME_DLL
+  pEnt->DispatchUpdateTransmitState();
+#endif
   return 0;
 }
 
@@ -6054,12 +6057,12 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // (the functions themselves dispatch: driveable field / exported pod access /
   // default). GM:CalcVehicleView's `Vehicle.GetThirdPersonMode == nil` guard
   // relies on this for the seat camera; the Vehicle metatable keeps its copy.
-  {"GetThirdPersonMode", Vehicle_GetThirdPersonMode},
-  {"SetThirdPersonMode", Vehicle_SetThirdPersonMode},
-  {"GetCameraDistance", Vehicle_GetCameraDistance},
-  {"SetCameraDistance", Vehicle_SetCameraDistance},
-  {"GetVehicleClass", Vehicle_GetVehicleClass},
-  {"SetVehicleClass", Vehicle_SetVehicleClass},
+  {"Get_HL2SBThirdPersonMode", Vehicle_GetThirdPersonMode},
+  {"Set_HL2SBThirdPersonMode", Vehicle_SetThirdPersonMode},
+  {"Get_HL2SBCameraDistance", Vehicle_GetCameraDistance},
+  {"Set_HL2SBCameraDistance", Vehicle_SetCameraDistance},
+  {"Get_HL2SBVehicleClass", Vehicle_GetVehicleClass},
+  {"Set_HL2SBVehicleClass", Vehicle_SetVehicleClass},
   {"Activate", CBaseEntity_Activate},
   {"AddDataObjectType", CBaseEntity_AddDataObjectType},
   {"AddEffects", CBaseEntity_AddEffects},

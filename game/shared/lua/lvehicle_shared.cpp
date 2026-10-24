@@ -1,31 +1,7 @@
 //========= Copyright (c) 1996-2005, Valve Corporation, All rights reserved. ============//
 //
-// Purpose: HL2SB's C++ port of Garry's Mod's Vehicle Lua library
-//          (https://wiki.facepunch.com/gmod/Vehicle).
-//
-// Method list taken from the wiki; the metatable is registered under the name
-// "Vehicle" so that FindMetaTable("Vehicle") / s_LuaMetatableAliases resolve it
-// the same way FindMetaTable("Player") resolves CHL2MP_Player.
-//
-// Where the data lives in THIS engine (read the .h of each, not invented):
-//   * game/server/vehicle_base.h            CPropVehicleDriveable, CPropVehicle,
-//                                           CFourWheelServerVehicle (IServerVehicle)
-//                                           -- GetDriver, GetPhysics, engine on/off,
-//                                           m_nSpeed/m_nRPM/m_flThrottle/m_nBoost*,
-//                                           IsVehicleBodyInWater, StartEngine/StopEngine
-//   * game/server/fourwheelvehiclephysics.h CFourWheelVehiclePhysics - wheels, boost,
-//                                           throttle/steering, operating + vehicle params
-//   * game/server/vehicle_baseserver.h      CBaseServerVehicle - passengers, seat points,
-//                                           CheckExitPoint
-//   * game/server/iservervehicle.h          IServerVehicle / IDrivableVehicle
-//   * game/client/c_prop_vehicle.h          C_PropVehicleDriveable  (client realm; only
-//                                           speed/RPM/throttle/boost are networked)
-//   * game/client/iclientvehicle.h          IClientVehicle
-//
-// HL2SB policy is "compatibility with addons, not a byte-for-byte GMod clone", so
-// every method that has no engine-side backing in the current realm answers a
-// documented default instead of raising.  Those methods carry an
-// "HL2SB fallback:" comment that says exactly what is missing and why.
+// Purpose: Native Vehicle bindings and compatibility storage for the original
+//          shared vehicle extensions. Vehicle interfaces also cover seats.
 //
 //=============================================================================//
 #define lvehicle_shared_cpp
@@ -84,11 +60,13 @@ static const char *const s_pszKeyEngineEnabled   = "hl2sb_engineenabled";
 ** access functions (stack -> C)
 */
 
+static lua_Vehicle *ToVehicleFromEntity(CBaseEntity *entity);
+
 LUA_API lua_Vehicle *lua_tovehicle (lua_State *L, int idx) {
   CBaseHandle *hEntity = dynamic_cast<CBaseHandle *>((CBaseHandle *)lua_touserdata(L, idx));
   if (hEntity == NULL)
     return NULL;
-  return dynamic_cast<lua_Vehicle *>(hEntity->Get());
+  return ToVehicleFromEntity(dynamic_cast<CBaseEntity *>(hEntity->Get()));
 }
 
 /* The single CBaseEntity base path out of lua_Vehicle. */
@@ -114,43 +92,15 @@ LUA_API void         HL2SB_PodSetCameraDistance (CBaseEntity *pEntity, float flD
 LUA_API const char  *HL2SB_PodGetVehicleClass   (CBaseEntity *pEntity);
 LUA_API void         HL2SB_PodSetVehicleClass   (CBaseEntity *pEntity, const char *pszClass);
 
-/*
-** Resolves the entity's C++ type before anything is pushed.  The two virtuals are
-** overridden by every vehicle (C_BaseEntity::GetClientVehicle /
-** CBaseEntity::GetServerVehicle) and answer NULL for everything else, so the
-** dynamic_cast only runs for candidates -- but they are not sufficient on their
-** own:
-**
-**   * CPropVehicleDriveable::CreateServerVehicle() (and therefore
-**     GetServerVehicle()) only runs from Spawn(), so a vehicle that Lua just
-**     ents.Create()d would be missed.  GMod hands the Vehicle metatable out from
-**     the first Create() -- its own docs only say the Vehicle METHODS are unusable
-**     before Spawn (IsValidVehicle() answers false) -- and SetVehicleClass /
-**     SetVehicleParams are exactly what an addon calls there.  Every drivable
-**     vehicle in this tree is registered as "prop_vehicle*", so a failed virtual
-**     test falls back to that prefix.
-**   * C_VehicleCrane / CPropVehicleCrane answer the virtual but are not
-**     CPropVehicleDriveable, so they keep the plain entity metatable: the Vehicle
-**     library is the driveable four-wheel library, and inventing crane behaviour
-**     would be worse than the missing methods.
-*/
 static lua_Vehicle *ToVehicleFromEntity (CBaseEntity *pEntity) {
   if (pEntity == NULL)
     return NULL;
-
 #ifdef CLIENT_DLL
-  bool bCandidate = (pEntity->GetClientVehicle() != NULL);
+  const bool supported = dynamic_cast<C_PropVehicleDriveable *>(pEntity) != NULL;
 #else
-  bool bCandidate = (pEntity->GetServerVehicle() != NULL);
+  const bool supported = dynamic_cast<CPropVehicleDriveable *>(pEntity) != NULL;
 #endif
-
-  if (!bCandidate) {
-    const char *pszClassname = pEntity->GetClassname();
-    if (pszClassname == NULL || Q_strncmp(pszClassname, "prop_vehicle", 12) != 0)
-      return NULL;
-  }
-
-  return dynamic_cast<lua_Vehicle *>(pEntity);
+  return supported || HL2SB_IsPrisonerPodEntity(pEntity) ? pEntity : NULL;
 }
 
 
@@ -170,33 +120,6 @@ LUA_API void lua_pushvehicle (lua_State *L, lua_Vehicle *pVehicle) {
   lua_setmetatable(L, -2);
 }
 
-/*
-** HL2SB: the entity-level dispatch.  Answers false and leaves the stack
-** untouched when pEntity is not a drivable vehicle, or when the "Vehicle"
-** metatable has not been opened in this Lua state, so lua_pushentity() /
-** CBaseEntity::PushLuaInstanceSafe() can fall through to their own push.
-** Declared in lbaseentity_shared.h.
-*/
-/*
-** HL2SB: the entity-level dispatch.  Answers false and leaves the stack
-** untouched when pEntity is not a drivable vehicle, or when the "Vehicle"
-** metatable has not been opened in this Lua state, so lua_pushentity() /
-** CBaseEntity::PushLuaInstanceSafe() can fall through to their own push.
-** Declared in lbaseentity_shared.h.
-**
-** HL2SB (sbrust): chairs (prisoner pods) deliberately do NOT get the Vehicle
-** metatable in this fork.  GMod hands it out (its pod class inherits the
-** driveable and its metas chain to the shared entity table), but here every
-** per-class metatable is standalone -- a chair wearing the Vehicle meta would
-** resolve EVERY driveable-only method (GetSpeed, IsVehicle, ...) through
-** luaL_checkvehicle and raise "Vehicle expected" for the many systems that
-** iterate all entities (halo's filter, properties, GM:CalcVehicleView's own
-** trace filter -- one error per chair per frame).  The chair instead keeps the
-** entity metatable, and the six camera/class methods it must answer are
-** mirrored onto that table (lbaseentity_shared.cpp's Entitymeta entries, same
-** functions as below).  lua_entityisvehicle() still counts chairs, so the
-** filters' `!e:IsVehicle()` matches GMod through either path.
-*/
 LUA_API bool lua_pushvehicleentity (lua_State *L, CBaseEntity *pEntity) {
   lua_Vehicle *pVehicle = ToVehicleFromEntity(pEntity);
   if (pVehicle == NULL)
@@ -354,7 +277,8 @@ static const vehicle_operatingparams_t s_ZeroOperatingParams = {};
 static const vehicleparams_t s_ZeroVehicleParams = {};
 
 static CFourWheelVehiclePhysics *VehiclePhysics (lua_Vehicle *pVehicle) {
-  return pVehicle != NULL ? pVehicle->GetPhysics() : NULL;
+  CPropVehicleDriveable *driveable = dynamic_cast<CPropVehicleDriveable *>(pVehicle);
+  return driveable ? driveable->GetPhysics() : NULL;
 }
 
 static IPhysicsVehicleController *VehicleController (lua_Vehicle *pVehicle) {
@@ -390,7 +314,7 @@ static int Vehicle_BoostTimeLeft (lua_State *L) {
 #ifdef CLIENT_DLL
   /* HL2SB: real engine data - m_nBoostTimeLeft is networked (RecvPropInt in
   ** game/client/c_prop_vehicle.cpp). */
-  lua_pushinteger(L, luaL_checkvehicle(L, 1)->HL2SB_BoostTimeLeft());
+  lua_pushinteger(L, (dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1)) ? dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1))->HL2SB_BoostTimeLeft() : 0));
 #else
   CFourWheelVehiclePhysics *pPhysics = VehiclePhysics(luaL_checkvehicle(L, 1));
   lua_pushinteger(L, pPhysics != NULL ? pPhysics->BoostTimeLeft() : 0);
@@ -399,25 +323,17 @@ static int Vehicle_BoostTimeLeft (lua_State *L) {
 }
 
 static int Vehicle_CheckExitPoint (lua_State *L) {
-  lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
-  float flYaw = (float)luaL_checknumber(L, 2);
-  int iDistance = luaL_checkint(L, 3);
-
-#ifdef CLIENT_DLL
-  /* HL2SB fallback: the exit points are parsed from the vehicle script by
-  ** CBaseServerVehicle (vehicle_baseserver.cpp) and none of them are networked
-  ** to the client, so the client cannot answer this.  Returning the vehicle's own
-  ** origin keeps the documented "Vector" contract: an addon gets a position
-  ** instead of "attempt to call a nil value" or a throw. */
-  lua_pushvector(L, pVehicle->GetAbsOrigin());
-#else
-  Vector vecEndPoint = pVehicle->GetAbsOrigin();
-  CBaseServerVehicle *pServerVehicle = VehicleServerVehicle(pVehicle);
-  if (pServerVehicle != NULL)
-    pServerVehicle->CheckExitPoint(flYaw, iDistance, &vecEndPoint);
-  lua_pushvector(L, vecEndPoint);
-#endif
+#ifndef CLIENT_DLL
+  CBaseServerVehicle *vehicle = VehicleServerVehicle(luaL_checkvehicle(L, 1));
+  if (vehicle == NULL) return luaL_error(L, "Tried to use a NULL vehicle!");
+  Vector point = vec3_origin;
+  if (!vehicle->CheckExitPoint((float)luaL_optnumber(L, 2, 0), luaL_optint(L, 3, 0), &point))
+    return 0;
+  lua_pushvector(L, point);
   return 1;
+#else
+  return 0;
+#endif
 }
 
 static int Vehicle_EnableEngine (lua_State *L) {
@@ -476,29 +392,25 @@ int Vehicle_GetCameraDistance (lua_State *L) {
   // The server's camera-state writer owns it; this reads the live value in
   // both realms.
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>(pEnt);
+#ifdef CLIENT_DLL
+  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
+#else
+  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
+#endif
   lua_pushnumber(L, pDriveable ? pDriveable->HL2SB_GetCameraDistance()
                                : HL2SB_PodGetCameraDistance(pEnt));
   return 1;
 }
 
 static int Vehicle_GetDriver (lua_State *L) {
-  lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
-
+  CBaseEntity *entity = luaL_checkvehicle(L, 1);
 #ifdef CLIENT_DLL
-  /* HL2SB: real engine data - the driver handle is networked (RecvPropEHandle
-  ** m_hPlayer in game/client/c_prop_vehicle.cpp) and GetPassenger(VEHICLE_ROLE_DRIVER)
-  ** reads it. */
-  CBaseCombatCharacter *pDriver = pVehicle->GetPassenger(VEHICLE_ROLE_DRIVER);
+  IVehicle *vehicle = entity->GetClientVehicle();
 #else
-  /* HL2SB: real engine data - CPropVehicleDriveable::GetDriver answers the player
-  ** or the NPC driver (vehicle_base.cpp:625). */
-  CBaseEntity *pDriver = pVehicle->GetDriver();
+  IVehicle *vehicle = entity->GetServerVehicle();
 #endif
-
-  /* PushLuaInstanceSafe rather than lua_pushentity: a driver is a player and has
-  ** to carry the Player methods (GMod's Vehicle:GetDriver returns a Player). */
-  CBaseEntity::PushLuaInstanceSafe(L, pDriver);
+  if (vehicle == NULL) return luaL_error(L, "Tried to use a NULL vehicle!");
+  CBaseEntity::PushLuaInstanceSafe(L, vehicle->GetPassenger(VEHICLE_ROLE_DRIVER));
   return 1;
 }
 
@@ -533,6 +445,9 @@ static int Vehicle_GetMaxSpeed (lua_State *L) {
 }
 
 static int Vehicle_GetOperatingParams (lua_State *L) {
+#ifndef CLIENT_DLL
+  if (VehicleController(luaL_checkvehicle(L, 1)) == NULL) return 0;
+#endif
   lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
 
   lua_newtable(L);
@@ -555,7 +470,7 @@ static int Vehicle_GetOperatingParams (lua_State *L) {
   ** only exists server-side.  The client fills the same keys from what IS
   ** networked (RPM, throttle, speed, boost), and leaves the rest at neutral. */
   LuaSetFloat(L, "speed", pVehicle->GetAbsVelocity().Length());
-  LuaSetFloat(L, "RPM", (float)pVehicle->HL2SB_RPM());
+  LuaSetFloat(L, "RPM", (float)(dynamic_cast<C_PropVehicleDriveable *>(pVehicle) ? dynamic_cast<C_PropVehicleDriveable *>(pVehicle)->HL2SB_RPM() : 0));
   LuaSetInt(L, "gear", 0);
   LuaSetBool(L, "isTorqueBoosting", false);
   LuaSetFloat(L, "steeringAngle", 0.0f);
@@ -566,21 +481,15 @@ static int Vehicle_GetOperatingParams (lua_State *L) {
 }
 
 static int Vehicle_GetPassenger (lua_State *L) {
-  lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
-  int nRole = luaL_optint(L, 2, VEHICLE_ROLE_DRIVER);
-
+  CBaseEntity *entity = luaL_checkvehicle(L, 1);
+  const int role = lua_isnumber(L, 2) ? (int)lua_tonumber(L, 2) : VEHICLE_ROLE_DRIVER;
 #ifdef CLIENT_DLL
-  /* HL2SB: real engine data - C_PropVehicleDriveable::GetPassenger reads the
-  ** networked driver handle (game/client/c_prop_vehicle.cpp:111). */
-  CBaseCombatCharacter *pPassenger = pVehicle->GetPassenger(nRole);
+  IVehicle *vehicle = entity->GetClientVehicle();
 #else
-  /* HL2SB: real engine data - CBaseServerVehicle::GetPassenger over the parsed
-  ** passenger roles (vehicle_baseserver.cpp). */
-  CBaseServerVehicle *pServerVehicle = VehicleServerVehicle(pVehicle);
-  CBaseCombatCharacter *pPassenger = pServerVehicle != NULL ? pServerVehicle->GetPassenger(nRole) : NULL;
+  IVehicle *vehicle = entity->GetServerVehicle();
 #endif
-
-  CBaseEntity::PushLuaInstanceSafe(L, pPassenger);
+  if (vehicle == NULL) return luaL_error(L, "Tried to use a NULL vehicle!");
+  CBaseEntity::PushLuaInstanceSafe(L, vehicle->GetPassenger(role));
   return 1;
 }
 
@@ -610,7 +519,7 @@ static int Vehicle_GetPassengerSeatPoint (lua_State *L) {
 static int Vehicle_GetRPM (lua_State *L) {
 #ifdef CLIENT_DLL
   /* HL2SB: real engine data - m_nRPM is networked. */
-  lua_pushinteger(L, luaL_checkvehicle(L, 1)->HL2SB_RPM());
+  lua_pushinteger(L, (dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1)) ? dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1))->HL2SB_RPM() : 0));
 #else
   CFourWheelVehiclePhysics *pPhysics = VehiclePhysics(luaL_checkvehicle(L, 1));
   lua_pushinteger(L, pPhysics != NULL ? pPhysics->GetRPM() : 0);
@@ -622,7 +531,7 @@ static int Vehicle_GetSpeed (lua_State *L) {
 #ifdef CLIENT_DLL
   /* HL2SB: real engine data - m_nSpeed is networked, in MPH, which is the unit
   ** the wiki documents for Vehicle:GetSpeed. */
-  lua_pushinteger(L, luaL_checkvehicle(L, 1)->HL2SB_Speed());
+  lua_pushinteger(L, (dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1)) ? dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1))->HL2SB_Speed() : 0));
 #else
   CFourWheelVehiclePhysics *pPhysics = VehiclePhysics(luaL_checkvehicle(L, 1));
   lua_pushinteger(L, pPhysics != NULL ? pPhysics->GetSpeed() : 0);
@@ -665,7 +574,11 @@ int Vehicle_GetThirdPersonMode (lua_State *L) {
   // from their own fields; the server camera-state writer owns the value and
   // the DT stream carries it, so remote clients agree with the driver.
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>(pEnt);
+#ifdef CLIENT_DLL
+  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
+#else
+  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
+#endif
   lua_pushboolean(L, pDriveable ? pDriveable->HL2SB_GetThirdPersonMode()
                                 : HL2SB_PodGetThirdPerson(pEnt));
   return 1;
@@ -674,7 +587,7 @@ int Vehicle_GetThirdPersonMode (lua_State *L) {
 static int Vehicle_GetThrottle (lua_State *L) {
 #ifdef CLIENT_DLL
   /* HL2SB: real engine data - m_flThrottle is networked. */
-  lua_pushnumber(L, luaL_checkvehicle(L, 1)->HL2SB_Throttle());
+  lua_pushnumber(L, (dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1)) ? dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1))->HL2SB_Throttle() : 0));
 #else
   CFourWheelVehiclePhysics *pPhysics = VehiclePhysics(luaL_checkvehicle(L, 1));
   lua_pushnumber(L, pPhysics != NULL ? pPhysics->GetThrottle() : 0.0f);
@@ -690,7 +603,11 @@ int Vehicle_GetVehicleClass (lua_State *L) {
   ** carry the field too.  The empty string, not nil, keeps
   ** `veh:GetVehicleClass() == ""` comparisons and concatenation working. */
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>(pEnt);
+#ifdef CLIENT_DLL
+  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
+#else
+  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
+#endif
   if ( pDriveable ) {
     lua_pushstring(L, pDriveable->HL2SB_GetVehicleClass());
     return 1;
@@ -700,61 +617,11 @@ int Vehicle_GetVehicleClass (lua_State *L) {
   return 1;
 }
 
-// Resolve the registered seat callback in each realm after its class arrives.
-void HL2SB_ResolveVehicleAnimation( CBaseEntity *pEntity )
-{
-  if ( L == NULL || pEntity == NULL )
-    return;
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>( pEntity );
-  const char *pszClass = pDriveable ? pDriveable->HL2SB_GetVehicleClass()
-                                  : HL2SB_PodGetVehicleClass( pEntity );
-  if ( pszClass == NULL || pszClass[0] == '\0' )
-    return;
-  const int stackTop = lua_gettop( L );
-  if ( !lua_isrefvalid( L, pEntity->m_nTableReference ) )
-  {
-    lua_newtable( L );
-    pEntity->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
-  }
-  lua_getref( L, pEntity->m_nTableReference );
-  const int instance = lua_gettop( L );
-  lua_getfield( L, instance, "HandleAnimation" );
-  const bool missing = lua_isnil( L, -1 ) ||
-    ( lua_isboolean( L, -1 ) && lua_toboolean( L, -1 ) );
-  lua_pop( L, 1 );
-  if ( missing )
-  {
-    // Discard the no-handler sentinel before resolving replicated seat data.
-    lua_pushnil( L );
-    lua_setfield( L, instance, "HandleAnimation" );
-    lua_getglobal( L, "list" );
-    if ( lua_istable( L, -1 ) )
-    {
-      lua_getfield( L, -1, "GetEntry" );
-      if ( lua_isfunction( L, -1 ) )
-      {
-        lua_pushliteral( L, "Vehicles" );
-        lua_pushstring( L, pszClass );
-        if ( luasrc_pcall( L, 2, 1, 0 ) == 0 && lua_istable( L, -1 ) )
-        {
-          lua_getfield( L, -1, "Members" );
-          if ( lua_istable( L, -1 ) )
-          {
-            lua_getfield( L, -1, "HandleAnimation" );
-            if ( lua_isfunction( L, -1 ) )
-              lua_setfield( L, instance, "HandleAnimation" );
-          }
-        }
-      }
-    }
-  }
-  lua_settop( L, stackTop );
-}
 
 static int Vehicle_HasBoost (lua_State *L) {
 #ifdef CLIENT_DLL
   /* HL2SB: real engine data - m_nHasBoost is networked. */
-  lua_pushboolean(L, luaL_checkvehicle(L, 1)->HL2SB_HasBoost() != 0);
+  lua_pushboolean(L, (dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1)) ? dynamic_cast<C_PropVehicleDriveable *>(luaL_checkvehicle(L, 1))->HL2SB_HasBoost() : 0) != 0);
 #else
   CFourWheelVehiclePhysics *pPhysics = VehiclePhysics(luaL_checkvehicle(L, 1));
   lua_pushboolean(L, pPhysics != NULL ? pPhysics->HasBoost() : false);
@@ -815,25 +682,18 @@ static int Vehicle_IsEngineStarted (lua_State *L) {
   lua_pushboolean(L, false);
 #else
   /* HL2SB: real engine data. */
-  lua_pushboolean(L, luaL_checkvehicle(L, 1)->IsEngineOn());
+  CPropVehicleDriveable *driveable = dynamic_cast<CPropVehicleDriveable *>(luaL_checkvehicle(L, 1));
+  lua_pushboolean(L, driveable && driveable->IsEngineOn());
 #endif
   return 1;
 }
 
 static int Vehicle_IsValidVehicle (lua_State *L) {
-  lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
-
+  CBaseEntity *entity = lua_toentity(L, 1);
 #ifdef CLIENT_DLL
-  /* HL2SB fallback: GMod's "fully initialised" test is whether the server's
-  ** vehicle physics controller exists.  The client has no controller, and by the
-  ** time this metatable is handed out the entity exists, so it answers true. */
-  lua_pushboolean(L, pVehicle != NULL);
+  lua_pushboolean(L, lua_entityisvehicle(entity));
 #else
-  /* HL2SB: real engine data - m_pVehicle is the vphysics controller and stays
-  ** NULL until Initialize()/ParseVehicleScript() succeeded, which is exactly the
-  ** "not usable yet" state the wiki describes. */
-  CFourWheelVehiclePhysics *pPhysics = VehiclePhysics(pVehicle);
-  lua_pushboolean(L, pPhysics != NULL && pPhysics->IsVehiclePhysicsInitialized());
+  lua_pushboolean(L, lua_entityisvehicle(entity) && entity->GetServerVehicle() != NULL);
 #endif
   return 1;
 }
@@ -849,7 +709,8 @@ static int Vehicle_IsVehicleBodyInWater (lua_State *L) {
   /* HL2SB: real engine data for the vehicles that implement it (the jeep, the
   ** SDK jeep and the CS jeep override it with their water data; the base class
   ** answers false, see vehicle_base.h:208). */
-  lua_pushboolean(L, luaL_checkvehicle(L, 1)->IsVehicleBodyInWater());
+  CPropVehicleDriveable *driveable = dynamic_cast<CPropVehicleDriveable *>(luaL_checkvehicle(L, 1));
+  lua_pushboolean(L, driveable && driveable->IsVehicleBodyInWater());
 #endif
   return 1;
 }
@@ -890,7 +751,11 @@ int Vehicle_SetCameraDistance (lua_State *L) {
   // Client realm (driveable or chair): mirrors locally until the networked
   // state arrives, exactly like a client-side DT write in GMod.
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>(pEnt);
+#ifdef CLIENT_DLL
+  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
+#else
+  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
+#endif
   if ( pDriveable )
     pDriveable->HL2SB_SetCameraDistance(flDistance);
   else
@@ -1021,7 +886,11 @@ int Vehicle_SetThirdPersonMode (lua_State *L) {
   // addon call here works in both realms like a GMod DT write -- on the client
   // it is a local mirror that the next networked update replaces.
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>(pEnt);
+#ifdef CLIENT_DLL
+  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
+#else
+  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
+#endif
   if ( pDriveable )
     pDriveable->HL2SB_SetThirdPersonMode(bEnable);
   else
@@ -1051,7 +920,11 @@ int Vehicle_SetVehicleClass (lua_State *L) {
   ** gamemodes/sandbox/gamemode/commands.lua:1057).  Driveable or chair; other
   ** entities are a no-op (GMod would raise a DT slot error there). */
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_Vehicle *pDriveable = dynamic_cast<lua_Vehicle *>(pEnt);
+#ifdef CLIENT_DLL
+  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
+#else
+  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
+#endif
   if ( pDriveable )
     pDriveable->HL2SB_SetVehicleClass(pszClass);
   else
@@ -1070,7 +943,8 @@ static int Vehicle_SetVehicleEntryAnim (lua_State *L) {
 #else
   /* HL2SB: real engine data - IDrivableVehicle::SetVehicleEntryAnim
   ** (vehicle_base.h:224). */
-  luaL_checkvehicle(L, 1)->SetVehicleEntryAnim(bOn);
+  IDrivableVehicle *driveable = dynamic_cast<IDrivableVehicle *>(luaL_checkvehicle(L, 1));
+  if (driveable) driveable->SetVehicleEntryAnim(bOn);
 #endif
   return 0;
 }
@@ -1101,10 +975,12 @@ static int Vehicle_StartEngine (lua_State *L) {
   luaL_checkvehicle(L, 1);
 #else
   lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
-  if (bStart)
-    pVehicle->StartEngine();
-  else
-    pVehicle->StopEngine();
+  CFourWheelVehiclePhysics *physics = VehiclePhysics(pVehicle);
+  if (physics != NULL && VehicleController(pVehicle) != NULL)
+  {
+    if (bStart) physics->TurnOn();
+    else physics->TurnOff();
+  }
 #endif
   return 0;
 }
@@ -1142,7 +1018,6 @@ static void LuaPushVehicleAxle (lua_State *L, const vehicle_axleparams_t &axle) 
   LuaSetFloat(L, "wheels_rotdamping", axle.wheels.rotdamping);
   LuaSetFloat(L, "wheels_frictionScale", axle.wheels.frictionScale);
   LuaSetInt(L, "wheels_materialIndex", axle.wheels.materialIndex);
-  LuaSetInt(L, "wheels_brakeMaterialIndex", axle.wheels.brakeMaterialIndex);
   LuaSetInt(L, "wheels_skidMaterialIndex", axle.wheels.skidMaterialIndex);
   LuaSetFloat(L, "wheels_springAdditionalLength", axle.wheels.springAdditionalLength);
 
@@ -1235,10 +1110,7 @@ static void LuaPushVehicleParams (lua_State *L, const vehicleparams_t &params) {
   lua_setfield(L, -2, "steering");
 }
 
-/* Applies the subset of a VehicleParams table this engine can honour.  The wiki
-** says the same thing about GMod ("Not all variables from the VehicleParams
-** structure can be set"); axleCount/wheelsPerAxle/axles are read-only here
-** because the wheel objects were created from the script at spawn time. */
+// Update existing physical parameters without changing wheel or gear counts.
 static void LuaApplyVehicleParams (lua_State *L, int iTable, vehicleparams_t &params) {
   float flValue = 0.0f;
   bool bValue = false;
@@ -1249,6 +1121,9 @@ static void LuaApplyVehicleParams (lua_State *L, int iTable, vehicleparams_t &pa
   lua_getfield(L, iTable, "body");
   if (lua_istable(L, -1)) {
     int iBody = lua_gettop(L);
+    lua_getfield(L, iBody, "massCenterOverride");
+    if (lua_isuserdata(L, -1)) params.body.massCenterOverride = luaL_checkvector(L, -1);
+    lua_pop(L, 1);
     if (LuaGetFloat(L, iBody, "massOverride", &flValue))          params.body.massOverride = flValue;
     if (LuaGetFloat(L, iBody, "addGravity", &flValue))           params.body.addGravity = flValue;
     if (LuaGetFloat(L, iBody, "tiltForce", &flValue))            params.body.tiltForce = flValue;
@@ -1263,13 +1138,9 @@ static void LuaApplyVehicleParams (lua_State *L, int iTable, vehicleparams_t &pa
   if (lua_istable(L, -1)) {
     int iEngine = lua_gettop(L);
     if (LuaGetFloat(L, iEngine, "horsepower", &flValue))    params.engine.horsepower = flValue;
-    /* The wiki documents that SetVehicleParams takes these three in miles per
-    ** hour while GetVehicleParams returns them in hammer units per second; the
-    ** engine's own vehicleparams_t is in HU/s (CFourWheelVehiclePhysics::GetMaxSpeed
-    ** converts with INS2MPH), so convert on the way in. */
-    if (LuaGetFloat(L, iEngine, "maxSpeed", &flValue))      params.engine.maxSpeed = MPH2INS(flValue);
-    if (LuaGetFloat(L, iEngine, "maxRevSpeed", &flValue))   params.engine.maxRevSpeed = MPH2INS(flValue);
-    if (LuaGetFloat(L, iEngine, "boostMaxSpeed", &flValue)) params.engine.boostMaxSpeed = MPH2INS(flValue);
+    if (LuaGetFloat(L, iEngine, "maxSpeed", &flValue))      params.engine.maxSpeed = flValue;
+    if (LuaGetFloat(L, iEngine, "maxRevSpeed", &flValue))   params.engine.maxRevSpeed = flValue;
+    if (LuaGetFloat(L, iEngine, "boostMaxSpeed", &flValue)) params.engine.boostMaxSpeed = flValue;
     if (LuaGetFloat(L, iEngine, "maxRPM", &flValue))        params.engine.maxRPM = flValue;
     if (LuaGetFloat(L, iEngine, "axleRatio", &flValue))     params.engine.axleRatio = flValue;
     if (LuaGetFloat(L, iEngine, "throttleTime", &flValue))  params.engine.throttleTime = flValue;
@@ -1337,6 +1208,13 @@ static void LuaApplyVehicleParams (lua_State *L, int iTable, vehicleparams_t &pa
       lua_rawgeti(L, -1, i + 1);
       if (lua_istable(L, -1)) {
         int iAxle = lua_gettop(L);
+        if (LuaGetFloat(L, iAxle, "wheels_inertia", &flValue)) params.axles[i].wheels.inertia = flValue;
+        if (LuaGetFloat(L, iAxle, "wheels_damping", &flValue)) params.axles[i].wheels.damping = flValue;
+        if (LuaGetFloat(L, iAxle, "wheels_rotdamping", &flValue)) params.axles[i].wheels.rotdamping = flValue;
+        if (LuaGetFloat(L, iAxle, "wheels_materialIndex", &flValue)) params.axles[i].wheels.materialIndex = (int)flValue;
+        if (LuaGetFloat(L, iAxle, "wheels_skidMaterialIndex", &flValue)) params.axles[i].wheels.skidMaterialIndex = (int)flValue;
+        if (LuaGetFloat(L, iAxle, "wheels_brakeMaterialIndex", &flValue)) params.axles[i].wheels.brakeMaterialIndex = (int)flValue;
+        if (LuaGetFloat(L, iAxle, "suspension_springDampingCompression", &flValue)) params.axles[i].suspension.springDampingCompression = flValue;
         if (LuaGetFloat(L, iAxle, "torqueFactor", &flValue))               params.axles[i].torqueFactor = flValue;
         if (LuaGetFloat(L, iAxle, "brakeFactor", &flValue))                params.axles[i].brakeFactor = flValue;
         if (LuaGetFloat(L, iAxle, "wheels_frictionScale", &flValue))       params.axles[i].wheels.frictionScale = flValue;
@@ -1357,6 +1235,9 @@ static void LuaApplyVehicleParams (lua_State *L, int iTable, vehicleparams_t &pa
 
 
 static int Vehicle_GetVehicleParams (lua_State *L) {
+#ifndef CLIENT_DLL
+  if (VehicleController(luaL_checkvehicle(L, 1)) == NULL) return 0;
+#endif
 #ifdef CLIENT_DLL
   /* HL2SB fallback: vehicleparams_t is produced by parsing the vehicle script
   ** (CFourWheelVehiclePhysics::ParseVehicleScript) and is server-side only.  The
@@ -1404,33 +1285,27 @@ static int Vehicle_SetVehicleParams (lua_State *L) {
 
 
 static int Vehicle_GetVehicleViewPosition (lua_State *L) {
-  lua_Vehicle *pVehicle = luaL_checkvehicle(L, 1);
-  int nRole = luaL_optint(L, 2, VEHICLE_ROLE_DRIVER);
-
-  /* HL2SB: seed the outputs with the vehicle's own origin/angles.  Both
-  ** implementations only fill them in when there is a driver to smooth for: the
-  ** server one asserts on a non-player passenger (vehicle_base.cpp:1219) and the
-  ** client one writes nothing unless the networked driver is the local player
-  ** (c_prop_vehicle.cpp:206).  Without the seed an unseated vehicle would hand
-  ** Lua uninitialised memory. */
-  Vector vecOrigin = pVehicle->GetAbsOrigin();
-  QAngle angAngles = pVehicle->GetAbsAngles();
-  float flFOV = 0.0f;
-
+  CBaseEntity *entity = luaL_checkvehicle(L, 1);
+  const int role = lua_isnumber(L, 2) ? (int)lua_tonumber(L, 2) : VEHICLE_ROLE_DRIVER;
 #ifdef CLIENT_DLL
-  pVehicle->GetVehicleViewPosition(nRole, &vecOrigin, &angAngles, &flFOV);
+  IVehicle *vehicle = entity->GetClientVehicle();
 #else
-  CBaseServerVehicle *pServerVehicle = VehicleServerVehicle(pVehicle);
-  if (pServerVehicle != NULL) {
-    CBaseCombatCharacter *pPassenger = pServerVehicle->GetPassenger(nRole);
-    if (pPassenger != NULL && pPassenger->IsPlayer())
-      pServerVehicle->GetVehicleViewPosition(nRole, &vecOrigin, &angAngles, &flFOV);
-  }
+  IVehicle *vehicle = entity->GetServerVehicle();
 #endif
-
-  lua_pushvector(L, vecOrigin);
-  lua_pushangle(L, angAngles);
-  lua_pushnumber(L, flFOV);
+  if (vehicle == NULL) return luaL_error(L, "Tried to use a NULL vehicle!");
+  Vector origin = vec3_origin;
+  QAngle angles = vec3_angle;
+  float fov = 0.0f;
+#ifdef CLIENT_DLL
+  vehicle->GetVehicleViewPosition(role, &origin, &angles, &fov);
+#else
+  CBaseCombatCharacter *passenger = vehicle->GetPassenger(role);
+  if (passenger && passenger->IsPlayer())
+    vehicle->GetVehicleViewPosition(role, &origin, &angles, &fov);
+#endif
+  lua_pushvector(L, origin);
+  lua_pushangle(L, angles);
+  lua_pushnumber(L, fov);
   return 3;
 }
 
@@ -1468,6 +1343,9 @@ static int Vehicle_GetWheelBaseHeight (lua_State *L) {
 }
 
 static int Vehicle_GetWheelContactPoint (lua_State *L) {
+#ifndef CLIENT_DLL
+  if (VehicleController(luaL_checkvehicle(L, 1)) == NULL) return 0;
+#endif
   int iWheel = luaL_checkint(L, 2);
 
 #ifdef CLIENT_DLL
@@ -1633,26 +1511,29 @@ static int Vehicle_IsVehicle (lua_State *L) {
 
 
 static const luaL_Reg Vehiclemeta[] = {
+  {"GetDriver", Vehicle_GetDriver},
+  {"GetPassenger", Vehicle_GetPassenger},
+  {"GetVehicleViewPosition", Vehicle_GetVehicleViewPosition},
+  {"IsValidVehicle", Vehicle_IsValidVehicle},
+  {"IsVehicle", Vehicle_IsVehicle},
+#ifdef CLIENT_DLL
+  {"GetAmmo", Vehicle_GetAmmo},
+#endif
+  {"SetPos", CBaseEntity_SetPos},
+#ifndef CLIENT_DLL
   {"BoostTimeLeft", Vehicle_BoostTimeLeft},
   {"CheckExitPoint", Vehicle_CheckExitPoint},
   {"EnableEngine", Vehicle_EnableEngine},
-  {"GetAmmo", Vehicle_GetAmmo},
-  {"GetCameraDistance", Vehicle_GetCameraDistance},
-  {"GetDriver", Vehicle_GetDriver},
   {"GetHLSpeed", Vehicle_GetHLSpeed},
   {"GetMaxSpeed", Vehicle_GetMaxSpeed},
   {"GetOperatingParams", Vehicle_GetOperatingParams},
-  {"GetPassenger", Vehicle_GetPassenger},
   {"GetPassengerSeatPoint", Vehicle_GetPassengerSeatPoint},
   {"GetRPM", Vehicle_GetRPM},
   {"GetSpeed", Vehicle_GetSpeed},
   {"GetSteering", Vehicle_GetSteering},
   {"GetSteeringDegrees", Vehicle_GetSteeringDegrees},
-  {"GetThirdPersonMode", Vehicle_GetThirdPersonMode},
   {"GetThrottle", Vehicle_GetThrottle},
-  {"GetVehicleClass", Vehicle_GetVehicleClass},
   {"GetVehicleParams", Vehicle_GetVehicleParams},
-  {"GetVehicleViewPosition", Vehicle_GetVehicleViewPosition},
   {"GetWheel", Vehicle_GetWheel},
   {"GetWheelBaseHeight", Vehicle_GetWheelBaseHeight},
   {"GetWheelContactPoint", Vehicle_GetWheelContactPoint},
@@ -1663,13 +1544,9 @@ static const luaL_Reg Vehiclemeta[] = {
   {"IsBoosting", Vehicle_IsBoosting},
   {"IsEngineEnabled", Vehicle_IsEngineEnabled},
   {"IsEngineStarted", Vehicle_IsEngineStarted},
-  {"IsValidVehicle", Vehicle_IsValidVehicle},
-  {"IsVehicle", Vehicle_IsVehicle},
   {"IsVehicleBodyInWater", Vehicle_IsVehicleBodyInWater},
   {"ReleaseHandbrake", Vehicle_ReleaseHandbrake},
-  {"SetPos", CBaseEntity_SetPos},
   {"SetBoost", Vehicle_SetBoost},
-  {"SetCameraDistance", Vehicle_SetCameraDistance},
   {"SetHandbrake", Vehicle_SetHandbrake},
   {"SetHasBrakePedal", Vehicle_SetHasBrakePedal},
   {"SetMaxReverseThrottle", Vehicle_SetMaxReverseThrottle},
@@ -1677,13 +1554,16 @@ static const luaL_Reg Vehiclemeta[] = {
   {"SetSpringLength", Vehicle_SetSpringLength},
   {"SetSteering", Vehicle_SetSteering},
   {"SetSteeringDegrees", Vehicle_SetSteeringDegrees},
-  {"SetThirdPersonMode", Vehicle_SetThirdPersonMode},
   {"SetThrottle", Vehicle_SetThrottle},
-  {"SetVehicleClass", Vehicle_SetVehicleClass},
   {"SetVehicleEntryAnim", Vehicle_SetVehicleEntryAnim},
   {"SetVehicleParams", Vehicle_SetVehicleParams},
   {"SetWheelFriction", Vehicle_SetWheelFriction},
   {"StartEngine", Vehicle_StartEngine},
+  {"__index", Vehicle___index},
+  {"__newindex", Vehicle___newindex},
+  {"__eq", Vehicle___eq},
+  {"__tostring", Vehicle___tostring},
+#endif
   {"__index", Vehicle___index},
   {"__newindex", Vehicle___newindex},
   {"__eq", Vehicle___eq},

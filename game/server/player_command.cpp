@@ -467,6 +467,10 @@ void CPlayerMove::RunCommand ( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	else
 	{
 		VPROF( "pVehicle->ProcessMovement()" );
+#if defined( LUA_SDK )
+        extern void HL2SB_LuaVehicleMove( CBasePlayer *, CBaseEntity *, CMoveData * );
+        HL2SB_LuaVehicleMove( player, pVehicle->GetVehicleEnt(), g_pMoveData );
+#endif
 		pVehicle->ProcessMovement( player, g_pMoveData );
 	}
 			

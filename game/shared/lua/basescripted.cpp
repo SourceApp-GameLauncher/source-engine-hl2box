@@ -1024,6 +1024,12 @@ bool CBaseScripted::AcceptInput( const char *szInputName, CBaseEntity *pActivato
 
 int CBaseScripted::UpdateTransmitState( void )
 {
+	// Parent visibility and recipient ownership must be checked together.
+	// Keep this entity eligible while its parent is hidden so it can resume
+	// transmission without requiring a new model or parent assignment.
+	if ( IsEFlagSet( EFL_TRANSMIT_WITH_PARENT ) )
+		return SetTransmitState( FL_EDICT_FULLCHECK );
+
 #ifdef LUA_SDK
 	if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
 	{

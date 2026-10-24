@@ -341,6 +341,12 @@ void HL2SB_PushUserCmdTable (lua_State *L, const CUserCmd *pCmd) {
 static int CBasePlayer_GetCurrentCommand (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
 #ifdef CLIENT_DLL
+  const CUserCmd *activeCommand = pPlayer->m_pCurrentCommand;
+  if ( activeCommand != NULL )
+  {
+    HL2SB_PushUserCmdTable(L, activeCommand);
+    return 1;
+  }
   static CUserCmd s_HL2SBLiveCmd;
   s_HL2SBLiveCmd.Reset();
   if ( input != NULL )
@@ -2810,7 +2816,188 @@ static int CBasePlayer_DropObject (lua_State *L) {
 
 #endif // CLIENT_DLL
 
+
+// Driving an arbitrary entity is separate from occupying a vehicle seat.
+#ifdef CLIENT_DLL
+#define CPlayerDriveState C_PlayerDriveState
+#endif
+class CPlayerDriveState : public CBaseEntity
+{
+public:
+    DECLARE_CLASS(CPlayerDriveState, CBaseEntity);
+    DECLARE_NETWORKCLASS();
+#ifndef CLIENT_DLL
+    DECLARE_DATADESC();
+    int UpdateTransmitState() { return SetTransmitState(FL_EDICT_ALWAYS); }
+#else
+    void OnDataChanged(DataUpdateType_t type);
+    CHandle<CBaseEntity> m_lastDriven;
+#endif
+    CPlayerDriveState();
+    ~CPlayerDriveState();
+    CNetworkHandle(CBasePlayer, m_hPlayer);
+    CNetworkHandle(CBaseEntity, m_hDriven);
+    CNetworkVar(int, m_iMode);
+};
+
+IMPLEMENT_NETWORKCLASS_ALIASED(PlayerDriveState, DT_PlayerDriveState)
+BEGIN_NETWORK_TABLE(CPlayerDriveState, DT_PlayerDriveState)
+#ifdef CLIENT_DLL
+    RecvPropEHandle(RECVINFO(m_hPlayer)),
+    RecvPropEHandle(RECVINFO(m_hDriven)),
+    RecvPropInt(RECVINFO(m_iMode)),
+#else
+    SendPropEHandle(SENDINFO(m_hPlayer)),
+    SendPropEHandle(SENDINFO(m_hDriven)),
+    SendPropInt(SENDINFO(m_iMode), 15),
+#endif
+END_NETWORK_TABLE()
+#ifndef CLIENT_DLL
+LINK_ENTITY_TO_CLASS(hl2sb_player_drive_state, CPlayerDriveState);
+BEGIN_DATADESC(CPlayerDriveState)
+    DEFINE_FIELD(m_hPlayer, FIELD_EHANDLE),
+    DEFINE_FIELD(m_hDriven, FIELD_EHANDLE),
+    DEFINE_FIELD(m_iMode, FIELD_INTEGER),
+END_DATADESC()
+#endif
+
+static CUtlVector<CPlayerDriveState *> s_PlayerDriveStates;
+
+CPlayerDriveState::CPlayerDriveState()
+{
+    m_hPlayer = NULL;
+    m_hDriven = NULL;
+    m_iMode = 0;
+    s_PlayerDriveStates.AddToTail(this);
+}
+
+CPlayerDriveState::~CPlayerDriveState()
+{
+    s_PlayerDriveStates.FindAndRemove(this);
+}
+
+static void PlayerDriveCallback(const char *name, CBaseEntity *entity, CBasePlayer *player)
+{
+    if (L == NULL || entity == NULL || player == NULL)
+        return;
+    BEGIN_LUA_CALL_HOOK(name);
+        CBaseEntity::PushLuaInstanceSafe(L, entity);
+        lua_pushplayer(L, player);
+    END_LUA_CALL_HOOK(2, 0);
+}
+
+#ifdef CLIENT_DLL
+void CPlayerDriveState::OnDataChanged(DataUpdateType_t type)
+{
+    BaseClass::OnDataChanged(type);
+    CBaseEntity *oldEntity = m_lastDriven.Get();
+    CBaseEntity *newEntity = m_hDriven.Get();
+    if (oldEntity == newEntity)
+        return;
+    m_lastDriven = newEntity;
+    PlayerDriveCallback("EndEntityDriving", oldEntity, m_hPlayer.Get());
+    PlayerDriveCallback("StartEntityDriving", newEntity, m_hPlayer.Get());
+}
+#endif
+
+static CPlayerDriveState *PlayerDriveState(CBasePlayer *player, bool create = false)
+{
+    for (int i = 0; i < s_PlayerDriveStates.Count(); ++i)
+        if (s_PlayerDriveStates[i]->m_hPlayer.Get() == player)
+            return s_PlayerDriveStates[i];
+#ifndef CLIENT_DLL
+    if (create)
+    {
+        CPlayerDriveState *state = static_cast<CPlayerDriveState *>(CreateEntityByName("hl2sb_player_drive_state"));
+        if (state != NULL)
+        {
+            state->m_hPlayer = player;
+            state->SetOwnerEntity(player);
+            state->SetParent(player);
+            state->SetLocalOrigin(vec3_origin);
+            DispatchSpawn(state);
+        }
+        return state;
+    }
+#endif
+    return NULL;
+}
+
+static int CBasePlayer_SetDrivingEntity(lua_State *L)
+{
+#ifndef CLIENT_DLL
+    CBasePlayer *player = luaL_checkplayer(L, 1);
+    CBaseEntity *entity = lua_toentity(L, 2);
+    const int mode = entity ? luaL_optint(L, 3, 0) : 0;
+    CPlayerDriveState *state = PlayerDriveState(player, entity != NULL);
+    if (state == NULL)
+        return 0;
+    CBaseEntity *oldEntity = state->m_hDriven.Get();
+    if (oldEntity != entity)
+    {
+        PlayerDriveCallback("EndEntityDriving", oldEntity, player);
+        state->m_hDriven = entity;
+        PlayerDriveCallback("StartEntityDriving", entity, player);
+    }
+    state->m_iMode = mode;
+#endif
+    return 0;
+}
+
+static int CBasePlayer_GetDrivingEntity(lua_State *L)
+{
+    CPlayerDriveState *state = PlayerDriveState(luaL_checkplayer(L, 1));
+    CBaseEntity::PushLuaInstanceSafe(L, state ? state->m_hDriven.Get() : NULL);
+    return 1;
+}
+
+static int CBasePlayer_GetDrivingMode(lua_State *L)
+{
+    CPlayerDriveState *state = PlayerDriveState(luaL_checkplayer(L, 1));
+    lua_pushinteger(L, state ? state->m_iMode.Get() : 0);
+    return 1;
+}
+
+static int CBasePlayer_IsDrivingEntity(lua_State *L)
+{
+    CPlayerDriveState *state = PlayerDriveState(luaL_checkplayer(L, 1));
+    lua_pushboolean(L, state && state->m_hDriven.Get() != NULL);
+    return 1;
+}
+
+static int CBasePlayer_EnterVehicle(lua_State *L)
+{
+#ifndef CLIENT_DLL
+    CBasePlayer *player = luaL_checkplayer(L, 1);
+    CBaseEntity *entity = lua_toentity(L, 2);
+    if (entity && entity->GetServerVehicle())
+        player->EnterVehicle(entity->GetServerVehicle(), VEHICLE_ROLE_DRIVER);
+#endif
+    return 0;
+}
+
+static int CBasePlayer_DrawWorldModel(lua_State *L)
+{
+#ifndef CLIENT_DLL
+    CBaseCombatWeapon *weapon = luaL_checkplayer(L, 1)->GetActiveWeapon();
+    if (weapon != NULL)
+    {
+        if (lua_toboolean(L, 2)) weapon->RemoveEffects(EF_NODRAW);
+        else weapon->AddEffects(EF_NODRAW);
+    }
+#endif
+    return 0;
+}
+
 static const luaL_Reg CBasePlayermeta[] = {
+#ifndef CLIENT_DLL
+  {"EnterVehicle", CBasePlayer_EnterVehicle},
+#endif
+  {"SetDrivingEntity", CBasePlayer_SetDrivingEntity},
+  {"GetDrivingEntity", CBasePlayer_GetDrivingEntity},
+  {"GetDrivingMode", CBasePlayer_GetDrivingMode},
+  {"IsDrivingEntity", CBasePlayer_IsDrivingEntity},
+  {"DrawWorldModel", CBasePlayer_DrawWorldModel},
   {"LagCompensation", CBasePlayer_LagCompensation},
   {"GetInfo", CBasePlayer_GetInfo},
   {"IsListenServerHost", CBasePlayer_IsListenServerHost},
@@ -3215,6 +3402,13 @@ static int MoveData_KeyDown (lua_State *L) {
 // The drive system consumes all three from its move hooks
 // (lua/drive/drive_sandbox.lua: mv:KeyReleased at :82/:99, mv:SetMoveAngles
 // at :91, mv:SetUpSpeed at :138).
+static int MoveData_KeyPressed (lua_State *L) {
+  CMoveData *pMove = HL2SB_CheckMoveData(L, 1);
+  const int bit = luaL_checkint(L, 2);
+  lua_pushboolean(L, (pMove->m_nButtons & bit) != 0 && (pMove->m_nOldButtons & bit) == 0);
+  return 1;
+}
+
 static int MoveData_KeyReleased (lua_State *L) {
   CMoveData *pMove = HL2SB_CheckMoveData(L, 1);
   const int nBit = luaL_checkint(L, 2);
@@ -3268,6 +3462,7 @@ static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"SetUpSpeed",          MoveData_SetUpSpeed},
   {"KeyDown",             MoveData_KeyDown},
   {"AddKey",              MoveData_AddKey},
+  {"KeyPressed",          MoveData_KeyPressed},
   {"KeyReleased",         MoveData_KeyReleased},
   {NULL, NULL}
 };
@@ -3301,6 +3496,17 @@ static void HL2SB_PushMoveData_Internal (lua_State *L, CMoveData *pMove) {
 // Dispatched from CGameMovement::ProcessMovement via a local extern
 // declaration there (AGENTS.md: keep headers untouched, waf will not
 // propagate them).  Fires one GMod movement hook.
+void HL2SB_LuaVehicleMove( CBasePlayer *player, CBaseEntity *vehicle, CMoveData *move )
+{
+    if ( L == NULL || player == NULL || vehicle == NULL || move == NULL )
+        return;
+    BEGIN_LUA_CALL_HOOK( "VehicleMove" );
+        lua_pushplayer( L, player );
+        CBaseEntity::PushLuaInstanceSafe( L, vehicle );
+        HL2SB_PushMoveData_Internal( L, move );
+    END_LUA_CALL_HOOK( 3, 0 );
+}
+
 void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook )
 {
 	if ( L == NULL || pPlayer == NULL || pMove == NULL )

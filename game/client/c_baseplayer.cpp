@@ -1900,6 +1900,8 @@ extern bool HL2SB_GetLuaViewDrawViewer( void );
 	int ObserverMode = pLocalPlayer->GetObserverMode();
 	if ( ( ObserverMode == OBS_MODE_NONE ) || ( ObserverMode == OBS_MODE_IN_EYE ) )
 	{
+		if ( HL2SB_GetLuaViewDrawViewer() )
+			return false;
 		// HL2SB: the vehicle third person camera moves the view out of the eye
 		// without touching the engine's third-person flag, so the local body must be
 		// drawn for it (GMod: view.drawviewer = true in GM:CalcVehicleView).

@@ -7,6 +7,7 @@
 #define lc_baseanimating_cpp
 
 #include "cbase.h"
+#include "activitylist.h"
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lc_baseanimating.h"
@@ -1557,7 +1558,15 @@ static int CBaseAnimating_RetrieveRagdollInfo (lua_State *L) {
 }
 
 static int CBaseAnimating_SelectWeightedSequence (lua_State *L) {
-  lua_pushinteger(L, luaL_checkanimating(L, 1)->SelectWeightedSequence(luaL_checkint(L, 2)));
+  CBaseAnimating *entity = luaL_checkanimating(L, 1);
+  const int activity = luaL_checkint(L, 2);
+  const char *name = NULL;
+  if ( activity == ACT_GMOD_SIT_ROLLERCOASTER ) name = "sit_rollercoaster";
+  else if ( activity == ACT_HL2MP_SIT ) name = "sit";
+  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_JEEP") ) name = "drive_jeep";
+  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_AIRBOAT") ) name = "drive_airboat";
+  int sequence = name ? entity->LookupSequence(name) : -1;
+  lua_pushinteger(L, sequence >= 0 ? sequence : entity->SelectWeightedSequence((Activity)activity));
   return 1;
 }
 
