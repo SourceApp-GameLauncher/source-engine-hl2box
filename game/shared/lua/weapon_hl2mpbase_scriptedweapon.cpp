@@ -953,9 +953,10 @@ void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 
 	// A server-confirmed switch also reaches clients that did not predict it.
 	// Notify Lua without holstering the replacement weapon's shared viewmodel.
+	// The on-target state is also active; use the owner's selected weapon.
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-	if ( L != NULL && m_nTableReference >= 0 && m_iState != WEAPON_IS_ACTIVE &&
-		pOwner != NULL && pOwner == CBasePlayer::GetLocalPlayer() )
+	if ( L != NULL && m_nTableReference >= 0 && pOwner != NULL &&
+		pOwner == CBasePlayer::GetLocalPlayer() && pOwner->GetActiveWeapon() != this )
 	{
 		lua_getref( L, m_nTableReference );
 		if ( lua_istable( L, -1 ) )
