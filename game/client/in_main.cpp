@@ -542,6 +542,14 @@ void IN_Impulse( const CCommand &args )
 void IN_ScoreDown( const CCommand &args )
 {
 	KeyDown( &in_score, args[1] );
+#ifdef LUA_SDK
+    if ( g_bLuaInitialized )
+    {
+        BEGIN_LUA_CALL_HOOK( "ScoreboardShow" );
+        END_LUA_CALL_HOOK( 0, 0 );
+        return;
+    }
+#endif
 	if ( gViewPortInterface )
 	{
 		gViewPortInterface->ShowPanel( PANEL_SCOREBOARD, true );
@@ -551,6 +559,14 @@ void IN_ScoreDown( const CCommand &args )
 void IN_ScoreUp( const CCommand &args )
 {
 	KeyUp( &in_score, args[1] );
+#ifdef LUA_SDK
+    if ( g_bLuaInitialized )
+    {
+        BEGIN_LUA_CALL_HOOK( "ScoreboardHide" );
+        END_LUA_CALL_HOOK( 0, 0 );
+        return;
+    }
+#endif
 	if ( gViewPortInterface )
 	{
 		gViewPortInterface->ShowPanel( PANEL_SCOREBOARD, false );

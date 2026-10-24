@@ -3105,26 +3105,16 @@ void CNPC_MetroPolice::Event_Killed( const CTakeDamageInfo &info )
 
 	if ( pPlayer != NULL )
 	{
-		CHalfLife2 *pHL2GameRules = static_cast<CHalfLife2 *>(g_pGameRules);
-#ifndef HL2SB
-
+#ifdef HL2SB
+		CHL2MPRules *pDropRules = HL2MPRules();
 #else
-		//CHL2MPRules *pHL2MPRules = static_cast<CHL2MPRules *>(g_pGameRules);
+		CHalfLife2 *pDropRules = HL2GameRules();
 #endif
 
-		// Attempt to drop health
-#ifndef HL2SB
-		if ( pHL2GameRules->NPC_ShouldDropHealth( pPlayer ) )
-#else
-		if ( pHL2GameRules->NPC_ShouldDropHealth( pPlayer ) )
-#endif
+		if ( pDropRules->NPC_ShouldDropHealth( pPlayer ) )
 		{
 			DropItem( "item_healthvial", WorldSpaceCenter()+RandomVector(-4,4), RandomAngle(0,360) );
-#ifndef HL2SB
-			pHL2GameRules->NPC_DroppedHealth();
-#else
-			pHL2GameRules->NPC_DroppedHealth(); //FIXME Bring later hl2mp gamerules
-#endif
+			pDropRules->NPC_DroppedHealth();
 		}
 	}
 

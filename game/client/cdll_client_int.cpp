@@ -344,38 +344,7 @@ static ConVar s_cl_class("cl_class", "default", FCVAR_USERINFO|FCVAR_ARCHIVE, "D
 //-----------------------------------------------------------------------------
 // HL2SB: GMod's spawn-menu / context-menu toggle commands.
 //
-// WHY THESE ARE ENGINE COMMANDS.  GMod defines +menu/-menu in Lua
-// (gamemodes/base/gamemode/cl_spawnmenu.lua:10, `concommand.Add( "+menu", ... )`)
-// and this fork does too -- but that path has now failed twice in a row, for two
-// independent reasons, and the user has launched three times for three different
-// single missing symbols:
-//
-//   1. it is registered from the BASE gamemode's cl_init.lua, which the SERVER
-//      never loads -- luasrc_LoadGamemode picks gamemode/init.lua under
-//      #ifndef CLIENT_DLL (game/shared/lua/luamanager.cpp:1567-1571);
-//   2. and on the CLIENT, the sandbox gamemode immediately re-executes
-//      lua/includes/modules/concommand.lua (gamemodes/sandbox/gamemode/
-//      in_main.lua:7 does require( "concommand" ), and luasrc_dofolder never
-//      writes package.loaded), which swapped `tFnCommandCallbacks` out from
-//      under the just-registered callback.  CC_ConCommand then dispatched into
-//      an empty table and returned false; on the client that prints NOTHING,
-//      so pressing Q looked like a dead key.
-//      (Root-caused and fixed as well -- see the re-entry guard at the top of
-//      lua/includes/modules/concommand.lua.  This binding is the belt.)
-//
-// A static ConCommand is registered by ConVar_Register at DLL load, exactly like
-// the fork's own +smenu/-smenu (game/client/menu/sm_menu_list.cpp:311,317), so
-// nothing in the Lua load order can lose it.  Verified in the shipped client.dll
-// as NUL-terminated strings (tools/dll_has_string.py).
-//
-// The callbacks run the GMod hooks, which is where the spawnmenu listens:
-//     gamemodes/sandbox/gamemode/spawnmenu/spawnmenu.lua:241  GM:OnSpawnMenuOpen
-//     gamemodes/sandbox/gamemode/spawnmenu/spawnmenu.lua:259  GM:OnSpawnMenuClose
-//     gamemodes/sandbox/gamemode/spawnmenu/contextmenu.lua    GM:OnContextMenuOpen
-//                                                             GM:OnContextMenuClose
-// BEGIN_LUA_CALL_HOOK calls hook.call( event, _GAMEMODE ), whose gamemode
-// fallback is what reaches those methods.
-//-----------------------------------------------------------------------------
+// Legacy command aliases dispatch the current gamemode menu hooks.
 static void HL2SB_CallMenuHook( const char *pszEvent )
 {
 	if ( !g_bLuaInitialized )
@@ -405,11 +374,6 @@ static void HL2SB_ContextMenuUp( const CCommand &args )
 	HL2SB_CallMenuHook( "OnContextMenuClose" );
 }
 
-// Flags deliberately mirror +smenu (none): this fork's working precedent.
-static ConCommand hl2sb_menu_down_cmd( "+menu", HL2SB_SpawnMenuDown, "Open the GMod spawnmenu (hold)" );
-static ConCommand hl2sb_menu_up_cmd( "-menu", HL2SB_SpawnMenuUp, "Close the GMod spawnmenu (release)" );
-static ConCommand hl2sb_menu_context_down_cmd( "+menu_context", HL2SB_ContextMenuDown, "Open the GMod context menu (hold)" );
-static ConCommand hl2sb_menu_context_up_cmd( "-menu_context", HL2SB_ContextMenuUp, "Close the GMod context menu (release)" );
 
 // HL2SB: the fork's older "+smenu" / "-smenu" names.  Players' saved config.cfg
 // binds Q to "+smenu" (from the since-deleted game/client/menu/sm_menu_list.cpp),

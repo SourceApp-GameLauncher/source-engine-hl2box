@@ -531,6 +531,14 @@ static int CHL2MP_Player_SetVoiceVolumeScale (lua_State *L) {
 #endif
   return 0;
 }
+#ifdef CLIENT_DLL
+static int CHL2MP_Player_ShowProfile (lua_State *L) {
+  luaL_checkhl2mpplayer(L, 1);
+  // Steam profile overlays are intentionally unavailable in this client.
+  return 0;
+}
+#endif
+
 // Reference: Player:IsMuted answers the client's mute store for that player
 // (the same store the scoreboard squelch drives).
 static int CHL2MP_Player_IsMuted (lua_State *L) {
@@ -737,7 +745,40 @@ static const luaL_Reg CHL2MP_Playermeta[] = {
 // falls back TO CBasePlayer, never the reverse, so registering these only
 // there left ply:AnimRestartGesture()/TranslateWeaponActivity()/IsPlayingTaunt()
 // nil on every player Lua actually holds.
+#ifndef CLIENT_DLL
+static int CHL2MP_Player_CreateRagdoll( lua_State *L )
+{
+	luaL_checkhl2mpplayer( L, 1 )->CreateRagdollEntity();
+	return 0;
+}
+
+static int CHL2MP_Player_ShouldDropWeapon( lua_State *L )
+{
+	CHL2MP_Player *player = luaL_checkhl2mpplayer( L, 1 );
+	const bool enabled = lua_toboolean( L, 2 ) != 0;
+	lua_getref( L, player->m_nTableReference );
+	if ( !lua_istable( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		if ( player->m_nTableReference >= 0 )
+			luaL_unref( L, LUA_REGISTRYINDEX, player->m_nTableReference );
+		lua_newtable( L );
+		lua_pushvalue( L, -1 );
+		player->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+	}
+	lua_pushliteral( L, "__hl2sbDropWeaponOnDeath" );
+	lua_pushboolean( L, enabled );
+	lua_rawset( L, -3 );
+	lua_pop( L, 1 );
+	return 0;
+}
+#endif
+
 static const luaL_Reg CHL2MP_PlayerGModmeta[] = {
+#ifndef CLIENT_DLL
+  {"CreateRagdoll", CHL2MP_Player_CreateRagdoll},
+  {"ShouldDropWeapon", CHL2MP_Player_ShouldDropWeapon},
+#endif
   // HL2SB (2026-09-27): GMod Player animation/movement surface.
   {"DoAnimationEvent", CHL2MP_Player_DoAnimationEvent},
 #ifndef CLIENT_DLL
@@ -784,6 +825,7 @@ static const luaL_Reg CHL2MP_PlayerGModmeta[] = {
   // table and its server carries no such names).
   {"GetVoiceVolumeScale", CHL2MP_Player_GetVoiceVolumeScale},
   {"SetVoiceVolumeScale", CHL2MP_Player_SetVoiceVolumeScale},
+  {"ShowProfile", CHL2MP_Player_ShowProfile},
   {"IsMuted", CHL2MP_Player_IsMuted},
   {"SetMuted", CHL2MP_Player_SetMuted},
 #endif

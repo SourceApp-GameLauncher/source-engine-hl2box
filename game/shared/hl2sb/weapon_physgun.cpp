@@ -125,47 +125,7 @@ ConVar phys_spinspeed( "phys_spinspeed", "200", FCVAR_ARCHIVE | FCVAR_REPLICATED
 ConVar gm_snapangles( "gm_snapangles", "45", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: Shift+E angle snap grid (degrees, 0 disables)" );
 ConVar gm_snapgrid( "gm_snapgrid", "0", FCVAR_ARCHIVE | FCVAR_REPLICATED, "Physgun: snap grid size (0 disables)" );
 
-#ifndef CLIENT_DLL
-static int HL2SB_PhysgunPlayerFrozeObject( lua_State *state )
-{
-	lua_getglobal( state, "DisablePropCreateEffect" );
-	const bool disabled = lua_toboolean( state, -1 ) != 0;
-	lua_pop( state, 1 );
-	if ( disabled )
-		return 0;
 
-	CBaseEntity *entity = lua_toentity( state, 3 );
-	IPhysicsObject *body = lua_tophysicsobject( state, 4 );
-	if ( entity == NULL || body == NULL )
-		return 0;
-
-	CEffectData data;
-	body->GetPosition( &data.m_vOrigin, NULL );
-	data.m_nEntIndex = entity->entindex();
-	CPASFilter filter( data.m_vOrigin );
-	filter.SetIgnorePredictionCull( true );
-	DispatchEffect( "phys_freeze", data, filter );
-	return 0;
-}
-
-void HL2SB_InstallPhysgunGamemodeEffects( lua_State *state )
-{
-	// Complete the legacy sandbox table before gamemode inheritance is applied.
-	lua_getglobal( state, "GM" );
-	if ( lua_istable( state, -1 ) )
-	{
-		lua_getfield( state, -1, "PlayerFrozeObject" );
-		const bool missing = lua_isnil( state, -1 );
-		lua_pop( state, 1 );
-		if ( missing )
-		{
-			lua_pushcfunction( state, HL2SB_PhysgunPlayerFrozeObject );
-			lua_setfield( state, -2, "PlayerFrozeObject" );
-		}
-	}
-	lua_pop( state, 1 );
-}
-#endif
 
 // HL2SB (2026-10-03): physgun visual diagnostics, BOTH realms (the server
 // prints its beam-entity spawn, the client prints the client entity's

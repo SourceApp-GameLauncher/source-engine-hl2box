@@ -694,6 +694,17 @@ void CAI_BaseNPC::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize, bo
 
 //-----------------------------------------------------------------------------
 
+ConVar ai_serverragdolls( "ai_serverragdolls", "0", FCVAR_ARCHIVE, "Keep newly spawned NPC corpses as server-side ragdolls." );
+
+// Private lifetime-scoped state keeps the Sandbox setting separate from the
+// existing ai_force_serverside_ragdoll setting without changing class layout.
+static CUtlVector<const CBaseEntity *> s_RetainedNPCCorpses;
+
+bool HL2SB_NPCShouldKeepCorpse( const CBaseEntity *entity )
+{
+	return s_RetainedNPCCorpses.Find( entity ) != s_RetainedNPCCorpses.InvalidIndex();
+}
+
 ConVar	ai_block_damage( "ai_block_damage","0" );
 
 bool CAI_BaseNPC::PassesDamageFilter( const CTakeDamageInfo &info )
@@ -11406,6 +11417,10 @@ CAI_BaseNPC::CAI_BaseNPC(void)
 #endif
 	m_bDidDeathCleanup = false;
 
+	// Snapshot the corpse setting when the NPC is created.
+	if ( ai_serverragdolls.GetBool() )
+		s_RetainedNPCCorpses.AddToTail( this );
+
 	m_afCapability				= 0;		// Make sure this is cleared in the base class
 
 	SetHullType(HULL_HUMAN);  // Give human hull by default, subclasses should override
@@ -11472,6 +11487,7 @@ CAI_BaseNPC::CAI_BaseNPC(void)
 //-----------------------------------------------------------------------------
 CAI_BaseNPC::~CAI_BaseNPC(void)
 {
+	s_RetainedNPCCorpses.FindAndRemove( this );
 	g_AI_Manager.RemoveAI( this );
 
 	delete m_pLockedBestSound;

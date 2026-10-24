@@ -416,6 +416,24 @@ void CHL2MP_Player::GiveAllItems( void )
 	GiveNamedItem( "weapon_toolgun");
 }
 
+#if defined( LUA_SDK )
+static bool HL2SB_HasPlayerGamemodeMethod( const char *name )
+{
+	if ( L == NULL )
+		return false;
+	lua_getglobal( L, "_GAMEMODE" );
+	bool found = false;
+	if ( lua_istable( L, -1 ) )
+	{
+		luasrc_PushScriptField( L, -1, name );
+		found = lua_isfunction( L, -1 ) != 0;
+		lua_pop( L, 1 );
+	}
+	lua_pop( L, 1 );
+	return found;
+}
+#endif
+
 void CHL2MP_Player::GiveDefaultItems( void )
 {
 #if defined( LUA_SDK )
@@ -431,6 +449,10 @@ void CHL2MP_Player::GiveDefaultItems( void )
 	END_LUA_CALL_HOOK( 1, 1 );
 
 	RETURN_LUA_NONE();
+
+	// The gamemode's spawn chain already calls PlayerLoadout.
+	if ( HL2SB_HasPlayerGamemodeMethod( "PlayerSpawn" ) )
+		return;
 #endif
 
 	// If we in coop mode, we must spawn without weapons in first maps of HL2
@@ -504,6 +526,13 @@ void CHL2MP_Player::PickDefaultSpawnTeam( void )
 //-----------------------------------------------------------------------------
 void CHL2MP_Player::Spawn(void)
 {
+	// A new life no longer owns the previous death ragdoll.
+	if ( m_hRagdoll )
+	{
+		UTIL_Remove( m_hRagdoll );
+		m_hRagdoll = NULL;
+	}
+
 	m_flNextModelChangeTime = 0.0f;
 	m_flNextTeamChangeTime = 0.0f;
 
@@ -879,15 +908,13 @@ void CHL2MP_Player::PostThink( void )
 
 void CHL2MP_Player::PlayerDeathThink()
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_HOOK( "PlayerDeathThink" );
-		lua_pushhl2mpplayer( L, this );
-	END_LUA_CALL_HOOK( 1, 0 );
+	// The base death-think performs housekeeping before the Lua respawn hook.
+#if defined( LUA_SDK )
+	if ( HL2SB_HasPlayerGamemodeMethod( "PlayerDeathThink" ) || !IsObserver() )
+#else
+	if ( !IsObserver() )
 #endif
-	if( !IsObserver() )
-	{
 		BaseClass::PlayerDeathThink();
-	}
 }
 
 void CHL2MP_Player::FireBullets ( const FireBulletsInfo_t &info )
@@ -1736,7 +1763,10 @@ void CHL2MP_Player::Event_Killed( const CTakeDamageInfo &info )
 
 	// Note: since we're dead, it won't draw us on the client, but we don't set EF_NODRAW
 	// because we still want to transmit to the clients in our PVS.
-	CreateRagdollEntity();
+#if defined( LUA_SDK )
+	if ( !HL2SB_HasPlayerGamemodeMethod( "DoPlayerDeath" ) )
+#endif
+		CreateRagdollEntity();
 
 	DetonateTripmines();
 

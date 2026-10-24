@@ -1434,6 +1434,17 @@ static int CBaseAnimating_GetSequence (lua_State *L) {
   return 1;
 }
 
+static int CBaseAnimating_GetSequenceCount( lua_State *L ) {
+  C_BaseAnimating *pAnimating = luaL_checkentity( L, 1 )->GetBaseAnimating();
+  if ( pAnimating == NULL )
+    return 0;
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL )
+    return 0;
+  lua_pushinteger( L, pStudioHdr->GetNumSeq() );
+  return 1;
+}
+
 static int CBaseAnimating_GetSequenceActivity (lua_State *L) {
   lua_pushinteger(L, luaL_checkanimating(L, 1)->GetSequenceActivity(luaL_checkint(L, 2)));
   return 1;
@@ -2276,6 +2287,7 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetRenderBounds", CBaseAnimating_GetRenderBounds},
   {"GetRenderOrigin", CBaseAnimating_GetRenderOrigin},
   {"GetSequence", CBaseAnimating_GetSequence},
+  {"GetSequenceCount", CBaseAnimating_GetSequenceCount},
   {"GetSequenceActivity", CBaseAnimating_GetSequenceActivity},
   {"GetSequenceActivityName", CBaseAnimating_GetSequenceActivityName},
   {"GetSequenceGroundSpeed", CBaseAnimating_GetSequenceGroundSpeed},

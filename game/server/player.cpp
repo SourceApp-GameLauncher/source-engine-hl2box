@@ -1242,24 +1242,41 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	// keep track of amount of damage last sustained
 	m_lastDamageAmount = info.GetDamage();
 
-#if defined ( LUA_SDK )
-	// HL2SB GMod compat (2026-10-08): GM:HandlePlayerArmorReduction( ply,
-	// dmginfo ), raised just before the armor math below reads the damage.
-	// GMod's own C++ no longer reduces armor itself - the base gamemode body
-	// does the whole 80/20 job with SetArmor/SetDamage - while this fork keeps
-	// the engine block authoritative, so the base Lua body stays a no-op and
-	// addons use the hook to scale or veto through dmginfo first.
+#if defined( LUA_SDK )
+	bool bLuaArmor = false;
+	if ( L != NULL )
 	{
-		CTakeDamageInfo mutableInfo = info;
-
+		lua_getglobal( L, "_GAMEMODE" );
+		if ( lua_istable( L, -1 ) )
+		{
+			luasrc_PushScriptField( L, -1, "HandlePlayerArmorReduction" );
+			bLuaArmor = lua_isfunction( L, -1 ) != 0;
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+	}
+	if ( bLuaArmor )
+	{
+		// Damage userdata is a copy; keep it alive until its changes are applied.
+		const int armorBefore = ArmorValue();
+		lua_pushdamageinfo( L, info );
+		const int damageRef = luaL_ref( L, LUA_REGISTRYINDEX );
 		BEGIN_LUA_CALL_HOOK( "HandlePlayerArmorReduction" );
 			lua_pushplayer( L, this );
-			lua_pushdamageinfo( L, mutableInfo );
-			END_LUA_CALL_HOOK( 2, 0 );
+			lua_rawgeti( L, LUA_REGISTRYINDEX, damageRef );
+		END_LUA_CALL_HOOK( 2, 0 );
+		lua_rawgeti( L, LUA_REGISTRYINDEX, damageRef );
+		info = lua_todamageinfo( L, -1 );
+		lua_pop( L, 1 );
+		luaL_unref( L, LUA_REGISTRYINDEX, damageRef );
+		m_DmgSave = ArmorValue() - armorBefore;
 	}
 #endif
 
-	// Armor.
+	// Native armor remains a fallback for games without a Lua armor handler.
+#if defined( LUA_SDK )
+	if ( !bLuaArmor )
+#endif
 	if (m_ArmorValue && !(info.GetDamageType() & (DMG_FALL | DMG_DROWN | DMG_POISON | DMG_RADIATION)) )// armor doesn't protect against fall or drown damage!
 	{
 		float flNew = info.GetDamage() * flRatio;
@@ -1577,6 +1594,22 @@ void CBasePlayer::PackDeadPlayerItems( void )
 	// get the game rules 
 	iWeaponRules = g_pGameRules->DeadPlayerWeapons( this );
  	iAmmoRules = g_pGameRules->DeadPlayerAmmo( this );
+
+#if defined( LUA_SDK )
+	if ( L != NULL && m_nTableReference >= 0 )
+	{
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) )
+		{
+			lua_pushliteral( L, "__hl2sbDropWeaponOnDeath" );
+			lua_rawget( L, -2 );
+			if ( lua_isboolean( L, -1 ) && !lua_toboolean( L, -1 ) )
+				iWeaponRules = GR_PLR_DROP_GUN_NO;
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+	}
+#endif
 
 	if ( iWeaponRules == GR_PLR_DROP_GUN_NO && iAmmoRules == GR_PLR_DROP_AMMO_NO )
 	{
@@ -2276,7 +2309,28 @@ void CBasePlayer::PlayerDeathThink(void)
 
 	IncrementInterpolationFrame();
 	m_flPlaybackRate = 0.0;
-	
+
+#if defined( LUA_SDK )
+	if ( L != NULL )
+	{
+		lua_getglobal( L, "_GAMEMODE" );
+		bool handlesRespawn = false;
+		if ( lua_istable( L, -1 ) )
+		{
+			luasrc_PushScriptField( L, -1, "PlayerDeathThink" );
+			handlesRespawn = lua_isfunction( L, -1 ) != 0;
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+		if ( handlesRespawn )
+		{
+			BEGIN_LUA_CALL_HOOK( "PlayerDeathThink" );
+				lua_pushplayer( L, this );
+			END_LUA_CALL_HOOK( 1, 0 );
+			return;
+		}
+	}
+#endif
 	int fAnyButtonDown = (m_nButtons & ~IN_SCORE);
 	
 	// Strip out the duck key from this check if it's toggled
