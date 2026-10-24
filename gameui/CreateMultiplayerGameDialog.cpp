@@ -19,6 +19,13 @@
 #include "MouseMessageForwardingPanel.h"
 
 #include <stdio.h>
+#include <map>
+#include <vector>
+#include <string>
+#include <regex>
+#include <cmath>
+#include <cctype>
+#include <algorithm>
 
 using namespace vgui;
 
@@ -29,6 +36,7 @@ using namespace vgui;
 #include "vgui_controls/PanelListPanel.h"
 #include "vgui_controls/ImagePanel.h"
 #include "vgui_controls/CheckButton.h"
+#include "vgui_controls/ToolTip.h"
 #include <vgui/ILocalize.h>
 #include <vgui/ISurface.h>
 #include <vgui/IScheme.h>
@@ -39,55 +47,510 @@ using namespace vgui;
 #include <tier0/memdbgon.h>
 
 #define RANDOM_MAP "#GameUI_RandomMap"
-#define MAX_PLAYERS_DEFAULT 32
+#define MAX_PLAYERS_DEFAULT 1
 
-//-----------------------------------------------------------------------------
-// HL2SB: the multiplayer sandbox options, in the order the Lua dialog (built
-// from the gamemode settings file) shows them.  Everything here persists into
-// ServerConfig.vdf and lands on the live convars through sandbox/init.lua's
-// HL2SB_ApplyStartOptions(), so the C++ and Lua menus drive the exact same
-// server-side values.
-//-----------------------------------------------------------------------------
-static const struct
-{
-	const char *pszConVar;
-	const char *pszToken;
-	const char *pszDefault;
-} s_SandboxLimits[] =
-{
-	{ "sbox_maxprops",           "#HL2SB_LimitProps",           "200" },
-	{ "sbox_maxragdolls",        "#HL2SB_LimitRagdolls",        "10" },
-	{ "sbox_maxvehicles",        "#HL2SB_LimitVehicles",        "4" },
-	{ "sbox_maxeffects",         "#HL2SB_LimitEffects",         "200" },
-	{ "sbox_maxballoons",        "#HL2SB_LimitBalloons",        "100" },
-	{ "sbox_maxcameras",         "#HL2SB_LimitCameras",         "10" },
-	{ "sbox_maxnpcs",            "#HL2SB_LimitNPCs",            "10" },
-	{ "sbox_maxsents",           "#HL2SB_LimitSents",           "100" },
-	{ "sbox_maxdynamite",        "#HL2SB_LimitDynamite",        "10" },
-	{ "sbox_maxlamps",           "#HL2SB_LimitLamps",           "3" },
-	{ "sbox_maxlights",          "#HL2SB_LimitLights",          "5" },
-	{ "sbox_maxwheels",          "#HL2SB_LimitWheels",          "50" },
-	{ "sbox_maxthrusters",       "#HL2SB_LimitThrusters",       "50" },
-	{ "sbox_maxhoverballs",      "#HL2SB_LimitHoverballs",      "50" },
-	{ "sbox_maxbuttons",         "#HL2SB_LimitButtons",         "50" },
-	{ "sbox_maxemitters",        "#HL2SB_LimitEmitters",        "20" },
-	{ "sbox_maxconstraints",     "#HL2SB_LimitConstraints",     "2000" },
-	{ "sbox_maxropeconstraints", "#HL2SB_LimitRopeConstraints", "1000" },
-};
 
-static const struct
-{
-	const char *pszConVar;
-	const char *pszToken;
-	const char *pszDefault;
-} s_SandboxChecks[] =
-{
-	{ "sbox_playershurtplayers", "#HL2SB_PvPDamage",       "1" },
-	{ "physgun_limited",         "#HL2SB_PhysgunLimited",  "0" },
-	{ "sbox_bonemanip_npc",      "#HL2SB_BoneManipNPC",    "1" },
-	{ "sbox_bonemanip_player",   "#HL2SB_BoneManipPlayer", "0" },
-	{ "sbox_bonemanip_misc",     "#HL2SB_BoneManipMisc",   "0" },
+// GMod classifies exact names before the first underscore prefix, then tests
+// gamemode patterns. Mount paths do not decide campaign membership.
+struct NativeMapRule { const char *name; const char *category; };
+static const NativeMapRule s_MapNames[] = {
+ { "1v1_", "Counter-Strike (Custom)" },
+ { "2koth_", "Team Fortress 2" },
+ { "35hp_", "Counter-Strike (Custom)" },
+ { "achievement_", "Team Fortress 2" },
+ { "aim_", "Counter-Strike (Custom)" },
+ { "am_", "Counter-Strike (Custom)" },
+ { "aoc_", "Age of Chivalry" },
+ { "ar_", "Counter-Strike" },
+ { "arena_", "Team Fortress 2" },
+ { "awp_", "Counter-Strike (Custom)" },
+ { "ba_", "Jailbreak" },
+ { "bhop_", "Bunny Hop" },
+ { "bm_", "Black Mesa" },
+ { "boot_camp", "Half-Life Deathmatch" },
+ { "bounce", "Half-Life Deathmatch" },
+ { "bt_", "Pirates, Vikings, & Knights II" },
+ { "buhriz", "Insurgency" },
+ { "buhriz_coop", "Insurgency" },
+ { "buhriz_night", "Insurgency" },
+ { "cinema_", "Cinema" },
+ { "clocktower", "Nuclear Dawn" },
+ { "cm_", "Fistful of Frags" },
+ { "coast", "Nuclear Dawn" },
+ { "contact", "Insurgency" },
+ { "contact_coop", "Insurgency" },
+ { "contact_night", "Insurgency" },
+ { "coop_", "Cooperative" },
+ { "cp_", "Team Fortress 2" },
+ { "cp_docks", "Blade Symphony" },
+ { "cp_parkour", "Blade Symphony" },
+ { "cp_sequence", "Blade Symphony" },
+ { "cp_terrace", "Blade Symphony" },
+ { "cp_test", "Blade Symphony" },
+ { "cppl_", "Team Fortress 2" },
+ { "crossfire", "Half-Life Deathmatch" },
+ { "cs_", "Counter-Strike" },
+ { "ctf_", "Team Fortress 2" },
+ { "curling_stadium", "Left 4 Dead 2" },
+ { "d1_canals_01", "Half-Life 2" },
+ { "d1_canals_01a", "Half-Life 2" },
+ { "d1_canals_02", "Half-Life 2" },
+ { "d1_canals_03", "Half-Life 2" },
+ { "d1_canals_05", "Half-Life 2" },
+ { "d1_canals_06", "Half-Life 2" },
+ { "d1_canals_07", "Half-Life 2" },
+ { "d1_canals_08", "Half-Life 2" },
+ { "d1_canals_09", "Half-Life 2" },
+ { "d1_canals_10", "Half-Life 2" },
+ { "d1_canals_11", "Half-Life 2" },
+ { "d1_canals_12", "Half-Life 2" },
+ { "d1_canals_13", "Half-Life 2" },
+ { "d1_eli_01", "Half-Life 2" },
+ { "d1_eli_02", "Half-Life 2" },
+ { "d1_town_01", "Half-Life 2" },
+ { "d1_town_01a", "Half-Life 2" },
+ { "d1_town_02", "Half-Life 2" },
+ { "d1_town_02a", "Half-Life 2" },
+ { "d1_town_03", "Half-Life 2" },
+ { "d1_town_04", "Half-Life 2" },
+ { "d1_town_05", "Half-Life 2" },
+ { "d1_trainstation_01", "Half-Life 2" },
+ { "d1_trainstation_02", "Half-Life 2" },
+ { "d1_trainstation_03", "Half-Life 2" },
+ { "d1_trainstation_04", "Half-Life 2" },
+ { "d1_trainstation_05", "Half-Life 2" },
+ { "d1_trainstation_06", "Half-Life 2" },
+ { "d2_coast_01", "Half-Life 2" },
+ { "d2_coast_03", "Half-Life 2" },
+ { "d2_coast_04", "Half-Life 2" },
+ { "d2_coast_05", "Half-Life 2" },
+ { "d2_coast_07", "Half-Life 2" },
+ { "d2_coast_08", "Half-Life 2" },
+ { "d2_coast_09", "Half-Life 2" },
+ { "d2_coast_10", "Half-Life 2" },
+ { "d2_coast_11", "Half-Life 2" },
+ { "d2_coast_12", "Half-Life 2" },
+ { "d2_lostcoast", "Half-Life 2: Lost Coast" },
+ { "d2_prison_01", "Half-Life 2" },
+ { "d2_prison_02", "Half-Life 2" },
+ { "d2_prison_03", "Half-Life 2" },
+ { "d2_prison_04", "Half-Life 2" },
+ { "d2_prison_05", "Half-Life 2" },
+ { "d2_prison_06", "Half-Life 2" },
+ { "d2_prison_07", "Half-Life 2" },
+ { "d2_prison_08", "Half-Life 2" },
+ { "d3_breen_01", "Half-Life 2" },
+ { "d3_c17_01", "Half-Life 2" },
+ { "d3_c17_02", "Half-Life 2" },
+ { "d3_c17_03", "Half-Life 2" },
+ { "d3_c17_04", "Half-Life 2" },
+ { "d3_c17_05", "Half-Life 2" },
+ { "d3_c17_06a", "Half-Life 2" },
+ { "d3_c17_06b", "Half-Life 2" },
+ { "d3_c17_07", "Half-Life 2" },
+ { "d3_c17_08", "Half-Life 2" },
+ { "d3_c17_09", "Half-Life 2" },
+ { "d3_c17_10a", "Half-Life 2" },
+ { "d3_c17_10b", "Half-Life 2" },
+ { "d3_c17_11", "Half-Life 2" },
+ { "d3_c17_12", "Half-Life 2" },
+ { "d3_c17_12b", "Half-Life 2" },
+ { "d3_c17_13", "Half-Life 2" },
+ { "d3_citadel_01", "Half-Life 2" },
+ { "d3_citadel_02", "Half-Life 2" },
+ { "d3_citadel_03", "Half-Life 2" },
+ { "d3_citadel_04", "Half-Life 2" },
+ { "d3_citadel_05", "Half-Life 2" },
+ { "datacore", "Half-Life Deathmatch" },
+ { "ddd_", "Dino D-Day" },
+ { "de_", "Counter-Strike" },
+ { "de_dam", "DIPRIP" },
+ { "deathrun_", "Deathrun" },
+ { "district", "Insurgency" },
+ { "district_coop", "Insurgency" },
+ { "district_night", "Insurgency" },
+ { "dm_", "Half-Life 2: Deathmatch" },
+ { "dm_boom", "Black Mesa" },
+ { "dm_bounce", "Black Mesa" },
+ { "dm_chopper", "Black Mesa" },
+ { "dm_city", "DIPRIP" },
+ { "dm_crossfire", "Black Mesa" },
+ { "dm_gasworks", "Black Mesa" },
+ { "dm_lambdabunker", "Black Mesa" },
+ { "dm_power", "Black Mesa" },
+ { "dm_rail", "Black Mesa" },
+ { "dm_refinery", "DIPRIP" },
+ { "dm_stack", "Black Mesa" },
+ { "dm_stalkyard", "Black Mesa" },
+ { "dm_subtransit", "Black Mesa" },
+ { "dm_supermarket", "DIPRIP" },
+ { "dm_undertow", "Black Mesa" },
+ { "dm_village", "DIPRIP" },
+ { "dod_", "Day Of Defeat" },
+ { "downtown", "Nuclear Dawn" },
+ { "dr_", "Deathrun" },
+ { "dragon_girl", "G String" },
+ { "dragon_girl1", "G String" },
+ { "dragon_girl2", "G String" },
+ { "dragon_girl3", "G String" },
+ { "drycanal", "Insurgency" },
+ { "drycanal_coop", "Insurgency" },
+ { "drycanal_night", "Insurgency" },
+ { "duel_", "Blade Symphony" },
+ { "dys_", "Dystopia" },
+ { "dz_", "Counter-Strike" },
+ { "e1912", "Portal 2" },
+ { "embassy", "Insurgency" },
+ { "embassy_coop", "Insurgency" },
+ { "embassy_night", "Insurgency" },
+ { "ep1_c17_00", "Half-Life 2: Episode 1" },
+ { "ep1_c17_00a", "Half-Life 2: Episode 1" },
+ { "ep1_c17_01", "Half-Life 2: Episode 1" },
+ { "ep1_c17_01a", "Half-Life 2: Episode 1" },
+ { "ep1_c17_02", "Half-Life 2: Episode 1" },
+ { "ep1_c17_02a", "Half-Life 2: Episode 1" },
+ { "ep1_c17_02b", "Half-Life 2: Episode 1" },
+ { "ep1_c17_05", "Half-Life 2: Episode 1" },
+ { "ep1_c17_06", "Half-Life 2: Episode 1" },
+ { "ep1_citadel_00", "Half-Life 2: Episode 1" },
+ { "ep1_citadel_01", "Half-Life 2: Episode 1" },
+ { "ep1_citadel_02", "Half-Life 2: Episode 1" },
+ { "ep1_citadel_02b", "Half-Life 2: Episode 1" },
+ { "ep1_citadel_03", "Half-Life 2: Episode 1" },
+ { "ep1_citadel_04", "Half-Life 2: Episode 1" },
+ { "ep2_outland_01", "Half-Life 2: Episode 2" },
+ { "ep2_outland_01a", "Half-Life 2: Episode 2" },
+ { "ep2_outland_02", "Half-Life 2: Episode 2" },
+ { "ep2_outland_03", "Half-Life 2: Episode 2" },
+ { "ep2_outland_04", "Half-Life 2: Episode 2" },
+ { "ep2_outland_05", "Half-Life 2: Episode 2" },
+ { "ep2_outland_06", "Half-Life 2: Episode 2" },
+ { "ep2_outland_06a", "Half-Life 2: Episode 2" },
+ { "ep2_outland_07", "Half-Life 2: Episode 2" },
+ { "ep2_outland_08", "Half-Life 2: Episode 2" },
+ { "ep2_outland_09", "Half-Life 2: Episode 2" },
+ { "ep2_outland_10", "Half-Life 2: Episode 2" },
+ { "ep2_outland_10a", "Half-Life 2: Episode 2" },
+ { "ep2_outland_11", "Half-Life 2: Episode 2" },
+ { "ep2_outland_11a", "Half-Life 2: Episode 2" },
+ { "ep2_outland_11b", "Half-Life 2: Episode 2" },
+ { "ep2_outland_12", "Half-Life 2: Episode 2" },
+ { "ep2_outland_12a", "Half-Life 2: Episode 2" },
+ { "es_", "Counter-Strike" },
+ { "escape_", "Portal" },
+ { "ff_", "Fortress Forever" },
+ { "ffa_community", "Blade Symphony" },
+ { "fm_", "Flood" },
+ { "fof_", "Fistful of Frags" },
+ { "fofhr_", "Fistful of Frags" },
+ { "free_", "Blade Symphony" },
+ { "free_mars1", "G String" },
+ { "free_mars2", "G String" },
+ { "free_mars3", "G String" },
+ { "frenzy", "Half-Life Deathmatch" },
+ { "fy_", "Counter-Strike (Custom)" },
+ { "gate", "Nuclear Dawn" },
+ { "gd_", "Counter-Strike" },
+ { "gg_", "Gun Game" },
+ { "gms_", "Stranded" },
+ { "gmt_", "GMod Tower" },
+ { "gt_", "Fistful of Frags" },
+ { "halls3", "Half-Life 2: Deathmatch" },
+ { "hazardous_ai", "G String" },
+ { "hazardous_ai0", "G String" },
+ { "hazardous_ai01", "G String" },
+ { "hazardous_ai2", "G String" },
+ { "hazardous_ai3", "G String" },
+ { "hazardous_ai3b", "G String" },
+ { "hazardous_ai4", "G String" },
+ { "hazardous_ai5", "G String" },
+ { "hazardous_ai6", "G String" },
+ { "hazardous_ai7", "G String" },
+ { "hazardous_ai_more", "G String" },
+ { "heights", "Insurgency" },
+ { "heights_coop", "Insurgency" },
+ { "heights_night", "Insurgency" },
+ { "htf_", "Team Fortress 2" },
+ { "human_waste1", "G String" },
+ { "human_waste2", "G String" },
+ { "human_waste3", "G String" },
+ { "human_waste4", "G String" },
+ { "human_waste5", "G String" },
+ { "human_waste6", "G String" },
+ { "human_waste7", "G String" },
+ { "human_waste8", "G String" },
+ { "human_waste9", "G String" },
+ { "human_waste_x1", "G String" },
+ { "hydro", "Nuclear Dawn" },
+ { "infra_", "INFRA" },
+ { "ins_", "Insurgency" },
+ { "itemtest", "Team Fortress 2" },
+ { "jail_", "Jailbreak" },
+ { "jb_", "Jailbreak" },
+ { "kandagal", "Insurgency" },
+ { "kandagal_night", "Insurgency" },
+ { "koth_", "Team Fortress 2" },
+ { "l4d_", "Left 4 Dead" },
+ { "lab_rat", "G String" },
+ { "lab_rat1", "G String" },
+ { "lambda_bunker", "Half-Life Deathmatch" },
+ { "lightstyle_test", "Blade Symphony" },
+ { "lobby", "Alien Swarm" },
+ { "lobby_mapveto", "Counter-Strike" },
+ { "lts_", "Pirates, Vikings, & Knights II" },
+ { "market", "Insurgency" },
+ { "market_coop", "Insurgency" },
+ { "market_night", "Insurgency" },
+ { "mcv_", "Military Conflict: Vietnam" },
+ { "metro", "Nuclear Dawn" },
+ { "metro_training", "Nuclear Dawn" },
+ { "mg_", "Minigames" },
+ { "ministry", "Insurgency" },
+ { "ministry_coop", "Insurgency" },
+ { "ministry_night", "Insurgency" },
+ { "money_is_dead", "G String" },
+ { "money_is_dead0", "G String" },
+ { "money_is_dead2", "G String" },
+ { "money_is_dead2_1", "G String" },
+ { "money_is_dead2_2", "G String" },
+ { "money_is_dead3", "G String" },
+ { "money_is_dead3_2", "G String" },
+ { "money_is_dead4", "G String" },
+ { "money_is_dead4_2", "G String" },
+ { "money_is_dead4_3", "G String" },
+ { "money_is_dead_1", "G String" },
+ { "murdock_air1", "G String" },
+ { "murdock_air2", "G String" },
+ { "murdock_air3", "G String" },
+ { "murdock_air4", "G String" },
+ { "murdock_air5", "G String" },
+ { "murdock_air6", "G String" },
+ { "murdock_air7", "G String" },
+ { "murdock_air8", "G String" },
+ { "murdock_air9", "G String" },
+ { "murdock_air_x1", "G String" },
+ { "murdock_air_x2", "G String" },
+ { "murdock_air_x3", "G String" },
+ { "murdock_air_x4", "G String" },
+ { "murdock_air_x5", "G String" },
+ { "murdock_air_x6", "G String" },
+ { "mvm_", "Team Fortress 2" },
+ { "oasis", "Nuclear Dawn" },
+ { "oilfield", "Nuclear Dawn" },
+ { "panj", "Insurgency" },
+ { "panj_night", "Insurgency" },
+ { "pass_", "Team Fortress 2" },
+ { "pb_dojo", "Dystopia" },
+ { "pb_rooftop", "Dystopia" },
+ { "pb_round", "Dystopia" },
+ { "pb_urbandome", "Dystopia" },
+ { "pd_", "Team Fortress 2" },
+ { "peak", "Insurgency" },
+ { "peak_night", "Insurgency" },
+ { "perp_org1", "G String" },
+ { "perp_org2", "G String" },
+ { "perp_org3", "G String" },
+ { "perp_org4", "G String" },
+ { "ph_", "Prop Hunt" },
+ { "pl_", "Team Fortress 2" },
+ { "plr_", "Team Fortress 2" },
+ { "practice_box", "Blade Symphony" },
+ { "pw_", "Pirate Ship Wars" },
+ { "rapidcore", "Half-Life Deathmatch" },
+ { "rd_", "Team Fortress 2" },
+ { "revolt", "Insurgency" },
+ { "revolt_coop", "Insurgency" },
+ { "revolt_night", "Insurgency" },
+ { "rp_", "Roleplay" },
+ { "sabotage", "G String" },
+ { "sabotage1", "G String" },
+ { "sav_dojo6", "Dystopia" },
+ { "sb_", "Spacebuild" },
+ { "scoutzknivez", "Gun Game" },
+ { "sd_", "Team Fortress 2" },
+ { "siege", "Insurgency" },
+ { "siege_coop", "Insurgency" },
+ { "silo", "Nuclear Dawn" },
+ { "sinjar", "Insurgency" },
+ { "sinjar_coop", "Insurgency" },
+ { "sinjar_night", "Insurgency" },
+ { "sk_metro", "Nuclear Dawn" },
+ { "slb_", "Sled Build" },
+ { "slender_", "Stop it Slender" },
+ { "smog_storm", "G String" },
+ { "smog_storm1", "G String" },
+ { "smog_storm2", "G String" },
+ { "smog_storm3", "G String" },
+ { "snarkpit", "Half-Life Deathmatch" },
+ { "space_race", "G String" },
+ { "space_race1", "G String" },
+ { "space_race2", "G String" },
+ { "space_race3", "G String" },
+ { "space_race4", "G String" },
+ { "space_race5", "G String" },
+ { "stalkyard", "Half-Life Deathmatch" },
+ { "station", "Insurgency" },
+ { "station_night", "Insurgency" },
+ { "subtransit", "Half-Life Deathmatch" },
+ { "surf_", "Surf" },
+ { "t_", "Klaus Veen's Treason" },
+ { "tc_", "Team Fortress 2" },
+ { "te_", "Pirates, Vikings, & Knights II" },
+ { "tell", "Insurgency" },
+ { "tell_coop", "Insurgency" },
+ { "tell_night", "Insurgency" },
+ { "terror_management_x1", "G String" },
+ { "terror_management_x2", "G String" },
+ { "terror_management_x3", "G String" },
+ { "testchmb_", "Portal" },
+ { "the_call1", "G String" },
+ { "theater_", "Cinema" },
+ { "tow_", "Team Fortress 2" },
+ { "tp_", "Fistful of Frags" },
+ { "tr_", "Team Fortress 2" },
+ { "trade_", "Team Fortress 2" },
+ { "training", "Nuclear Dawn" },
+ { "training1", "Counter-Strike" },
+ { "ts_", "The Stalker" },
+ { "tut_training", "Blade Symphony" },
+ { "tutorial_standards", "Left 4 Dead 2" },
+ { "tutorial_standards_vs", "Left 4 Dead 2" },
+ { "tw_", "Pirates, Vikings, & Knights II" },
+ { "undertow", "Half-Life Deathmatch" },
+ { "uprising", "Insurgency" },
+ { "uprising_night", "Insurgency" },
+ { "ur_city", "DIPRIP" },
+ { "ur_refinery", "DIPRIP" },
+ { "ur_supermarket", "DIPRIP" },
+ { "ur_village", "DIPRIP" },
+ { "varena", "Dystopia" },
+ { "verticality", "Insurgency" },
+ { "verticality_coop", "Insurgency" },
+ { "verticality_night", "Insurgency" },
+ { "vs_", "Fistful of Frags" },
+ { "vsh_", "Team Fortress 2" },
+ { "xc_", "Climb" },
+ { "ze_", "Zombie Escape" },
+ { "zi_", "Team Fortress 2" },
+ { "zm_", "Zombie Survival" },
+ { "zombiesurvival_", "Zombie Survival" },
+ { "zpa_", "Zombie Panic! Source" },
+ { "zph_", "Zombie Panic! Source" },
+ { "zpl_", "Zombie Panic! Source" },
+ { "zpo_", "Zombie Panic! Source" },
+ { "zps_", "Zombie Panic! Source" },
+ { "zs_", "Zombie Survival" },
 };
+static const NativeMapRule s_MapPatterns[] = {
+ { "^asi-", "Alien Swarm" },
+ { "^c1[%d]m", "Left 4 Dead 2" },
+ { "^c[%d]a", "Half-Life" },
+ { "^c[%d]m", "Left 4 Dead 2" },
+ { "^mp_coop_", "Portal 2" },
+ { "^sp_a", "Portal 2" },
+ { "^t0a", "Half-Life" },
+};
+static const char *s_IgnoreNames[] = {
+ "c4a1y",
+ "c5m1_waterfront_sndscape",
+ "credits",
+ "d2_coast_02",
+ "d3_c17_02_camera",
+ "ep1_citadel_00_demo",
+ "intro",
+ "sdk_",
+ "test",
+ "test_",
+ "vst_",
+};
+static const char *s_IgnorePrefixes[] = {
+ "background",
+ "devtest",
+ "ep1_background",
+ "ep2_background",
+ "styleguide",
+};
+static std::vector<std::string> s_MapCategories;
+struct NativeMapPattern { std::regex pattern; std::string category; };
+static std::vector<NativeMapPattern> s_GamemodeMapPatterns;
+
+static std::string MapPrefix(const std::string &name)
+{
+ size_t end=name.find('_');return end==std::string::npos?"":name.substr(0,end+1);
+}
+static bool IsMenuMap(const std::string &name)
+{
+ std::string prefix=MapPrefix(name);
+ for(size_t i=0;i<ARRAYSIZE(s_IgnoreNames);++i)
+  if(name==s_IgnoreNames[i]||prefix==s_IgnoreNames[i])return false;
+ for(size_t i=0;i<ARRAYSIZE(s_IgnorePrefixes);++i)
+  if(name.compare(0,strlen(s_IgnorePrefixes[i]),s_IgnorePrefixes[i])==0)return false;
+ return true;
+}
+static void AddNativeMapPattern(const char *luaPattern,const char *category)
+{
+ // Convert the pattern operators used by gamemode map declarations.
+ std::string regex;bool inClass=false;
+ for(const char *p=luaPattern;*p;++p)
+ {
+  if(*p=='%'&&p[1])
+  {
+   ++p;const char *range=NULL;
+   switch(*p){case 'd':range="0-9";break;case 'a':range="a-zA-Z";break;
+    case 'w':range="a-zA-Z0-9";break;case 's':range=" \t\r\n";break;
+    case 'l':range="a-z";break;case 'u':range="A-Z";break;}
+   if(range){if(!inClass)regex+='[';regex+=range;if(!inClass)regex+=']';}
+   else {regex+=(char)92;regex+=*p;}
+  }
+  else if(*p=='['){inClass=true;regex+=*p;}
+  else if(*p==']'){inClass=false;regex+=*p;}
+  else if(*p=='-'&&!inClass)regex+="*?";
+  else if((*p=='{'||*p=='}'||*p=='|')&&!inClass){regex+=(char)92;regex+=*p;}
+  else regex+=*p;
+ }
+ try { NativeMapPattern rule={std::regex(regex,std::regex::icase),category};s_GamemodeMapPatterns.push_back(rule); }
+ catch(const std::regex_error &) { Warning("Invalid gamemode map pattern: %s\n",luaPattern); }
+}
+static void LoadNativeMapPatterns()
+{
+ s_GamemodeMapPatterns.clear();
+ for(size_t i=0;i<ARRAYSIZE(s_MapPatterns);++i)AddNativeMapPattern(s_MapPatterns[i].name,s_MapPatterns[i].category);
+ FileFindHandle_t find;
+ const char *dir=g_pFullFileSystem->FindFirstEx("gamemodes/*","GAME",&find);
+ while(dir)
+ {
+  if(dir[0]!='.'&&g_pFullFileSystem->FindIsDirectory(find))
+  {
+   char path[256];Q_snprintf(path,sizeof(path),"gamemodes/%s/%s.txt",dir,dir);
+   KeyValues *gm=new KeyValues("Gamemode");
+   if(gm->LoadFromFile(g_pFullFileSystem,path,"GAME"))
+   {
+    std::string patterns=gm->GetString("maps"),title=gm->GetString("title",dir);
+    size_t begin=0;
+    while(begin<patterns.size())
+    {
+     size_t end=patterns.find('|',begin);std::string part=patterns.substr(begin,end-begin);
+     if(!part.empty())AddNativeMapPattern(part.c_str(),title.c_str());
+     if(end==std::string::npos)break;begin=end+1;
+    }
+   }
+   gm->deleteThis();
+  }
+  dir=g_pFullFileSystem->FindNext(find);
+ }
+ g_pFullFileSystem->FindClose(find);
+}
+static std::string NativeMapCategory(const char *map)
+{
+ std::string name=map?map:"";std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return (char)tolower(c);});
+ const std::string prefix=MapPrefix(name);
+ for(size_t i=0;i<ARRAYSIZE(s_MapNames);++i)if(name==s_MapNames[i].name)return s_MapNames[i].category;
+ for(size_t i=0;i<ARRAYSIZE(s_MapNames);++i)if(prefix==s_MapNames[i].name)return s_MapNames[i].category;
+ std::string category="Other";
+ for(size_t i=0;i<s_GamemodeMapPatterns.size();++i)
+  if(std::regex_search(name,s_GamemodeMapPatterns[i].pattern))category=s_GamemodeMapPatterns[i].category;
+ return category;
+}
 
 //-----------------------------------------------------------------------------
 // HL2SB: one numeric limits row -- label on the left, number entry on the
@@ -138,6 +601,101 @@ public:
 private:
 	vgui::Label *m_pLabel;
 	vgui::TextEntry *m_pEntry;
+};
+
+
+// Build settings from the gamemode definition, just like the GMod new-game
+// page. Keep values independently of visible rows so mode changes lose no edits.
+class CLaunchSettingsList : public PanelListPanel
+{
+public:
+ CLaunchSettingsList( Panel *parent ) : PanelListPanel( parent, "SandboxList" ),
+  m_pDefinition( new KeyValues( "Gamemode" ) ), m_pValues( new KeyValues( "LaunchValues" ) ),
+  m_bSingle( true ), m_bConfigured( false ) {}
+ ~CLaunchSettingsList() { m_pDefinition->deleteThis(); m_pValues->deleteThis(); }
+ void Configure( KeyValues *saved )
+ {
+  ConVarRef mode( "gamemode", true );
+  char path[256];
+  Q_snprintf( path, sizeof(path), "gamemodes/%s/%s.txt",
+   mode.IsValid() ? mode.GetString() : "sandbox", mode.IsValid() ? mode.GetString() : "sandbox" );
+  if ( !m_pDefinition->LoadFromFile( g_pFullFileSystem, path, "GAME" ) )
+   m_pDefinition->LoadFromFile( g_pFullFileSystem, "gamemodes/sandbox/sandbox.txt", "GAME" );
+  KeyValues *settings = m_pDefinition->FindKey( "settings" );
+  if ( settings ) FOR_EACH_SUBKEY( settings, def )
+  {
+   const char *name = def->GetString( "name" );
+   if ( !name[0] ) continue;
+   m_pValues->SetString( name, saved && saved->FindKey(name) ? saved->GetString(name) : def->GetString("default") );
+  }
+  m_bConfigured = true;
+  SetSinglePlayer( true );
+ }
+ void Capture()
+ {
+  for ( int i=0; i<m_Rows.Count(); ++i )
+  {
+   Row &r=m_Rows[i];
+   if ( r.check ) m_pValues->SetInt( r.name, r.check->IsSelected() ? 1 : 0 );
+   else
+   {
+    char value[512];r.entry->GetText(value,sizeof(value));
+    // Empty numeric fields retain the definition's default; text can be empty.
+
+    if(r.numeric)
+    {
+     char *end=NULL;double number=strtod(value,&end);
+     if(end==value||*end||!std::isfinite(number))m_pValues->SetString(r.name,r.def);
+     else {char numeric[48];Q_snprintf(numeric,sizeof(numeric),"%.9g",number);m_pValues->SetString(r.name,numeric);}
+    }
+    else m_pValues->SetString(r.name,value);
+   }
+  }
+ }
+ void Save( KeyValues *saved )
+ {
+  Capture();
+  FOR_EACH_VALUE(m_pValues, value) saved->SetString(value->GetName(),value->GetString());
+ }
+ void SetSinglePlayer( bool single )
+ {
+  if ( !m_bConfigured || (m_bSingle==single && m_Rows.Count()) ) return;
+  Capture();
+  for ( int i=0;i<m_Rows.Count();++i ) m_Rows[i].panel->SetVisible(false);
+  DeleteAllItems();m_Rows.RemoveAll();m_bSingle=single;
+  KeyValues *settings=m_pDefinition->FindKey("settings");
+  if ( !settings ) return;
+  FOR_EACH_SUBKEY(settings,def)
+  {
+   if ( single && !def->GetBool("singleplayer") ) continue;
+   const char *name=def->GetString("name");if(!name[0])continue;
+   char token[128];Q_snprintf(token,sizeof(token),"#%s",def->GetString("text",name));
+   Row row;row.name=name;row.def=def->GetString("default");row.check=NULL;row.entry=NULL;
+   row.numeric=!Q_stricmp(def->GetString("type"),"Numeric");
+   if ( !Q_stricmp(def->GetString("type"),"CheckBox") )
+   {
+    row.check=new CheckButton(this,"LaunchCheck",token);
+    row.check->SetSelected(m_pValues->GetInt(name)!=0);row.panel=row.check;row.panel->SetTall(26);
+   }
+   else
+   {
+    CSandboxLimitRow *field=new CSandboxLimitRow(this,token);
+    row.entry=field->GetEntry();row.entry->SetAllowNumericInputOnly(row.numeric);
+    row.entry->SetMaximumCharCount(row.numeric?12:128);
+    row.entry->SetText(m_pValues->GetString(name));row.panel=field;
+   }
+   char helpToken[160];Q_snprintf(helpToken,sizeof(helpToken),"#%s.help",name);
+   row.panel->GetTooltip()->SetText(g_pVGuiLocalize->Find(helpToken)?helpToken:def->GetString("help"));
+   if(row.entry)row.entry->GetTooltip()->SetText(def->GetString("help"));
+   AddItem(NULL,row.panel);m_Rows.AddToTail(row);
+  }
+  MoveScrollBarToTop();InvalidateLayout();
+ }
+private:
+ struct Row { const char *name;const char *def;Panel *panel;TextEntry *entry;CheckButton *check;bool numeric; };
+ KeyValues *m_pDefinition,*m_pValues;
+ CUtlVector<Row> m_Rows;
+ bool m_bSingle,m_bConfigured;
 };
 
 //-----------------------------------------------------------------------------
@@ -256,6 +814,7 @@ CCreateMultiplayerGameDialog::CCreateMultiplayerGameDialog(vgui::Panel *parent) 
 {
 	m_bBotsEnabled = false;
 	m_bBuilt = false;
+	m_iSelectedCategory = -1;
 	m_pSavedData = NULL;
 	m_szSelectedMap[0] = 0;
 
@@ -334,18 +893,8 @@ void CCreateMultiplayerGameDialog::PerformLayout()
 	if ( m_pGameModeList )
 		m_pGameModeList->SetBounds( leftX, topY, leftW, bottomY - topY );
 
-	// layout the category buttons vertically in the left column
-	{
-		int y = topY;
-		for ( int i = 0; i < m_CategoryButtons.Count(); ++i )
-		{
-			if ( m_CategoryButtons[i] )
-			{
-				m_CategoryButtons[i]->SetBounds( leftX, y, leftW, 28 );
-				y += 34;
-			}
-		}
-	}
+	for(int i=0;i<m_CategoryButtons.Count();++i)
+		if(m_CategoryButtons[i])m_CategoryButtons[i]->SetSize(leftW-24,28);
 
 	// center map grid
 	int mapX = (int)(sw * 0.18);
@@ -386,63 +935,15 @@ void CCreateMultiplayerGameDialog::PerformLayout()
 	int btnHLayout = (int)(sh * 0.05);
 	int btnYLayout = sh - btnHLayout - (int)(sh * 0.02);
 
-	if ( bSinglePlayerSidebar )
+	if ( m_pLanCheck ) m_pLanCheck->SetBounds(rightX,topY+200,rightW,24);
+	if ( m_pSandboxList )
 	{
-		if ( m_pFallDamageCheck )
-			m_pFallDamageCheck->SetBounds( rightX, topY + 200, rightW, 24 );
-
-		// HL2SB (2026-09-28): sidebar options stack below the fall-damage row
-		// (label+input for the ammo cap, then three checkboxes), well above the
-		// start button at ~0.93 of the screen height.
-		{
-			int optY = topY + 234;
-			if ( m_pMaxAmmoLabel )
-				m_pMaxAmmoLabel->SetBounds( rightX, optY, rightW, 20 );
-			if ( m_pMaxAmmo )
-				m_pMaxAmmo->SetBounds( rightX, optY + 20, rightW, 26 );
-			optY += 54;
-			if ( m_pLoadoutCheck )
-				m_pLoadoutCheck->SetBounds( rightX, optY, rightW, 24 );
-			optY += 30;
-			if ( m_pGodModeCheck )
-				m_pGodModeCheck->SetBounds( rightX, optY, rightW, 24 );
-			optY += 30;
-			if ( m_pSuitCheck )
-				m_pSuitCheck->SetBounds( rightX, optY, rightW, 24 );
-		}
-	}
-	else
-	{
-		// Multiplayer: LAN / pvp / limited physgun checkboxes, then the
-		// scrollable sandbox limits list down to the start button.
-		if ( m_pLanCheck )
-			m_pLanCheck->SetBounds( rightX, topY + 200, rightW, 24 );
-		if ( m_pPvPCheck )
-			m_pPvPCheck->SetBounds( rightX, topY + 230, rightW, 24 );
-		if ( m_pPhysgunLimitedCheck )
-			m_pPhysgunLimitedCheck->SetBounds( rightX, topY + 260, rightW, 24 );
-		if ( m_pSandboxHeader )
-			m_pSandboxHeader->SetBounds( rightX, topY + 294, rightW, 20 );
-
-		int listY = topY + 318;
-		int listH = btnYLayout - 8 - listY;
-		if ( m_pSandboxList )
-		{
-			m_pSandboxList->SetBounds( rightX, listY, rightW, MAX( 60, listH ) );
-
-			// rows fill the viewport width (minus the scrollbar), so the
-			// number entries hug the right edge at any resolution
-			int rowW = rightW - 20;
-			for ( int nItemID = m_pSandboxList->FirstItem(); nItemID != m_pSandboxList->InvalidItemID(); nItemID = m_pSandboxList->NextItem( nItemID ) )
-			{
-				vgui::Panel *pItem = m_pSandboxList->GetItemPanel( nItemID );
-				if ( pItem )
-					pItem->SetSize( rowW, dynamic_cast< vgui::CheckButton * >( pItem ) ? 24 : 26 );
-			}
-		}
+		int listY=topY+(bSinglePlayerSidebar?200:232);
+		m_pSandboxList->SetBounds(rightX,listY,rightW,MAX(60,btnYLayout-8-listY));
+		for(int id=m_pSandboxList->FirstItem();id!=m_pSandboxList->InvalidItemID();id=m_pSandboxList->NextItem(id))
+			m_pSandboxList->GetItemPanel(id)->SetWide(rightW-20);
 	}
 
-	// start / back buttons at bottom
 	int btnH = btnHLayout;
 	int btnY = btnYLayout;
 
@@ -483,7 +984,7 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		m_pGameModeList->SetFirstColumnWidth( 0 );
 		// replaced by directly-owned category buttons; keep the empty list
 		// panel from eating clicks behind them.
-		m_pGameModeList->SetVisible( false );
+		m_pGameModeList->SetVisible( true );
 
 		m_pMapList = new vgui::PanelListPanel( this, "MapList" );
 		m_pMapList->SetFirstColumnWidth( 0 );
@@ -501,60 +1002,11 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		m_pPasswordLabel = new Label( this, "PasswordLabel", "#GameUI_Password" );
 		m_pMaxPlayersLabel = new Label( this, "MaxPlayersLabel", "#GameUI_MaxPlayers" );
 
-		// Realistic fall damage.  Mirrors mp_falldamage (1 = on, 0 = off); the
-		// sandbox default is off.  The state is applied once m_pSavedData is
-		// loaded, a few lines below.
-		m_pFallDamageCheck = new CheckButton( this, "FallDamageCheck", "#HL2SB_FallDamage" );
-
-		// HL2SB (2026-09-28): singleplayer sidebar options -- GMod's new-game
-		// column (persistence file excluded).  gmod_maxammo / gmod_suit are
-		// engine convars and reach the server through cfg/listenserver.cfg;
-		// sbox_weapons / sbox_godmode are Lua convars created by
-		// gamemodes/sandbox/gamemode/init.lua, which also applies their values
-		// from ServerConfig.vdf (written by SaveConfig below, before "map").
-		m_pMaxAmmoLabel = new Label( this, "MaxAmmoLabel", "#HL2SB_MaxAmmo" );
-		m_pMaxAmmo = new TextEntry( this, "MaxAmmo" );
-		m_pMaxAmmo->SetAllowNumericInputOnly( true );
-		m_pMaxAmmo->SetMaximumCharCount( 7 );
-		m_pLoadoutCheck = new CheckButton( this, "LoadoutCheck", "#HL2SB_GiveWeapons" );
-		m_pGodModeCheck = new CheckButton( this, "GodModeCheck", "#HL2SB_GodMode" );
-		m_pSuitCheck = new CheckButton( this, "SuitCheck", "#HL2SB_EnableHEV" );
-
-		// HL2SB (2026-10-15): the multiplayer sidebar.  LAN rides the map
-		// command; the pvp / limited-physgun pair and the scrollable limits
-		// list persist through ServerConfig.vdf exactly like the singleplayer
-		// column does.  Defaults below match GMod's sandbox settings file.
-		m_pLanCheck = new CheckButton( this, "LanCheck", "#HL2SB_LAN" );
-		m_pLanCheck->SetSelected( true );
-		m_pPvPCheck = new CheckButton( this, "PvPCheck", "#HL2SB_PvPDamage" );
-		m_pPhysgunLimitedCheck = new CheckButton( this, "PhysgunLimitedCheck", "#HL2SB_PhysgunLimited" );
-		m_pSandboxHeader = new Label( this, "SandboxHeader", "#HL2SB_SandboxLimits" );
-
-		m_pSandboxList = new vgui::PanelListPanel( this, "SandboxList" );
+		m_pLanCheck = new CheckButton(this,"LanCheck","#HL2SB_LAN");
+		m_pLanCheck->SetSelected(true);
+		m_pSandboxList = new CLaunchSettingsList( this );
 		m_pSandboxList->SetFirstColumnWidth( 0 );
 
-		for ( int i = 0; i < ARRAYSIZE( s_SandboxLimits ); ++i )
-		{
-			CSandboxLimitRow *pRow = new CSandboxLimitRow( m_pSandboxList, s_SandboxLimits[i].pszToken );
-			m_pSandboxList->AddItem( NULL, pRow );
-
-			SandboxOption_t option;
-			option.pszConVar = s_SandboxLimits[i].pszConVar;
-			option.pEntry = pRow->GetEntry();
-			option.pCheck = NULL;
-			m_SandboxOptions.AddToTail( option );
-		}
-		for ( int i = 0; i < ARRAYSIZE( s_SandboxChecks ); ++i )
-		{
-			vgui::CheckButton *pCheck = new vgui::CheckButton( m_pSandboxList, "SandboxCheckRow", s_SandboxChecks[i].pszToken );
-			m_pSandboxList->AddItem( NULL, pCheck );
-
-			SandboxOption_t option;
-			option.pszConVar = s_SandboxChecks[i].pszConVar;
-			option.pEntry = NULL;
-			option.pCheck = pCheck;
-			m_SandboxOptions.AddToTail( option );
-		}
 
 		m_pStartButton = new Button( this, "StartButton", "#GameUI_Start" );
 		m_pStartButton->SetCommand( "CreateGame" );
@@ -590,74 +1042,10 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 			m_pSavedData->LoadFromFile( g_pFullFileSystem, "ServerConfig.vdf", "GAME" );
 		}
 
-		if ( m_pFallDamageCheck )
-			m_pFallDamageCheck->SetSelected( GetFallDamage() );
-
-		// HL2SB sidebar: restore the four new options the same way.
-		if ( m_pMaxAmmo )
-		{
-			char szAmmo[16];
-			Q_snprintf( szAmmo, sizeof( szAmmo ), "%d", GetMaxAmmo() );
-			m_pMaxAmmo->SetText( szAmmo );
-		}
-		if ( m_pLoadoutCheck )
-			m_pLoadoutCheck->SetSelected( GetLoadout() );
-		if ( m_pGodModeCheck )
-			m_pGodModeCheck->SetSelected( GetGodMode() );
-		if ( m_pSuitCheck )
-			m_pSuitCheck->SetSelected( GetSuit() );
-
-		// HL2SB multiplayer sidebar: same ServerConfig.vdf-first restore.  LAN
-		// defaults to on (the map command always sent sv_lan 1 before this
-		// checkbox existed, so staying on preserves the old behaviour).
-		if ( m_pLanCheck && m_pSavedData && m_pSavedData->FindKey( "sv_lan" ) )
-			m_pLanCheck->SetSelected( m_pSavedData->GetInt( "sv_lan", 1 ) != 0 );
-		for ( int i = 0; i < m_SandboxOptions.Count(); ++i )
-		{
-			const char *pszDefault = "";
-			for ( int j = 0; j < ARRAYSIZE( s_SandboxLimits ); ++j )
-			{
-				if ( !Q_stricmp( s_SandboxLimits[j].pszConVar, m_SandboxOptions[i].pszConVar ) )
-				{
-					pszDefault = s_SandboxLimits[j].pszDefault;
-					break;
-				}
-			}
-			for ( int j = 0; j < ARRAYSIZE( s_SandboxChecks ); ++j )
-			{
-				if ( !Q_stricmp( s_SandboxChecks[j].pszConVar, m_SandboxOptions[i].pszConVar ) )
-				{
-					pszDefault = s_SandboxChecks[j].pszDefault;
-					break;
-				}
-			}
-
-			char szValue[32];
-			Q_strncpy( szValue, pszDefault, sizeof( szValue ) );
-			if ( m_pSavedData && m_pSavedData->FindKey( m_SandboxOptions[i].pszConVar ) )
-				Q_snprintf( szValue, sizeof( szValue ), "%d", m_pSavedData->GetInt( m_SandboxOptions[i].pszConVar, atoi( pszDefault ) ) );
-
-			if ( m_SandboxOptions[i].pEntry )
-				m_SandboxOptions[i].pEntry->SetText( szValue );
-			else if ( m_SandboxOptions[i].pCheck )
-				m_SandboxOptions[i].pCheck->SetSelected( atoi( szValue ) != 0 );
-		}
-
-		// Restore the saved player count so the sidebar reopens in the same
-		// single/multiplayer shape it was left in.
-		if ( m_pMaxPlayers && m_pSavedData && m_pSavedData->FindKey( "maxplayers" ) )
-		{
-			int nSavedPlayers = m_pSavedData->GetInt( "maxplayers", 1 );
-			for ( int i = 0; i < m_pMaxPlayers->GetItemCount(); ++i )
-			{
-				KeyValues *kv = m_pMaxPlayers->GetItemUserData( i );
-				if ( kv && kv->GetInt( "val", 0 ) == nSavedPlayers )
-				{
-					m_pMaxPlayers->ActivateItemByRow( i );
-					break;
-				}
-			}
-		}
+		if(m_pSavedData->FindKey("sv_lan"))m_pLanCheck->SetSelected(m_pSavedData->GetInt("sv_lan",1)!=0);
+		// Every newly constructed dialog starts in real single-player mode.
+		m_pMaxPlayers->ActivateItemByRow( 0 );
+		static_cast<CLaunchSettingsList *>(m_pSandboxList)->Configure(m_pSavedData);
 
 		UpdateSidebarMode();
 
@@ -665,9 +1053,9 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		BuildMapGrid();
 
 		if ( m_pHostName )
-			m_pHostName->SetText( ModInfo().GetGameName() );
+			m_pHostName->SetText( m_pSavedData->GetString("hostname",ModInfo().GetGameName()) );
 		if ( m_pPassword )
-			m_pPassword->SetText( "" );
+			m_pPassword->SetText( m_pSavedData->GetString("sv_password","") );
 		if ( m_pHostName )
 			m_pHostName->SetMultiline( false );
 		if ( m_pPassword )
@@ -693,10 +1081,29 @@ void CCreateMultiplayerGameDialog::BuildGameModeList()
 			m_CategoryButtons[i]->MarkForDeletion();
 	}
 	m_CategoryButtons.RemoveAll();
+	if(m_pGameModeList)m_pGameModeList->RemoveAll();
 
-	for ( int i = 0; i < MAPCAT_COUNT; ++i )
+	std::string previous=(s_MapCategories.empty()||m_iSelectedCategory<0)?"Sandbox":GetCategoryName(m_iSelectedCategory);
+	LoadNativeMapPatterns();s_MapCategories.clear();
+	FileFindHandle_t handle;
+	const char *file=g_pFullFileSystem->FindFirstEx("maps/*.bsp","GAME",&handle);
+	while(file)
 	{
-		Button *pBtn = new Button( this, "GameModeLabel", GetCategoryName( i ) );
+		char name[256];Q_StripExtension(file,name,sizeof(name));Q_strlower(name);
+		if(IsMenuMap(name))
+		{
+			std::string category=NativeMapCategory(name);
+			if(std::find(s_MapCategories.begin(),s_MapCategories.end(),category)==s_MapCategories.end())s_MapCategories.push_back(category);
+		}
+		file=g_pFullFileSystem->FindNext(handle);
+	}
+	g_pFullFileSystem->FindClose(handle);
+	std::sort(s_MapCategories.begin(),s_MapCategories.end());
+	m_iSelectedCategory=0;
+	for(size_t i=0;i<s_MapCategories.size();++i)if(s_MapCategories[i]==previous)m_iSelectedCategory=(int)i;
+	for ( int i = 0; i < (int)s_MapCategories.size(); ++i )
+	{
+		Button *pBtn = new Button( m_pGameModeList, "GameModeLabel", GetCategoryName( i ) );
 		pBtn->SetContentAlignment( Label::a_west );
 		pBtn->SetTextInset( 8, 0 );
 		pBtn->SetTall( 28 );
@@ -704,6 +1111,8 @@ void CCreateMultiplayerGameDialog::BuildGameModeList()
 		char szCmd[32];
 		Q_snprintf( szCmd, sizeof( szCmd ), "MapCat %d", i );
 		pBtn->SetCommand( szCmd );
+		pBtn->AddActionSignalTarget(this);
+		m_pGameModeList->AddItem(NULL,pBtn);
 
 		// Highlight the active category WITHOUT using SetSelected(): the
 		// game scheme's ButtonSelected text colour matches the hot list
@@ -732,84 +1141,16 @@ void CCreateMultiplayerGameDialog::BuildGameModeList()
 //-----------------------------------------------------------------------------
 // Purpose: Human-readable name for a map category
 //-----------------------------------------------------------------------------
-const char *CCreateMultiplayerGameDialog::GetCategoryName( int iCategory )
+const char *CCreateMultiplayerGameDialog::GetCategoryName( int category )
 {
-	switch ( iCategory )
-	{
-		case MAPCAT_ALL:        return "All Maps";
-		case MAPCAT_HL2:        return "Half-Life 2";
-		case MAPCAT_HL2DM:      return "Half-Life 2: DM";
-		case MAPCAT_SANDBOX:    return "GMod Sandbox";
-		case MAPCAT_OTHER:      return "Other";
-		default:                return "All Maps";
-	}
+ return category>=0 && category<(int)s_MapCategories.size()?s_MapCategories[category].c_str():"Other";
 }
 
-//-----------------------------------------------------------------------------
-// Purpose: Detect a map's category from its filesystem MOUNT path, not from a
-//          hard-coded name. g_pFullFileSystem->GetLocalPath resolves the map
-//          to its absolute disk path; which game folder it sits under tells us
-//          which search path it was mounted from. A name-prefix heuristic only
-//          kicks in when the path is indeterminate (e.g. a map supplied by a
-//          custom vpk we can't resolve to a folder here).
-//-----------------------------------------------------------------------------
-int CCreateMultiplayerGameDialog::MapNameToCategory( const char *pszMapName )
+int CCreateMultiplayerGameDialog::MapNameToCategory(const char *name)
 {
-	if ( !pszMapName || !pszMapName[0] )
-		return MAPCAT_OTHER;
-
-	// Resolve to a full disk path so we can see which mount this came from.
-	char szRel[ 300 ];
-	Q_snprintf( szRel, sizeof( szRel ), "maps/%s.bsp", pszMapName );
-
-	char szLocal[ MAX_PATH ];
-	if ( g_pFullFileSystem->GetLocalPath( szRel, szLocal, sizeof( szLocal ) ) )
-	{
-		// Normalise to lowercase for case-insensitive matching.
-		char szLower[ MAX_PATH ];
-		Q_strncpy( szLower, szLocal, sizeof( szLower ) );
-		Q_strlower( szLower );
-
-		// hl2 single-player campaign mount
-		if ( Q_stristr( szLower, "\\hl2\\" ) || Q_stristr( szLower, "/hl2/" ) )
-		{
-			return MAPCAT_HL2;
-		}
-		// hl2mp mount
-		if ( Q_stristr( szLower, "\\hl2mp\\" ) || Q_stristr( szLower, "/hl2mp/" ) )
-		{
-			return MAPCAT_HL2DM;
-		}
-		// our custom GMod maps addon (gm_/sb_/mm_ content we shipped as the
-		// gmod_maps addon) resolves under custom/gmod_maps
-		if ( Q_stristr( szLower, "gmod_maps" ) )
-		{
-			return MAPCAT_SANDBOX;
-		}
-	}
-
-	// Fallback heuristics when the path can't be resolved (vpk-supplied maps).
-	if ( !Q_strnicmp( pszMapName, "gm_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "sb_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "mm_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "rp_", 3 ) )
-	{
-		return MAPCAT_SANDBOX;
-	}
-	if ( !Q_strnicmp( pszMapName, "dm_", 3 ) )
-	{
-		return MAPCAT_HL2DM;
-	}
-	if ( !Q_strnicmp( pszMapName, "d1_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "d2_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "d3_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "ep1_", 3 ) ||
-		 !Q_strnicmp( pszMapName, "ep2_", 3 ) )
-	{
-		return MAPCAT_HL2;
-	}
-
-	return MAPCAT_OTHER;
+ std::string category=NativeMapCategory(name);
+ for(size_t i=0;i<s_MapCategories.size();++i)if(s_MapCategories[i]==category)return (int)i;
+ return -1;
 }
 
 //-----------------------------------------------------------------------------
@@ -822,6 +1163,7 @@ void CCreateMultiplayerGameDialog::ApplyCategoryFilter()
 		return;
 
 	m_pMapList->DeleteAllItems();
+	for(int i=0;i<m_MapNames.Count();++i)delete[] m_MapNames[i];
 	m_MapNames.RemoveAll();
 
 	FileFindHandle_t findHandle = NULL;
@@ -835,12 +1177,8 @@ void CCreateMultiplayerGameDialog::ApplyCategoryFilter()
 		if ( ext )
 			*ext = 0;
 
-		// apply category filter (skip when "All" is selected)
-		if ( m_iSelectedCategory != MAPCAT_ALL )
-		{
-			if ( MapNameToCategory( mapname ) != m_iSelectedCategory )
-				goto nextFile;
-		}
+		Q_strlower(mapname);
+		if(!IsMenuMap(mapname)||MapNameToCategory(mapname)!=m_iSelectedCategory)goto nextFile;
 
 		// dedup
 		{
@@ -852,8 +1190,6 @@ void CCreateMultiplayerGameDialog::ApplyCategoryFilter()
 			}
 			if ( !bDup )
 			{
-				CMapCardPanel *pCard = new CMapCardPanel( m_pMapList, "MapCard", this, mapname );
-				m_pMapList->AddItem( NULL, pCard );
 
 				char *pszCopy = new char[ strlen(mapname) + 1 ];
 				Q_strcpy( pszCopy, mapname );
@@ -866,6 +1202,14 @@ void CCreateMultiplayerGameDialog::ApplyCategoryFilter()
 	}
 	g_pFullFileSystem->FindClose( findHandle );
 
+	if(m_MapNames.Count()>1)std::sort(m_MapNames.Base(),m_MapNames.Base()+m_MapNames.Count(),[](const char *a,const char *b){return Q_stricmp(a,b)<0;});
+	bool selectedExists=false;
+	for(int i=0;i<m_MapNames.Count();++i)
+	{
+		m_pMapList->AddItem(NULL,new CMapCardPanel(m_pMapList,"MapCard",this,m_MapNames[i]));
+		if(!Q_stricmp(m_szSelectedMap,m_MapNames[i]))selectedExists=true;
+	}
+	if(!selectedExists)m_szSelectedMap[0]=0;
 	m_pMapList->SetNumColumns( 3 );
 	RefreshSelection();
 }
@@ -1011,7 +1355,9 @@ void CCreateMultiplayerGameDialog::RefreshSelection()
 	if ( m_szSelectedMap[0] == 0 )
 	{
 		const char *startMap = m_pSavedData ? m_pSavedData->GetString("map", "") : "";
-		if ( startMap[0] )
+		bool inCategory=false;
+		for(int i=0;i<m_MapNames.Count();++i)if(!Q_stricmp(startMap,m_MapNames[i]))inCategory=true;
+		if ( startMap[0] && inCategory )
 		{
 			OnMapSelected( startMap );
 		}
@@ -1094,29 +1440,18 @@ void CCreateMultiplayerGameDialog::UpdateSidebarMode()
 {
 	bool bSingle = ( GetMaxPlayers() <= 1 );
 
-	if ( m_pFallDamageCheck )
-		m_pFallDamageCheck->SetVisible( bSingle );
-	if ( m_pMaxAmmoLabel )
-		m_pMaxAmmoLabel->SetVisible( bSingle );
-	if ( m_pMaxAmmo )
-		m_pMaxAmmo->SetVisible( bSingle );
-	if ( m_pLoadoutCheck )
-		m_pLoadoutCheck->SetVisible( bSingle );
-	if ( m_pGodModeCheck )
-		m_pGodModeCheck->SetVisible( bSingle );
-	if ( m_pSuitCheck )
-		m_pSuitCheck->SetVisible( bSingle );
-
-	if ( m_pLanCheck )
-		m_pLanCheck->SetVisible( !bSingle );
-	if ( m_pPvPCheck )
-		m_pPvPCheck->SetVisible( !bSingle );
-	if ( m_pPhysgunLimitedCheck )
-		m_pPhysgunLimitedCheck->SetVisible( !bSingle );
-	if ( m_pSandboxHeader )
-		m_pSandboxHeader->SetVisible( !bSingle );
-	if ( m_pSandboxList )
-		m_pSandboxList->SetVisible( !bSingle );
+	Panel *legacy[] = {m_pFallDamageCheck,m_pMaxAmmoLabel,m_pMaxAmmo,m_pLoadoutCheck,m_pGodModeCheck,m_pSuitCheck,m_pPvPCheck,m_pPhysgunLimitedCheck,m_pSandboxHeader};
+	for(int i=0;i<ARRAYSIZE(legacy);++i)if(legacy[i])legacy[i]->SetVisible(false);
+	if(m_pHostName)m_pHostName->SetVisible(!bSingle);
+	if(m_pHostNameLabel)m_pHostNameLabel->SetVisible(!bSingle);
+	if(m_pPassword)m_pPassword->SetVisible(!bSingle);
+	if(m_pPasswordLabel)m_pPasswordLabel->SetVisible(!bSingle);
+	if(m_pLanCheck)m_pLanCheck->SetVisible(!bSingle);
+	if(m_pSandboxList)
+	{
+		m_pSandboxList->SetVisible(true);
+		static_cast<CLaunchSettingsList *>(m_pSandboxList)->SetSinglePlayer(bSingle);
+	}
 
 	InvalidateLayout();
 }
@@ -1278,7 +1613,8 @@ void CCreateMultiplayerGameDialog::WriteListenServerConfig( bool bFallDamage, in
 			{
 				size_t nPrefix = Q_strlen( kListenServerOwnedLines[i] );
 				if ( (size_t)nTrimLen >= nPrefix &&
-					 !Q_strnicmp( pTrim, kListenServerOwnedLines[i], nPrefix ) )
+					 !Q_strnicmp( pTrim, kListenServerOwnedLines[i], nPrefix ) &&
+					 ( (size_t)nTrimLen==nPrefix || pTrim[nPrefix]==' ' || pTrim[nPrefix]=='\t' ) )
 				{
 					bOurs = true;
 					break;
@@ -1315,63 +1651,11 @@ void CCreateMultiplayerGameDialog::SaveConfig()
 	if ( m_pSavedData )
 	{
 		m_pSavedData->SetString( "map", GetMapName() );
-		m_pSavedData->SetInt( "mp_falldamage",
-			( m_pFallDamageCheck && m_pFallDamageCheck->IsSelected() ) ? 1 : 0 );
-
-		// HL2SB sidebar (2026-09-28): persisted for two consumers --
-		// reads on the next dialog open, and sandbox/init.lua's
-		// HL2SB_ApplyStartOptions() which lands the sbox_* pair in-game.
-		int nMaxAmmo = 9999;
-		if ( m_pMaxAmmo )
-		{
-			char szAmmo[16];
-			szAmmo[0] = 0;
-			m_pMaxAmmo->GetText( szAmmo, sizeof( szAmmo ) );
-			// An emptied-out box would Q_atoi to 0 and poison the saved state
-			// with "HL2 caps"; keep the GMod default instead.
-			nMaxAmmo = ( szAmmo[0] != 0 ) ? clamp( Q_atoi( szAmmo ), 0, 999999 ) : 9999;
-		}
-		m_pSavedData->SetInt( "gmod_maxammo", nMaxAmmo );
-		m_pSavedData->SetInt( "sbox_weapons",
-			( m_pLoadoutCheck && m_pLoadoutCheck->IsSelected() ) ? 1 : 0 );
-		m_pSavedData->SetInt( "sbox_godmode",
-			( m_pGodModeCheck && m_pGodModeCheck->IsSelected() ) ? 1 : 0 );
-		m_pSavedData->SetInt( "gmod_suit",
-			( m_pSuitCheck && m_pSuitCheck->IsSelected() ) ? 1 : 0 );
-
-		// HL2SB (2026-10-15): multiplayer sandbox options.  The checkboxes in
-		// the limits list sit directly on their convar names; the number rows
-		// read their TextEntry text.  An emptied-out number row keeps its GMod
-		// default instead of poisoning the file with 0.
-		m_pSavedData->SetInt( "sv_lan",
-			( m_pLanCheck && m_pLanCheck->IsSelected() ) ? 1 : 0 );
-		for ( int i = 0; i < m_SandboxOptions.Count(); ++i )
-		{
-			const SandboxOption_t &option = m_SandboxOptions[ i ];
-			if ( option.pCheck )
-			{
-				m_pSavedData->SetInt( option.pszConVar, option.pCheck->IsSelected() ? 1 : 0 );
-			}
-			else if ( option.pEntry )
-			{
-				char szValue[16];
-				szValue[0] = 0;
-				option.pEntry->GetText( szValue, sizeof( szValue ) );
-
-				const char *pszDefault = "0";
-				for ( int j = 0; j < ARRAYSIZE( s_SandboxLimits ); ++j )
-				{
-					if ( !Q_stricmp( s_SandboxLimits[j].pszConVar, option.pszConVar ) )
-					{
-						pszDefault = s_SandboxLimits[j].pszDefault;
-						break;
-					}
-				}
-				m_pSavedData->SetInt( option.pszConVar,
-					( szValue[0] != 0 ) ? clamp( Q_atoi( szValue ), 0, 100000 ) : atoi( pszDefault ) );
-			}
-		}
-
+		m_pSavedData->SetInt("sv_lan",m_pLanCheck&&m_pLanCheck->IsSelected()?1:0);
+		if(m_pSandboxList)static_cast<CLaunchSettingsList *>(m_pSandboxList)->Save(m_pSavedData);
+		m_pSavedData->SetInt("maxplayers",GetMaxPlayers());
+		m_pSavedData->SetString("hostname",GetHostName());
+		m_pSavedData->SetString("sv_password",GetPassword());
 		m_pSavedData->SaveToFile( g_pFullFileSystem, "ServerConfig.vdf", "GAME" );
 	}
 }
@@ -1395,31 +1679,22 @@ void CCreateMultiplayerGameDialog::CreateGame()
 	g_pCVar->RevertFlaggedConVars( FCVAR_REPLICATED );
 	g_pCVar->RevertFlaggedConVars( FCVAR_CHEAT );
 
-	char szMapName[64], szHostName[64], szPassword[64];
+	char szMapName[64]={0}, szHostName[64]={0}, szPassword[64]={0};
 	Q_strncpy( szMapName, GetMapName(), sizeof( szMapName ) );
 	Q_strncpy( szHostName, GetHostName(), sizeof( szHostName ) );
 	Q_strncpy( szPassword, GetPassword(), sizeof( szPassword ) );
 
+	for(int i=0;szHostName[i]||szPassword[i];++i)
+	{
+		if(szHostName[i]=='"'||szHostName[i]==';'||szHostName[i]=='\n'||szHostName[i]=='\r')szHostName[i]=' ';
+		if(szPassword[i]=='"'||szPassword[i]==';'||szPassword[i]=='\n'||szPassword[i]=='\r')szPassword[i]=' ';
+	}
+	for(const char *c=szMapName;*c;++c)if(!isalnum((unsigned char)*c)&&*c!='_'&&*c!='-'&&*c!='/')return;
 	SaveConfig();
 
-	// mp_falldamage belongs to the server DLL, which only exists once the map
-	// is running, so it is applied through cfg/listenserver.cfg rather than on
-	// the command line below.  Same story for gmod_maxammo / gmod_suit (game
-	// DLLs, not loaded at the menu) -- the sbox_* pair is NOT written here,
-	// sandbox/init.lua applies it from ServerConfig.vdf after the convars
-	// exist.
-	int nMaxAmmo = 9999;
-	if ( m_pMaxAmmo )
-	{
-		char szAmmo[16];
-		szAmmo[0] = 0;
-		m_pMaxAmmo->GetText( szAmmo, sizeof( szAmmo ) );
-		// Same empty-box guard as SaveConfig: never exec "gmod_maxammo 0" for a
-		// field the player wiped.
-		nMaxAmmo = ( szAmmo[0] != 0 ) ? clamp( Q_atoi( szAmmo ), 0, 999999 ) : 9999;
-	}
-	WriteListenServerConfig( m_pFallDamageCheck && m_pFallDamageCheck->IsSelected(),
-		nMaxAmmo, m_pSuitCheck && m_pSuitCheck->IsSelected() );
+	// Native server settings are applied after the server DLL has loaded.
+	WriteListenServerConfig( m_pSavedData->GetInt("mp_falldamage",0)!=0,
+		m_pSavedData->GetInt("gmod_maxammo",9999),m_pSavedData->GetInt("gmod_suit",0)!=0 );
 
 	// HL2SB: single player always starts as a LAN listen server (GMod does the
 	// same); multiplayer rows honour the LAN checkbox, defaulting to on to
@@ -1457,11 +1732,15 @@ void CCreateMultiplayerGameDialog::OnCommand( const char *command )
 	else if ( !Q_strnicmp( command, "MapCat ", 7 ) )
 	{
 		int iCat = atoi( command + 7 );
-		if ( iCat >= 0 && iCat < MAPCAT_COUNT )
+		if ( iCat >= 0 && iCat < (int)s_MapCategories.size() )
 		{
 			m_iSelectedCategory = iCat;
-			// refresh the category list highlight + rebuild the map grid
-			BuildGameModeList();
+			// Selection does not require rescanning gamemode definitions or categories.
+			for(int i=0;i<m_CategoryButtons.Count();++i)
+			{
+				m_CategoryButtons[i]->SetBgColor(i==iCat?Color(255,176,32,255):Color(40,42,46,255));
+				m_CategoryButtons[i]->SetFgColor(i==iCat?Color(20,20,20,255):Color(200,200,200,255));
+			}
 			BuildMapGrid();
 		}
 		return;
