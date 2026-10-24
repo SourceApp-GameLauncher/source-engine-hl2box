@@ -612,12 +612,44 @@ static int CBasePlayer_GiveNamedItem (lua_State *L) {
   return 1;
 }
 
-// HL2SB: GMod 的 Player:Give( weapon_class ). GMod 里 Give 与 GiveNamedItem
-// 对引擎武器等价（class name 即 item 名）；GiveNamedItem 引擎侧本来就会
-// 丢弃玩家已拥有的同名武器，直接转发即可。
-static int CBasePlayer_Give (lua_State *L) {
-  lua_pushentity(L, luaL_checkplayer(L, 1)->GiveNamedItem(luaL_checkstring(L, 2), luaL_optinteger(L, 3, 0)));
+// The Give boolean controls default ammunition, independently of item subtype.
+static CUtlVector<EHANDLE> s_NoAmmoRecipients;
+
+bool HL2SB_IsGiveAmmoSuppressed(CBaseCombatCharacter *recipient) {
+  for (int i = s_NoAmmoRecipients.Count() - 1; i >= 0; --i)
+    if (s_NoAmmoRecipients[i].Get() == recipient) return true;
+  return false;
+}
+
+static int CBasePlayer_Give(lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  const bool noAmmo = lua_toboolean(L, 3) != 0;
+  if (noAmmo) s_NoAmmoRecipients.AddToTail(EHANDLE(player));
+  CBaseEntity *item = player->GiveNamedItem(name, 0);
+  if (noAmmo) {
+    s_NoAmmoRecipients.Remove(s_NoAmmoRecipients.Count() - 1);
+    CBaseCombatWeapon *weapon = item ? item->MyCombatWeaponPointer() : NULL;
+    if (weapon) {
+      if (weapon->Clip1() >= 0) weapon->m_iClip1 = 0;
+      if (weapon->Clip2() >= 0) weapon->m_iClip2 = 0;
+    }
+  }
+  lua_pushentity(L, item);
   return 1;
+}
+
+static int CBasePlayer_StripWeapons(lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  player->ClearActiveWeapon();
+  for (int slot = 0; slot < MAX_WEAPONS; ++slot) {
+    CBaseCombatWeapon *weapon = player->GetWeapon(slot);
+    if (weapon) {
+      player->Weapon_Drop(weapon, NULL, NULL);
+      UTIL_Remove(weapon);
+    }
+  }
+  return 0;
 }
 
 // HL2SB GMod compat: Player:SetSuppressPickupNotices( bool bSuppress ) --
@@ -794,6 +826,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"HasWeapons", CBasePlayer_HasWeapons},
   {"GiveNamedItem", CBasePlayer_GiveNamedItem},
   {"Give", CBasePlayer_Give},
+  {"StripWeapons", CBasePlayer_StripWeapons},
   {"SetSuppressPickupNotices", CBasePlayer_SetSuppressPickupNotices},
   {"EnableControl", CBasePlayer_EnableControl},
   {"CheckTrainUpdate", CBasePlayer_CheckTrainUpdate},

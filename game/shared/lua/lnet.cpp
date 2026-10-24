@@ -311,6 +311,16 @@ static int net_ReadVector( lua_State *L )
 }
 
 // net.ReadAngle() -> Angle
+static int net_ReadNormal( lua_State *L )
+{
+    bf_read *reader = Net_GetRead();
+    if (!reader) return 0;
+    Vector value = vec3_origin;
+    reader->ReadBitVec3Normal(value);
+    lua_pushvector(L, value);
+    return 1;
+}
+
 static int net_ReadAngle( lua_State *L )
 {
 	QAngle a;
@@ -517,6 +527,14 @@ static int net_WriteVector( lua_State *L )
 	return 0;
 }
 
+static int net_WriteNormal( lua_State *L )
+{
+    if (!g_cnetActive) return 0;
+    const Vector value = luaL_checkvector(L, 1);
+    g_cnetWrite.WriteBitVec3Normal(value);
+    return 0;
+}
+
 static int net_WriteAngle( lua_State *L )
 {
 	if ( !g_cnetActive )
@@ -632,6 +650,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "WriteFloat",   net_WriteFloat },
 	{ "WriteDouble",  net_WriteDouble },
 	{ "WriteVector",  net_WriteVector },
+	{ "WriteNormal",  net_WriteNormal },
 	{ "WriteAngle",   net_WriteAngle },
 	{ "WriteEntity",  net_WriteEntity },
 	{ "WriteBool",    net_WriteBool },
@@ -653,6 +672,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "ReadFloat",    net_ReadFloat },
 	{ "ReadDouble",   net_ReadDouble },
 	{ "ReadVector",   net_ReadVector },
+	{ "ReadNormal",   net_ReadNormal },
 	{ "ReadAngle",    net_ReadAngle },
 	{ "ReadEntity",   net_ReadEntity },
 	{ NULL, NULL }
@@ -937,6 +957,14 @@ static int net_WriteVector( lua_State *L )
 	Vector v = luaL_checkvector( L, 1 );
 	g_netWrite.WriteBitVec3Coord( v );
 	return 0;
+}
+
+static int net_WriteNormal( lua_State *L )
+{
+    if (!g_netActive) return 0;
+    const Vector value = luaL_checkvector(L, 1);
+    g_netWrite.WriteBitVec3Normal(value);
+    return 0;
 }
 
 static int net_WriteAngle( lua_State *L )
@@ -1266,6 +1294,16 @@ static int net_ReadVector( lua_State *L )
 	return 1;
 }
 
+static int net_ReadNormal( lua_State *L )
+{
+    bf_read *reader = Net_GetRead();
+    if (!reader) return 0;
+    Vector value = vec3_origin;
+    reader->ReadBitVec3Normal(value);
+    lua_pushvector(L, value);
+    return 1;
+}
+
 static int net_ReadAngle( lua_State *L )
 {
 	QAngle a = vec3_angle;
@@ -1392,6 +1430,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "WriteFloat",   net_WriteFloat },
 	{ "WriteDouble",  net_WriteDouble },
 	{ "WriteVector",  net_WriteVector },
+	{ "WriteNormal",  net_WriteNormal },
 	{ "WriteAngle",   net_WriteAngle },
 	{ "WriteEntity",  net_WriteEntity },
 	{ "WriteBool",    net_WriteBool },
@@ -1418,6 +1457,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "ReadFloat",    net_ReadFloat },
 	{ "ReadDouble",   net_ReadDouble },
 	{ "ReadVector",   net_ReadVector },
+	{ "ReadNormal",   net_ReadNormal },
 	{ "ReadAngle",    net_ReadAngle },
 	{ "ReadEntity",   net_ReadEntity },
 	{ NULL, NULL }

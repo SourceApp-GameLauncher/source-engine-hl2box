@@ -1753,6 +1753,21 @@ void CHL2MP_Player::DetonateTripmines( void )
 	EmitSound( "Weapon_SLAM.SatchelDetonate" );
 }
 
+#if defined(LUA_SDK)
+CBaseEntity *HL2SB_GetPlayerRagdollEntity(CBasePlayer *player)
+{
+    CHL2MP_Player *mp = dynamic_cast<CHL2MP_Player *>(player);
+    return mp ? mp->m_hRagdoll.Get() : NULL;
+}
+
+void HL2SB_PrepareSilentPlayerDeath(CBasePlayer *player)
+{
+    CHL2MP_Player *mp = dynamic_cast<CHL2MP_Player *>(player);
+    if (!mp) return;
+    mp->DetonateTripmines();
+}
+#endif
+
 void CHL2MP_Player::Event_Killed( const CTakeDamageInfo &info )
 {
 	//update damage info with our accumulated physics force

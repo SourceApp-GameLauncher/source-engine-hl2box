@@ -435,34 +435,11 @@ static int CBasePlayer_GetAimVector (lua_State *L) {
 // Both are plain GMod spellings of engine calls that already exist
 // (GetPlayerName / GetVehicleEntity), and stock addons use them constantly: the
 // windgrin_npc nextbot prints "nav_generate requested by ..c:Name()".
-// HL2SB GMod compat: Player:KillSilent().
-//
-// Wiki: server only, "kills a player without notifying the rest of the server",
-// and it calls GM:PlayerSilentDeath instead of GM:PlayerDeath.
-//
-// This fork has no silent-death entry point in the engine, so the death itself is
-// an ordinary lethal hit (DMG_GENERIC) and the GMod hook is raised so gamemode
-// code that listens for the silent variant still runs.  The kill feed is NOT
-// suppressed - that is the one part of the GMod contract this cannot promise.
-static int CBasePlayer_KillSilent (lua_State *L) {
+// Silent death changes player state directly, including while damage is disabled.
+static int CBasePlayer_KillSilent(lua_State *L) {
 #ifndef CLIENT_DLL
-  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-
-  if (pPlayer->IsAlive()) {
-    CTakeDamageInfo info;
-
-    info.SetDamage(100000.0f);
-    info.SetDamageType(DMG_GENERIC);
-    pPlayer->TakeDamage(info);
-  }
-
-  BEGIN_LUA_CALL_HOOK("PlayerSilentDeath");
-    lua_pushplayer(L, pPlayer);
-  END_LUA_CALL_HOOK(1, 0);
-#else
-  (void)L;
+  luaL_checkplayer(L, 1)->LuaKillSilent();
 #endif
-
   return 0;
 }
 
@@ -471,27 +448,15 @@ static int CBasePlayer_Name (lua_State *L) {
   return 1;
 }
 
-// HL2SB GMod compat: Player:Kill().
-//
-// The ordinary suicide entry point: a lethal generic hit that runs the full
-// death chain (scoreboard, GM:PlayerDeath, kill feed) - unlike KillSilent
-// above, which is the quiet variant.  Server only, like every path that can
-// actually end a life.
-static int CBasePlayer_Kill (lua_State *L) {
+// The explicit kill method bypasses damage filters and runs ordinary death events.
+static int CBasePlayer_Kill(lua_State *L) {
 #ifndef CLIENT_DLL
-  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-
-  if (pPlayer->IsAlive()) {
-    CTakeDamageInfo info;
-
-    info.SetDamage(100000.0f);
-    info.SetDamageType(DMG_GENERIC);
-    pPlayer->TakeDamage(info);
-  }
-#else
-  (void)L;
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  player->SetHealth(0);
+  CTakeDamageInfo info(player, player, 0.0f, DMG_NEVERGIB);
+  player->Event_Killed(info);
+  player->Event_Dying(info);
 #endif
-
   return 0;
 }
 
@@ -588,6 +553,31 @@ static int CBasePlayer_GetWeapons (lua_State *L) {
 }
 
 // FIXME: move to CBaseCombatCharacter
+static int CBasePlayer_GetRagdollEntity(lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+#ifdef CLIENT_DLL
+  C_HL2MP_Player *mp = dynamic_cast<C_HL2MP_Player *>(player);
+  lua_pushentity(L, mp ? mp->GetRagdollEntity() : NULL);
+#else
+  extern CBaseEntity *HL2SB_GetPlayerRagdollEntity(CBasePlayer *player);
+  lua_pushentity(L, HL2SB_GetPlayerRagdollEntity(player));
+#endif
+  return 1;
+}
+
+static int CBasePlayer_GetAmmo(lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  lua_newtable(L);
+  for (int id = 0; id < MAX_AMMO_SLOTS; ++id) {
+    const int count = player->GetAmmoCount(id);
+    if (count > 0) {
+      lua_pushinteger(L, count);
+      lua_rawseti(L, -2, id);
+    }
+  }
+  return 1;
+}
+
 static int CBasePlayer_GetAmmoCount (lua_State *L) {
   switch(lua_type(L, 2)) {
 	case LUA_TNUMBER:
@@ -735,6 +725,29 @@ static int CBasePlayer_SetObserverMode (lua_State *L) {
   }
   return 0;
 }
+
+#ifndef CLIENT_DLL
+static int CBasePlayer_Spectate(lua_State *L) {
+  luaL_checkplayer(L, 1)->LuaSpectate((int)luaL_checknumber(L, 2));
+  return 0;
+}
+
+static int CBasePlayer_SpectateEntity(lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  player->LuaSpectateEntity(lua_toentity(L, 2));
+  return 0;
+}
+
+static int CBasePlayer_UnSpectate(lua_State *L) {
+  luaL_checkplayer(L, 1)->LuaUnSpectate();
+  return 0;
+}
+
+static int CBasePlayer_ExitVehicle(lua_State *L) {
+  luaL_checkplayer(L, 1)->ExitVehicle();
+  return 0;
+}
+#endif
 
 static int CBasePlayer_GetObserverTarget (lua_State *L) {
   lua_pushentity(L, luaL_checkplayer(L, 1)->GetObserverTarget());
@@ -1644,13 +1657,6 @@ static int CBasePlayer_SetCurrentViewOffset (lua_State *L) {
 #ifdef CLIENT_DLL
 // Player render angles belong to the animation state, independently of the
 // entity's parent transform and eye angles.
-// HL2SB GMod compat (2026-09-25): Player:GetRagdollEntity() - this fork's
-// C_BasePlayer carries no clientside ragdoll handle, so answer the NULL
-// entity (GMod answers NULL while alive as well).  The First Person Body
-// gate only tests validity to stand down while dead; Player:Alive() covers
-// that side of it.
-
-
 // HL2SB GMod compat (2026-10-03): Player:ShouldDrawLocalPlayer() - the
 // engine's draw question for this player.  Deliberately WITHOUT the
 // ShouldDrawLocalPlayer Lua hook (that hook can itself call this method, and
@@ -1665,11 +1671,6 @@ static int CBasePlayer_ShouldDrawLocalPlayer (lua_State *L) {
   return 1;
 }
 
-static int CBasePlayer_GetRagdollEntity (lua_State *L) {
-  luaL_checktype(L, 1, LUA_TUSERDATA);
-  lua_pushentity(L, (CBaseEntity *)NULL);
-  return 1;
-}
 
 // HL2SB GMod compat (2026-09-25): Player:GetAllowWeaponsInVehicle() - no
 // client-side vehicle flag exists in this fork, answer false (the addon only
@@ -2837,6 +2838,8 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"GetActiveWeapon", CBasePlayer_GetActiveWeapon},
   {"GetWeapons", CBasePlayer_GetWeapons},
   {"GetAmmoCount", CBasePlayer_GetAmmoCount},
+  {"GetAmmo", CBasePlayer_GetAmmo},
+  {"GetRagdollEntity", CBasePlayer_GetRagdollEntity},
 #ifndef CLIENT_DLL
   // HL2SB GMod compat (2026-09-22 physgun audit): the per-player frozen list.
   {"AddFrozenPhysicsObject", CBasePlayer_AddFrozenPhysicsObject},
@@ -2878,6 +2881,12 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"GetObserverMode", CBasePlayer_GetObserverMode},
   {"SetObserverMode", CBasePlayer_SetObserverMode},
   {"GetObserverTarget", CBasePlayer_GetObserverTarget},
+#ifndef CLIENT_DLL
+  {"Spectate", CBasePlayer_Spectate},
+  {"SpectateEntity", CBasePlayer_SpectateEntity},
+  {"UnSpectate", CBasePlayer_UnSpectate},
+  {"ExitVehicle", CBasePlayer_ExitVehicle},
+#endif
   {"GetVehicleEntity", CBasePlayer_GetVehicleEntity},
   {"GetOffset_m_Local", CBasePlayer_GetOffset_m_Local},
   {"GetPlayerLocalData", CBasePlayer_GetPlayerLocalData},
@@ -3038,7 +3047,6 @@ static const luaL_Reg CBasePlayermeta[] = {
 #ifdef CLIENT_DLL
   {"GetRenderAngles", CBasePlayer_GetRenderAngles},
   {"SetRenderAngles", CBasePlayer_SetRenderAngles},
-  {"GetRagdollEntity", CBasePlayer_GetRagdollEntity},
   {"GetAllowWeaponsInVehicle", CBasePlayer_GetAllowWeaponsInVehicle},
   {"ShouldDrawLocalPlayer", CBasePlayer_ShouldDrawLocalPlayer},
   // HL2SB GMod compat: the scoreboard's mute button reads and toggles these.

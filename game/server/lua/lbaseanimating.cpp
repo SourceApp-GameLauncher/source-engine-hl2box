@@ -1017,6 +1017,40 @@ static int CBaseAnimating_Extinguish (lua_State *L) {
   return 0;
 }
 
+static int CBaseAnimating_GetChildBones(lua_State *L) {
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  CStudioHdr *hdr = entity ? entity->GetModelPtr() : NULL;
+  const int bone = (int)luaL_checknumber(L, 2);
+  if (!hdr || hdr->numbones() == 0 || hdr->numbones() < bone) return 0;
+  lua_newtable(L);
+  int count = 0;
+  for (int i = 0; i < hdr->numbones(); ++i)
+    if (hdr->boneParent(i) == bone) {
+      lua_pushinteger(L, i);
+      lua_rawseti(L, -2, ++count);
+    }
+  return 1;
+}
+
+extern bool HL2SB_HasBoneManipulations(CBaseEntity *entity);
+extern int HL2SB_GetBoneJiggle(CBaseEntity *entity, int bone);
+extern void HL2SB_SetBoneJiggle(CBaseEntity *entity, int bone, int value);
+
+static int CBaseAnimating_HasBoneManipulations(lua_State *L) {
+  lua_pushboolean(L, HL2SB_HasBoneManipulations(luaL_checkentity(L, 1)));
+  return 1;
+}
+
+static int CBaseAnimating_GetManipulateBoneJiggle(lua_State *L) {
+  lua_pushinteger(L, HL2SB_GetBoneJiggle(luaL_checkentity(L, 1), (int)luaL_checknumber(L, 2)));
+  return 1;
+}
+
+static int CBaseAnimating_ManipulateBoneJiggle(lua_State *L) {
+  HL2SB_SetBoneJiggle(luaL_checkentity(L, 1), (int)luaL_checknumber(L, 2), (int)luaL_checknumber(L, 3));
+  return 0;
+}
+
 static const luaL_Reg CBaseAnimatingmeta[] = {
   {"CalculateIKLocks", CBaseAnimating_CalculateIKLocks},
   {"RestartGesture", CBaseAnimating_RestartGesture},
@@ -1039,6 +1073,10 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetBonePosition", CBaseAnimating_GetBonePosition},
   {"GetBoneMatrix", CBaseAnimating_GetBoneMatrix},
   {"GetManipulateBonePosition", CBaseAnimating_GetManipulateBonePosition},
+  {"HasBoneManipulations", CBaseAnimating_HasBoneManipulations},
+  {"GetChildBones", CBaseAnimating_GetChildBones},
+  {"GetManipulateBoneJiggle", CBaseAnimating_GetManipulateBoneJiggle},
+  {"ManipulateBoneJiggle", CBaseAnimating_ManipulateBoneJiggle},
   {"GetManipulateBoneAngles", CBaseAnimating_GetManipulateBoneAngles},
   {"GetManipulateBoneScale", CBaseAnimating_GetManipulateBoneScale},
   {"GetModelRenderBounds", CBaseAnimating_GetModelRenderBounds},

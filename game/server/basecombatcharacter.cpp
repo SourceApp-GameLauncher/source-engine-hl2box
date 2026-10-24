@@ -3048,6 +3048,10 @@ CBaseEntity *CBaseCombatCharacter::Weapon_FindUsable( const Vector &range )
 //-----------------------------------------------------------------------------
 int CBaseCombatCharacter::GiveAmmo( int iCount, int iAmmoIndex, bool bSuppressSound)
 {
+#if defined(LUA_SDK)
+    extern bool HL2SB_IsGiveAmmoSuppressed(CBaseCombatCharacter *recipient);
+    if (HL2SB_IsGiveAmmoSuppressed(this)) return 0;
+#endif
 	if (iCount <= 0)
 		return 0;
 

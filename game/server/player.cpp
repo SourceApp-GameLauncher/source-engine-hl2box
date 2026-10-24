@@ -2431,6 +2431,116 @@ void CBasePlayer::StartDeathCam( void )
 	}
 } */
 
+struct LuaObserverTarget
+{
+    EHANDLE player;
+    EHANDLE target;
+};
+static CUtlVector<LuaObserverTarget> s_LuaObserverTargets;
+
+static CBaseEntity *LuaObserverTargetFor(CBasePlayer *player)
+{
+    for (int i = s_LuaObserverTargets.Count() - 1; i >= 0; --i)
+    {
+        if (!s_LuaObserverTargets[i].player.Get()) s_LuaObserverTargets.FastRemove(i);
+        else if (s_LuaObserverTargets[i].player.Get() == player) return s_LuaObserverTargets[i].target.Get();
+    }
+    return NULL;
+}
+
+void CBasePlayer::LuaKillSilent()
+{
+#if defined(LUA_SDK)
+    if (L != NULL) {
+        BEGIN_LUA_CALL_HOOK("PlayerSilentDeath");
+            lua_pushplayer(L, this);
+        END_LUA_CALL_HOOK(1, 0);
+    }
+#endif
+    ExitVehicle();
+    ClearUseEntity();
+#if defined(LUA_SDK)
+    extern void HL2SB_PrepareSilentPlayerDeath(CBasePlayer *player);
+    HL2SB_PrepareSilentPlayerDeath(this);
+#endif
+    SetHealth(0);
+    if (GetActiveWeapon()) GetActiveWeapon()->Holster();
+    SetViewOffset(VEC_DEAD_VIEWHEIGHT_SCALED(this));
+    m_lifeState = LIFE_DYING;
+    pl.deadflag = true;
+    AddSolidFlags(FSOLID_NOT_SOLID);
+    SetMoveType(MOVETYPE_NONE);
+    SetGroundEntity(NULL);
+    SetSuitUpdate(NULL, false, 0);
+    SetFOV(this, 0);
+    m_flDeathTime = gpGlobals->curtime;
+    CTakeDamageInfo info(this, this, 0.0f, DMG_GENERIC);
+    DeathSound(info);
+    m_lifeState = LIFE_DEAD;
+    RemoveEffects(EF_NODRAW);
+    FlashlightTurnOff();
+    RemoveAllItems(true);
+    EnableButtons(0x03ffffff);
+    UnforceButtons(0x03ffffff);
+#if defined(LUA_SDK)
+    if (L != NULL) {
+        BEGIN_LUA_CALL_HOOK("PostPlayerDeath");
+            lua_pushplayer(L, this);
+        END_LUA_CALL_HOOK(1, 0);
+    }
+#endif
+}
+
+void CBasePlayer::LuaSpectate(int mode)
+{
+    if (mode < OBS_MODE_NONE || mode >= NUM_OBSERVER_MODES) return;
+    if (mode == OBS_MODE_NONE) { LuaUnSpectate(); SetMoveType(MOVETYPE_OBSERVER); return; }
+    if (!IsObserver())
+    {
+        SetAbsOrigin(GetAbsOrigin() + GetViewOffset());
+        SetViewOffset(vec3_origin);
+    }
+    m_afPhysicsFlags |= PFLAG_OBSERVER;
+    if (GetActiveWeapon()) GetActiveWeapon()->Holster();
+    SetGroundEntity(NULL);
+    RemoveFlag(FL_DUCKING | FL_ANIMDUCKING);
+    AddSolidFlags(FSOLID_NOT_SOLID);
+    AddEffects(EF_NODRAW);
+    SetObserverMode(mode);
+    m_Local.m_iHideHUD = HIDEHUD_HEALTH;
+    m_takedamage = DAMAGE_NO;
+    SetMoveType(MOVETYPE_OBSERVER);
+}
+
+void CBasePlayer::LuaSpectateEntity(CBaseEntity *target)
+{
+    for (int i = s_LuaObserverTargets.Count() - 1; i >= 0; --i)
+        if (!s_LuaObserverTargets[i].player.Get() || s_LuaObserverTargets[i].player.Get() == this)
+            s_LuaObserverTargets.FastRemove(i);
+    if (target && target != this)
+    {
+        LuaObserverTarget entry;
+        entry.player = this;
+        entry.target = target;
+        s_LuaObserverTargets.AddToTail(entry);
+        SetObserverTarget(target);
+    }
+    else m_hObserverTarget = NULL;
+}
+
+void CBasePlayer::LuaUnSpectate()
+{
+    StopObserverMode();
+    ResetObserverMode();
+    LuaSpectateEntity(NULL);
+    RemoveSolidFlags(FSOLID_NOT_SOLID);
+    RemoveEffects(EF_NODRAW);
+    RemoveFlag(FL_DUCKING);
+    m_Local.m_iHideHUD = 0;
+    m_takedamage = DAMAGE_YES;
+    SetMoveType(MOVETYPE_WALK);
+}
+
 void CBasePlayer::StopObserverMode()
 {
 	m_bForcedObserverMode = false;
@@ -2871,6 +2981,8 @@ bool CBasePlayer::SetObserverTarget(CBaseEntity *target)
 
 bool CBasePlayer::IsValidObserverTarget(CBaseEntity * target)
 {
+    if (target && target != this && LuaObserverTargetFor(this) == target)
+        return !target->IsMarkedForDeletion();
 	if ( target == NULL )
 		return false;
 
@@ -4051,18 +4163,6 @@ void CBasePlayer::PreThink(void)
 	if ( g_fGameOver || m_iPlayerLocked )
 		return;         // intermission or finale
 
-#if defined ( LUA_SDK )
-	// HL2SB GMod compat (2026-10-08): GM:StartCommand( ply, cmd ).  GMod fires
-	// it right before the player's input is processed each tick so scripts can
-	// rewrite buttons/viewangles (bot control, forced moves).  m_pCurrentCommand
-	// is only meaningful inside RunCommand - outside that window the hook is
-	// skipped rather than handed a stale command.
-	if ( m_pCurrentCommand != NULL )
-	{
-		extern void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd );
-		HL2SB_LuaStartCommand( this, m_pCurrentCommand );
-	}
-#endif
 
 	if ( Hints() )
 	{

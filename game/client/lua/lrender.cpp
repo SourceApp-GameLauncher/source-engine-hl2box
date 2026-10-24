@@ -2285,26 +2285,27 @@ LUA_BINDING_BEGIN( Renders, DrawSprite, "library", "Draws a sprite", "client" )
 }
 LUA_BINDING_END()
 
-LUA_BINDING_BEGIN( Renders, ComputeLighting, "library", "Returns the lighting at the given position, in the 0..1 range GMod scripts expect.", "client" )
+LUA_BINDING_BEGIN( Renders, ComputeLighting, "library", "Returns the lighting at the given position.", "client" )
 {
-    Vector position = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "position" );
-    Vector defaultNormal = vec3_origin;
-    Vector normal = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optvector, 2, &defaultNormal, "normal" );
-    bool bClamp = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optboolean, 3, true, "clamp" );
-
-    // HL2SB: this is a real engine entry point, not an approximation --
-    // IVEngineClient::ComputeLighting() (public/cdll_int.h:392), the same call
-    // game/client/c_impact_effects.cpp:486 makes for impact lighting.  With a
-    // normal it evaluates the world lights plus the ambient cube at that point,
-    // which is what GMod's render.ComputeLighting returns; the bClamp argument
-    // (GMod's default is true) is passed straight through.
-    Vector color( 1, 1, 1 );
-    engine->ComputeLighting( position, ( normal == vec3_origin ) ? NULL : &normal, bClamp, color, NULL );
-
-    lua_pushvector( L, color );
+    const Vector position = luaL_checkvector(L, 1);
+    const Vector *normal = lua_isnoneornil(L, 2) ? NULL : &luaL_checkvector(L, 2);
+    Vector color = vec3_origin;
+    engine->ComputeLighting(position, normal, false, color, NULL);
+    lua_pushvector(L, color);
     return 1;
 }
-LUA_BINDING_END( "Vector", "The lighting colour at the position." )
+LUA_BINDING_END("Vector", "Lighting colour")
+
+LUA_BINDING_BEGIN( Renders, ComputeDynamicLighting, "library", "Returns the dynamic lighting at a position and normal.", "client" )
+{
+    const Vector position = luaL_checkvector(L, 1);
+    const Vector normal = luaL_checkvector(L, 2);
+    Vector color = vec3_origin;
+    engine->ComputeDynamicLighting(position, &normal, color);
+    lua_pushvector(L, color);
+    return 1;
+}
+LUA_BINDING_END("Vector", "Dynamic lighting colour")
 
 LUA_BINDING_BEGIN( Renders, DrawBeam, "library", "Draws a beam", "client" )
 {
@@ -2848,6 +2849,210 @@ LUA_BINDING_BEGIN( Renders, DynamicLight, "library", "Creates or reuses a dynami
 }
 LUA_BINDING_END()
 
+// Buffer Lua vertices until End so an interrupted script never leaves a native
+// mesh locked or a render context retained across protected calls.
+struct LuaMeshVertex
+{
+    Vector position;
+    Vector normal;
+    unsigned char color[4];
+    float texcoord[8][4];
+};
+
+static CUtlVector<LuaMeshVertex> s_LuaMeshVertices;
+static bool s_LuaMeshBuilding = false;
+static int s_LuaMeshLimit = 0;
+static int s_LuaMeshPrimitive = MATERIAL_TRIANGLES;
+static int s_LuaMeshCount = 0;
+static int s_LuaMeshWritten = 0;
+
+void HL2SB_AbortLuaMesh()
+{
+    s_LuaMeshBuilding = false;
+    s_LuaMeshLimit = 0;
+    s_LuaMeshWritten = 0;
+    s_LuaMeshVertices.RemoveAll();
+}
+
+static int LuaMeshVertexCount(int primitive, int count)
+{
+    if (count < 1 || count > 32768) return 0;
+    int vertices = 0;
+    switch (primitive)
+    {
+    case MATERIAL_POINTS:
+    case MATERIAL_LINE_LOOP: vertices = count; break;
+    case MATERIAL_LINES: vertices = count * 2; break;
+    case MATERIAL_TRIANGLES: vertices = count * 3; break;
+    case MATERIAL_TRIANGLE_STRIP: vertices = count + 2; break;
+    case MATERIAL_LINE_STRIP: vertices = count + 1; break;
+    case MATERIAL_POLYGON: if (count >= 3) vertices = count; break;
+    case MATERIAL_QUADS: vertices = count * 4; break;
+    default: break;
+    }
+    int indices = vertices;
+    if (primitive == MATERIAL_QUADS) indices = count * 6;
+    else if (primitive == MATERIAL_POLYGON) indices = (count - 2) * 3;
+    else if (primitive == MATERIAL_LINE_STRIP || primitive == MATERIAL_LINE_LOOP) indices = count * 2;
+    return vertices <= 32768 && indices <= 32768 ? vertices : 0;
+}
+
+static int mesh_Begin(lua_State *state)
+{
+    if (s_LuaMeshBuilding)
+    {
+        HL2SB_AbortLuaMesh();
+        return luaL_error(state, "mesh.Begin called before mesh.End");
+    }
+    const lua_Number primitiveValue = luaL_checknumber(state, 1);
+    const lua_Number countValue = luaL_checknumber(state, 2);
+    if (!(primitiveValue >= 0 && primitiveValue < 8 && countValue >= 1 && countValue < 32769))
+        return luaL_error(state, "Invalid mesh primitive or vertex count");
+    const int primitive = (int)primitiveValue;
+    const int count = (int)countValue;
+    const int vertices = LuaMeshVertexCount(primitive, count);
+    if (!vertices) return luaL_error(state, "Invalid mesh primitive or vertex count");
+    s_LuaMeshVertices.SetCount(vertices);
+    Q_memset(s_LuaMeshVertices.Base(), 0, sizeof(LuaMeshVertex) * vertices);
+    for (int i = 0; i < vertices; ++i)
+        Q_memset(s_LuaMeshVertices[i].color, 255, 4);
+    s_LuaMeshPrimitive = primitive;
+    s_LuaMeshCount = count;
+    s_LuaMeshLimit = vertices;
+    s_LuaMeshBuilding = true;
+    s_LuaMeshWritten = 0;
+    return 0;
+}
+
+static LuaMeshVertex *LuaMeshCurrent(lua_State *state)
+{
+    if (!s_LuaMeshBuilding)
+    {
+        luaL_error(state, "mesh vertex operation without mesh.Begin");
+        return NULL;
+    }
+    const int index = s_LuaMeshWritten;
+    return index < s_LuaMeshLimit ? s_LuaMeshVertices.Base() + index : NULL;
+}
+
+static int mesh_Position(lua_State *state)
+{
+    LuaMeshVertex *vertex = LuaMeshCurrent(state);
+    if (!vertex) return 0;
+    if (lua_isnumber(state, 1))
+        vertex->position.Init((float)luaL_checknumber(state, 1),
+            (float)luaL_checknumber(state, 2), (float)luaL_checknumber(state, 3));
+    else
+        vertex->position = luaL_checkvector(state, 1);
+    return 0;
+}
+
+static int mesh_Normal(lua_State *state)
+{
+    LuaMeshVertex *vertex = LuaMeshCurrent(state);
+    if (!vertex) return 0;
+    if (lua_isnumber(state, 1))
+        vertex->normal.Init((float)luaL_checknumber(state, 1),
+            (float)luaL_checknumber(state, 2), (float)luaL_checknumber(state, 3));
+    else
+        vertex->normal = luaL_checkvector(state, 1);
+    return 0;
+}
+
+static int mesh_TexCoord(lua_State *state)
+{
+    LuaMeshVertex *vertex = LuaMeshCurrent(state);
+    if (!vertex) return 0;
+    const int channel = (int)luaL_checknumber(state, 1);
+    if (channel < 0 || channel >= 8) return 0;
+    const int dimensions = MIN(lua_gettop(state) - 1, 4);
+    for (int i = 0; i < dimensions; ++i)
+        vertex->texcoord[channel][i] = (float)luaL_checknumber(state, i + 2);
+    return 0;
+}
+
+static int mesh_Color(lua_State *state)
+{
+    LuaMeshVertex *vertex = LuaMeshCurrent(state);
+    if (!vertex) return 0;
+    for (int i = 0; i < 4; ++i)
+        vertex->color[i] = (unsigned char)(int)luaL_checknumber(state, i + 1);
+    return 0;
+}
+
+static int mesh_Color32(lua_State *state)
+{
+    LuaMeshVertex *vertex = LuaMeshCurrent(state);
+    if (!vertex) return 0;
+    const lua_Color color = luaL_checkcolor(state, 1);
+    vertex->color[0] = (unsigned char)color.r();
+    vertex->color[1] = (unsigned char)color.g();
+    vertex->color[2] = (unsigned char)color.b();
+    vertex->color[3] = (unsigned char)color.a();
+    return 0;
+}
+
+static int mesh_AdvanceVertex(lua_State *state)
+{
+    if (LuaMeshCurrent(state))
+        ++s_LuaMeshWritten;
+    return 0;
+}
+
+static int mesh_End(lua_State *state)
+{
+    if (!s_LuaMeshBuilding) return luaL_error(state, "mesh.End without mesh.Begin");
+    int vertices = s_LuaMeshWritten;
+    if (s_LuaMeshPrimitive == MATERIAL_QUADS) vertices -= vertices % 4;
+    else if (s_LuaMeshPrimitive == MATERIAL_TRIANGLES) vertices -= vertices % 3;
+    else if (s_LuaMeshPrimitive == MATERIAL_LINES) vertices -= vertices % 2;
+    else if ((s_LuaMeshPrimitive == MATERIAL_POLYGON || s_LuaMeshPrimitive == MATERIAL_TRIANGLE_STRIP ||
+        s_LuaMeshPrimitive == MATERIAL_LINE_LOOP) && vertices < 3) vertices = 0;
+    else if (s_LuaMeshPrimitive == MATERIAL_LINE_STRIP && vertices < 2) vertices = 0;
+    s_LuaMeshBuilding = false;
+    if (vertices == 0) { HL2SB_AbortLuaMesh(); return 0; }
+    // All argument checks are complete before acquiring native resources.
+    CMatRenderContextPtr context(materials);
+    IMesh *mesh = context->GetDynamicMesh(false, NULL, NULL, g_pHL2SBLastBoundMaterial);
+    if (mesh)
+    {
+        CMeshBuilder builder;
+        builder.Begin(mesh, (MaterialPrimitiveType_t)s_LuaMeshPrimitive, s_LuaMeshCount);
+        for (int i = 0; i < vertices; ++i)
+        {
+            const LuaMeshVertex &vertex = s_LuaMeshVertices[i];
+            builder.Position3fv(vertex.position.Base());
+            builder.Normal3fv(vertex.normal.Base());
+            builder.Color4ubv(vertex.color);
+            const VertexFormat_t format = mesh->GetVertexFormat();
+            for (int channel = 0; channel < 8; ++channel)
+            {
+                const float *uv = vertex.texcoord[channel];
+                switch (TexCoordSize(channel, format))
+                {
+                case 1: builder.TexCoord1f(channel, uv[0]); break;
+                case 2: builder.TexCoord2fv(channel, uv); break;
+                case 3: builder.TexCoord3fv(channel, uv); break;
+                case 4: builder.TexCoord4fv(channel, uv); break;
+                }
+            }
+            builder.AdvanceVertex();
+        }
+        builder.End();
+        mesh->Draw();
+    }
+    HL2SB_AbortLuaMesh();
+    return 0;
+}
+
+static const luaL_Reg mesh_funcs[] = {
+    {"Begin", mesh_Begin}, {"End", mesh_End},
+    {"Position", mesh_Position}, {"Normal", mesh_Normal},
+    {"TexCoord", mesh_TexCoord}, {"Color", mesh_Color},
+    {"Color32", mesh_Color32}, {"AdvanceVertex", mesh_AdvanceVertex},
+    {NULL, NULL}
+};
+
 #endif  // CLIENT_DLL
 
 /*
@@ -2866,6 +3071,17 @@ LUALIB_API int luaopen_render( lua_State *L )
     // top of these.
     luaL_register( L, "cam", cam_funcs );
     lua_pop( L, 1 );
+    HL2SB_AbortLuaMesh();
+    luaL_register(L, "mesh", mesh_funcs);
+    lua_pop(L, 1);
+    const char *primitiveNames[] = {"MATERIAL_POINTS", "MATERIAL_LINES", "MATERIAL_TRIANGLES",
+        "MATERIAL_TRIANGLE_STRIP", "MATERIAL_LINE_STRIP", "MATERIAL_LINE_LOOP",
+        "MATERIAL_POLYGON", "MATERIAL_QUADS"};
+    for (int i = 0; i < ARRAYSIZE(primitiveNames); ++i)
+    {
+        lua_pushinteger(L, i);
+        lua_setglobal(L, primitiveNames[i]);
+    }
 
     LUA_SET_ENUM_LIB_BEGIN( L, "CULL_MODE" );
     lua_pushenum( L, MaterialCullMode_t::MATERIAL_CULLMODE_CCW, "COUNTER_CLOCKWISE" );

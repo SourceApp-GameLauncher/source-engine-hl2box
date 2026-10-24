@@ -2051,6 +2051,25 @@ static int CBaseAnimating___tostring (lua_State *L) {
 }
 
 
+extern bool HL2SB_HasBoneManipulations(CBaseEntity *entity);
+extern int HL2SB_GetBoneJiggle(CBaseEntity *entity, int bone);
+extern void HL2SB_SetBoneJiggle(CBaseEntity *entity, int bone, int value);
+
+static int CBaseAnimating_HasBoneManipulations(lua_State *L) {
+  lua_pushboolean(L, HL2SB_HasBoneManipulations(luaL_checkentity(L, 1)));
+  return 1;
+}
+
+static int CBaseAnimating_GetManipulateBoneJiggle(lua_State *L) {
+  lua_pushinteger(L, HL2SB_GetBoneJiggle(luaL_checkentity(L, 1), (int)luaL_checknumber(L, 2)));
+  return 1;
+}
+
+static int CBaseAnimating_ManipulateBoneJiggle(lua_State *L) {
+  HL2SB_SetBoneJiggle(luaL_checkentity(L, 1), (int)luaL_checknumber(L, 2), (int)luaL_checknumber(L, 3));
+  return 0;
+}
+
 static const luaL_Reg CBaseAnimatingmeta[] = {
   {"AddCallback", CBaseAnimating_AddCallback},
   {"AddEntity", CBaseAnimating_AddEntity},
@@ -2084,6 +2103,9 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetManipulateBoneScale", CBaseAnimating_GetManipulateBoneScale},
   {"GetManipulateBoneAngles", CBaseAnimating_GetManipulateBoneAngles},
   {"GetManipulateBonePosition", CBaseAnimating_GetManipulateBonePosition},
+  {"HasBoneManipulations", CBaseAnimating_HasBoneManipulations},
+  {"GetManipulateBoneJiggle", CBaseAnimating_GetManipulateBoneJiggle},
+  {"ManipulateBoneJiggle", CBaseAnimating_ManipulateBoneJiggle},
   {"GetCallbacks", CBaseAnimating_GetCallbacks},
   {"GetChildBones", CBaseAnimating_GetChildBones},
   {"GetFlexNum", CBaseAnimating_GetFlexNum},

@@ -30,6 +30,7 @@ public:
     CNetworkArray(Vector, m_positions, MAXSTUDIOBONES);
     CNetworkArray(QAngle, m_angles, MAXSTUDIOBONES);
     CNetworkArray(Vector, m_scales, MAXSTUDIOBONES);
+    CNetworkArray(int, m_jiggle, MAXSTUDIOBONES);
 };
 
 IMPLEMENT_NETWORKCLASS_ALIASED(BoneManipulate, DT_BoneManipulate)
@@ -39,11 +40,13 @@ BEGIN_NETWORK_TABLE(CBoneManipulate, DT_BoneManipulate)
     RecvPropArray3(RECVINFO_ARRAY(m_positions), RecvPropVector(RECVINFO(m_positions[0]))),
     RecvPropArray3(RECVINFO_ARRAY(m_angles), RecvPropVector(RECVINFO(m_angles[0]))),
     RecvPropArray3(RECVINFO_ARRAY(m_scales), RecvPropVector(RECVINFO(m_scales[0]))),
+    RecvPropArray3(RECVINFO_ARRAY(m_jiggle), RecvPropInt(RECVINFO(m_jiggle[0]))),
 #else
     SendPropEHandle(SENDINFO(m_hTarget)),
     SendPropArray3(SENDINFO_ARRAY3(m_positions), SendPropVector(SENDINFO_ARRAY(m_positions), 0, SPROP_NOSCALE)),
     SendPropArray3(SENDINFO_ARRAY3(m_angles), SendPropVector(SENDINFO_ARRAY(m_angles), 0, SPROP_NOSCALE)),
     SendPropArray3(SENDINFO_ARRAY3(m_scales), SendPropVector(SENDINFO_ARRAY(m_scales), 0, SPROP_NOSCALE)),
+    SendPropArray3(SENDINFO_ARRAY3(m_jiggle), SendPropInt(SENDINFO_ARRAY(m_jiggle), 8, SPROP_UNSIGNED)),
 #endif
 END_NETWORK_TABLE()
 #ifndef CLIENT_DLL
@@ -53,6 +56,7 @@ BEGIN_DATADESC(CBoneManipulate)
     DEFINE_ARRAY(m_positions, FIELD_VECTOR, MAXSTUDIOBONES),
     DEFINE_ARRAY(m_angles, FIELD_VECTOR, MAXSTUDIOBONES),
     DEFINE_ARRAY(m_scales, FIELD_VECTOR, MAXSTUDIOBONES),
+    DEFINE_ARRAY(m_jiggle, FIELD_INTEGER, MAXSTUDIOBONES),
     DEFINE_ARRAY(m_localPositions, FIELD_VECTOR, MAXSTUDIOBONES),
     DEFINE_ARRAY(m_localAngles, FIELD_VECTOR, MAXSTUDIOBONES),
     DEFINE_ARRAY(m_localScales, FIELD_VECTOR, MAXSTUDIOBONES),
@@ -68,6 +72,7 @@ CBoneManipulate::CBoneManipulate()
         m_positions.Set(i, vec3_origin);
         m_angles.Set(i, vec3_angle);
         m_scales.Set(i, Vector(1, 1, 1));
+        m_jiggle.Set(i, 0);
 #ifndef CLIENT_DLL
         m_localPositions[i] = vec3_origin;
         m_localAngles[i] = vec3_angle;
@@ -121,6 +126,7 @@ struct LocalBoneManip
     Vector position;
     QAngle angles;
     Vector scale;
+    int jiggle;
 };
 static CUtlVector<LocalBoneManip> s_LocalBoneManips;
 
@@ -140,6 +146,7 @@ static LocalBoneManip *LocalBone(CBaseEntity *entity, int bone, bool create = fa
     state.position = vec3_origin;
     state.angles = vec3_angle;
     state.scale.Init(1, 1, 1);
+    state.jiggle = 0;
     return &s_LocalBoneManips[s_LocalBoneManips.AddToTail(state)];
 }
 
@@ -155,6 +162,42 @@ void CBoneManipulate::OnDataChanged(DataUpdateType_t type)
     if (anim) anim->InvalidateBoneCache();
 }
 #endif
+
+bool HL2SB_HasBoneManipulations(CBaseEntity *entity)
+{
+    if (BoneController(entity)) return true;
+#ifdef CLIENT_DLL
+    for (int i = 0; i < s_LocalBoneManips.Count(); ++i)
+        if (s_LocalBoneManips[i].entity.Get() == entity && entity) return true;
+#endif
+    return false;
+}
+
+int HL2SB_GetBoneJiggle(CBaseEntity *entity, int bone)
+{
+    if (bone < 0 || bone >= MAXSTUDIOBONES) return 0;
+    CBoneManipulate *controller = BoneController(entity);
+    if (controller) return controller->m_jiggle[bone];
+#ifdef CLIENT_DLL
+    LocalBoneManip *local = LocalBone(entity, bone);
+    if (local) return local->jiggle;
+#endif
+    return 0;
+}
+
+void HL2SB_SetBoneJiggle(CBaseEntity *entity, int bone, int value)
+{
+    CBaseAnimating *anim = entity ? entity->GetBaseAnimating() : NULL;
+    if (!anim || bone < 0 || bone >= MAXSTUDIOBONES) return;
+    value &= 255;
+    const bool changed = HL2SB_GetBoneJiggle(entity, bone) != value;
+    CBoneManipulate *controller = BoneController(entity, true);
+    if (controller) controller->m_jiggle.Set(bone, value);
+#ifdef CLIENT_DLL
+    else LocalBone(entity, bone, true)->jiggle = value;
+#endif
+    if (changed) anim->InvalidateBoneCache();
+}
 
 Vector HL2SB_GetBonePositionOffset(CBaseEntity *entity, int bone)
 {
@@ -202,7 +245,7 @@ void HL2SB_SetBonePositionOffset(CBaseEntity *entity, int bone, const Vector &va
     const bool changed = HL2SB_GetBonePositionOffset(entity, bone) != value;
     CBoneManipulate *controller = BoneController(entity, true);
 #ifdef CLIENT_DLL
-    if (!changed) return;
+    if (!changed) { if (!controller) LocalBone(entity, bone, true); return; }
     if (controller) controller->m_positions.Set(bone, value);
     else LocalBone(entity, bone, true)->position = value;
 #else
@@ -220,7 +263,7 @@ void HL2SB_SetBoneAngleOffset(CBaseEntity *entity, int bone, const QAngle &value
     const bool changed = HL2SB_GetBoneAngleOffset(entity, bone) != value;
     CBoneManipulate *controller = BoneController(entity, true);
 #ifdef CLIENT_DLL
-    if (!changed) return;
+    if (!changed) { if (!controller) LocalBone(entity, bone, true); return; }
     if (controller) controller->m_angles.Set(bone, value);
     else LocalBone(entity, bone, true)->angles = value;
 #else
@@ -238,7 +281,7 @@ void HL2SB_SetBoneScale(CBaseEntity *entity, int bone, const Vector &value, bool
     const bool changed = HL2SB_GetBoneScale(entity, bone) != value;
     CBoneManipulate *controller = BoneController(entity, true);
 #ifdef CLIENT_DLL
-    if (!changed) return;
+    if (!changed) { if (!controller) LocalBone(entity, bone, true); return; }
     if (controller) controller->m_scales.Set(bone, value);
     else LocalBone(entity, bone, true)->scale = value;
 #else

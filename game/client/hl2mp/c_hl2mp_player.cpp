@@ -823,8 +823,15 @@ const QAngle& C_HL2MP_Player::GetRenderAngles()
 	}
 }
 
+C_BaseEntity *C_HL2MP_Player::GetRagdollEntity() const
+{
+    return m_hRagdoll.Get();
+}
+
 bool C_HL2MP_Player::ShouldDraw( void )
 {
+    if (GetMoveType() == MOVETYPE_OBSERVER || IsEffectActive(EF_NODRAW))
+        return false;
 	// If we're dead, our ragdoll will be drawn for us instead.
 	if ( !IsAlive() )
 		return false;

@@ -2733,6 +2733,10 @@ LUA_API int luasrc_pcall (lua_State *L, int nargs, int nresults, int errfunc) {
     lua_remove(L, errfunc);
 
   if (iError != 0) {
+#ifdef CLIENT_DLL
+    extern void HL2SB_AbortLuaMesh();
+    HL2SB_AbortLuaMesh();
+#endif
     luasrc_LuaErrorMsg( lua_tostring(L, -1) );
     lua_pop(L, 1);
     /* HL2SB (2026-10-04): leave ONE nil behind when results were requested.
