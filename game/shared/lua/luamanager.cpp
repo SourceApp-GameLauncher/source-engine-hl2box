@@ -31,6 +31,9 @@ extern "C" __declspec( dllimport ) unsigned short __stdcall
 #include "gameinterface.h"
 #endif
 #include "steam/isteamfriends.h"
+#ifdef CLIENT_DLL
+#include "steam/steam_api.h"
+#endif
 #include "networkstringtabledefs.h"
 #ifndef CLIENT_DLL
 #include "basescriptedtrigger.h"
@@ -323,7 +326,10 @@ static void LuaMakeRelative (char *pszPath, int nSize) {
   }
 }
 
-static int luasrc_include (lua_State *L) {
+static int HL2SB_LoadLuaFile( lua_State *L, const char *filename, bool execute );
+
+static int HL2SB_IncludeFile (lua_State *L, bool execute) {
+  const int nTop = lua_gettop( L );
   const char *name = luaL_checkstring(L, 1);
   char filename[MAX_PATH] = { 0 }, normalized[MAX_PATH];
   bool found = false;
@@ -362,18 +368,232 @@ static int luasrc_include (lua_State *L) {
     }
   }
   if (!found) Q_strncpy(filename, name, sizeof(filename));
-  luasrc_dofile(L, filename);
-  return 0;
+  if ( HL2SB_LoadLuaFile( L, filename, execute ) != 0 ) {
+    lua_settop( L, nTop );
+    return 0;
+  }
+  // An included chunk may return functions, tables or multiple values.
+  return lua_gettop( L ) - nTop;
 }
 
+static int luasrc_include( lua_State *L ) {
+  return HL2SB_IncludeFile( L, true );
+}
+
+static int luasrc_CompileFile( lua_State *L ) {
+  return HL2SB_IncludeFile( L, false );
+}
 
 static const luaL_Reg base_funcs[] = {
   {"print", luasrc_print},
   {"type", luasrc_type},
   {"include", luasrc_include},
+  {"CompileFile", luasrc_CompileFile},
   {NULL, NULL}
 };
 
+#if defined( CLIENT_DLL ) && !defined( NO_STEAM )
+LUA_API void luasrc_report_error( lua_State *L, const char *pszError );
+
+class CLuaWorkshopFileInfo
+{
+public:
+  CLuaWorkshopFileInfo( lua_State *state, ISteamUGC *ugc, UGCQueryHandle_t query,
+                       int callback )
+    : m_pState( state ), m_pUGC( ugc ), m_Query( query ),
+      m_nCallback( callback ), m_bDone( false ) {}
+
+  ~CLuaWorkshopFileInfo()
+  {
+    m_Result.Cancel();
+    if ( m_pUGC && m_Query != k_UGCQueryHandleInvalid &&
+         steamapicontext && steamapicontext->SteamUGC() == m_pUGC )
+      m_pUGC->ReleaseQueryUGCRequest( m_Query );
+    luaL_unref( m_pState, LUA_REGISTRYINDEX, m_nCallback );
+  }
+
+  void Complete( SteamUGCQueryCompleted_t *result, bool failed )
+  {
+    m_bDone = true;
+    SteamUGCDetails_t details;
+    const bool valid = !( failed || !result || result->m_eResult != k_EResultOK ||
+         result->m_unNumResultsReturned == 0 ||
+         !m_pUGC->GetQueryUGCResult( m_Query, 0, &details ) ||
+         details.m_eResult != k_EResultOK );
+
+    const int top = lua_gettop( m_pState );
+    lua_rawgeti( m_pState, LUA_REGISTRYINDEX, m_nCallback );
+    if ( !valid )
+      lua_pushnil( m_pState );
+    else
+    {
+    lua_newtable( m_pState );
+    char id[32];
+    Q_snprintf( id, sizeof(id), "%llu", (unsigned long long)details.m_nPublishedFileId );
+    lua_pushstring( m_pState, id ); lua_setfield( m_pState, -2, "id" );
+    lua_pushstring( m_pState, details.m_rgchTitle ); lua_setfield( m_pState, -2, "title" );
+    lua_pushstring( m_pState, details.m_rgchDescription ); lua_setfield( m_pState, -2, "description" );
+    lua_pushnumber( m_pState, details.m_flScore ); lua_setfield( m_pState, -2, "score" );
+    lua_pushinteger( m_pState, details.m_nFileSize ); lua_setfield( m_pState, -2, "size" );
+    lua_pushinteger( m_pState, details.m_rtimeCreated ); lua_setfield( m_pState, -2, "created" );
+    lua_pushinteger( m_pState, details.m_rtimeUpdated ); lua_setfield( m_pState, -2, "updated" );
+    lua_pushstring( m_pState, details.m_rgchTags ); lua_setfield( m_pState, -2, "tags" );
+    lua_pushboolean( m_pState, details.m_bBanned ); lua_setfield( m_pState, -2, "banned" );
+    lua_pushboolean( m_pState, details.m_bAcceptedForUse ); lua_setfield( m_pState, -2, "accepted" );
+    lua_pushinteger( m_pState, details.m_unVotesUp ); lua_setfield( m_pState, -2, "up" );
+    lua_pushinteger( m_pState, details.m_unVotesDown ); lua_setfield( m_pState, -2, "down" );
+    lua_pushnumber( m_pState, (double)details.m_unVotesUp + details.m_unVotesDown );
+    lua_setfield( m_pState, -2, "total" );
+    Q_snprintf( id, sizeof(id), "%llu", (unsigned long long)details.m_ulSteamIDOwner );
+    lua_pushstring( m_pState, id ); lua_setfield( m_pState, -2, "owner" );
+    Q_snprintf( id, sizeof(id), "%llu", (unsigned long long)details.m_hFile );
+    lua_pushstring( m_pState, id ); lua_setfield( m_pState, -2, "fileid" );
+    Q_snprintf( id, sizeof(id), "%llu", (unsigned long long)details.m_hPreviewFile );
+    lua_pushstring( m_pState, id ); lua_setfield( m_pState, -2, "previewid" );
+    lua_pushinteger( m_pState, details.m_nPreviewFileSize ); lua_setfield( m_pState, -2, "previewsize" );
+    lua_pushinteger( m_pState, details.m_eVisibility ); lua_setfield( m_pState, -2, "visibility" );
+    char previewURL[512] = { 0 };
+    if ( !m_pUGC->GetQueryUGCPreviewURL( m_Query, 0, previewURL, sizeof(previewURL) ) )
+      previewURL[0] = 0;
+    lua_pushstring( m_pState, previewURL ); lua_setfield( m_pState, -2, "previewurl" );
+    lua_newtable( m_pState );
+    if ( details.m_unNumChildren > 0 && details.m_unNumChildren <= 10000 )
+    {
+      CUtlVector<PublishedFileId_t> children;
+      children.SetCount( details.m_unNumChildren );
+      if ( m_pUGC->GetQueryUGCChildren( m_Query, 0, children.Base(), children.Count() ) )
+        for ( int i = 0; i < children.Count(); ++i )
+        {
+          Q_snprintf( id, sizeof(id), "%llu", (unsigned long long)children[i] );
+          lua_pushstring( m_pState, id ); lua_rawseti( m_pState, -2, i + 1 );
+        }
+    }
+    lua_setfield( m_pState, -2, "children" );
+    lua_newtable( m_pState );
+    const uint32 previews = m_pUGC->GetQueryUGCNumAdditionalPreviews( m_Query, 0 );
+    for ( uint32 i = 0; i < previews && i < 10000; ++i )
+    {
+      char url[512] = { 0 };
+      bool image = false;
+      if ( !m_pUGC->GetQueryUGCAdditionalPreview( m_Query, 0, i, url, sizeof(url), &image ) )
+        continue;
+      lua_newtable( m_pState );
+      lua_pushstring( m_pState, url ); lua_setfield( m_pState, -2, "url" );
+      lua_pushinteger( m_pState, image ? 0 : 1 ); lua_setfield( m_pState, -2, "type" );
+      lua_rawseti( m_pState, -2, i + 1 );
+    }
+    lua_setfield( m_pState, -2, "extra_previews" );
+    ISteamFriends *friends = steamapicontext ? steamapicontext->SteamFriends() : NULL;
+    const char *ownerName = friends ? friends->GetFriendPersonaName( CSteamID( details.m_ulSteamIDOwner ) ) : NULL;
+    lua_pushstring( m_pState, ownerName ? ownerName : "Unnammed Player" );
+    lua_setfield( m_pState, -2, "ownername" );
+    lua_pushboolean( m_pState, ( m_pUGC->GetItemState( details.m_nPublishedFileId ) & k_EItemStateInstalled ) != 0 );
+    lua_setfield( m_pState, -2, "installed" );
+    }
+    if ( lua_pcall( m_pState, 1, 0, 0 ) != 0 )
+      luasrc_report_error( m_pState, lua_tostring( m_pState, -1 ) );
+    lua_settop( m_pState, top );
+  }
+
+  lua_State *m_pState;
+  ISteamUGC *m_pUGC;
+  UGCQueryHandle_t m_Query;
+  int m_nCallback;
+  bool m_bDone;
+  CCallResult<CLuaWorkshopFileInfo, SteamUGCQueryCompleted_t> m_Result;
+};
+
+class CLuaWorkshopRequests : public CAutoGameSystemPerFrame
+{
+public:
+  void Update( float )
+  {
+    for ( int i = m_Requests.Count() - 1; i >= 0; --i )
+    {
+      if ( !m_Requests[i]->m_bDone && m_Requests[i]->m_Query == k_UGCQueryHandleInvalid )
+        m_Requests[i]->Complete( NULL, true );
+      if ( m_Requests[i]->m_bDone )
+      {
+        delete m_Requests[i];
+        m_Requests.FastRemove( i );
+      }
+    }
+  }
+  void Clear( lua_State *state )
+  {
+    for ( int i = m_Requests.Count() - 1; i >= 0; --i )
+      if ( m_Requests[i]->m_pState == state )
+      {
+        delete m_Requests[i];
+        m_Requests.FastRemove( i );
+      }
+  }
+  CUtlVector<CLuaWorkshopFileInfo *> m_Requests;
+};
+static CLuaWorkshopRequests s_LuaWorkshopRequests;
+#endif
+
+#ifdef CLIENT_DLL
+static int luasrc_WorkshopFileInfo( lua_State *L )
+{
+  const char *text = luaL_checkstring( L, 1 );
+  luaL_checktype( L, 2, LUA_TFUNCTION );
+  // Keep published IDs as decimal strings rather than losing uint64 precision.
+  uint64 id = 0;
+  if ( !text[0] )
+    return 0;
+  for ( const char *p = text; *p; ++p )
+  {
+    if ( *p < '0' || *p > '9' || id > ( ~(uint64)0 - (*p - '0') ) / 10 )
+      return 0;
+    id = id * 10 + (*p - '0');
+  }
+  if ( id == 0 )
+    return 0;
+#ifndef NO_STEAM
+  ISteamUGC *ugc = steamapicontext ? steamapicontext->SteamUGC() : NULL;
+  PublishedFileId_t published = id;
+  UGCQueryHandle_t query = ugc ? ugc->CreateQueryUGCDetailsRequest( &published, 1 ) : k_UGCQueryHandleInvalid;
+  if ( query != k_UGCQueryHandleInvalid )
+  {
+    ugc->SetReturnChildren( query, true );
+    if ( lua_toboolean( L, 3 ) )
+    {
+      ugc->SetReturnLongDescription( query, true );
+      ugc->SetReturnAdditionalPreviews( query, true );
+    }
+  }
+  SteamAPICall_t call = query != k_UGCQueryHandleInvalid ? ugc->SendQueryUGCRequest( query ) : k_uAPICallInvalid;
+  if ( !ugc )
+    Warning( "[Lua] steamworks.FileInfo: Steam UGC is unavailable; the active Steam backend cannot query workshop metadata.\n" );
+  if ( query != k_UGCQueryHandleInvalid && call == k_uAPICallInvalid )
+  {
+    ugc->ReleaseQueryUGCRequest( query );
+    query = k_UGCQueryHandleInvalid;
+  }
+  lua_pushvalue( L, 2 );
+  CLuaWorkshopFileInfo *request = new CLuaWorkshopFileInfo(
+    L, ugc, query, luaL_ref( L, LUA_REGISTRYINDEX ) );
+  s_LuaWorkshopRequests.m_Requests.AddToTail( request );
+  if ( call != k_uAPICallInvalid )
+    request->m_Result.Set( call, request, &CLuaWorkshopFileInfo::Complete );
+#endif
+  return 0;
+}
+
+static void HL2SB_OpenWorkshopLibrary( lua_State *L )
+{
+  lua_getglobal( L, "steamworks" );
+  if ( !lua_istable( L, -1 ) )
+  {
+    lua_pop( L, 1 );
+    lua_newtable( L );
+  }
+  lua_pushcfunction( L, luasrc_WorkshopFileInfo );
+  lua_setfield( L, -2, "FileInfo" );
+  lua_setglobal( L, "steamworks" );
+}
+#endif
 
 static void base_open (lua_State *L) {
   /* set global _R */
@@ -1275,6 +1495,10 @@ void luasrc_init (void) {
 
   luasrc_openlibs(L);
 
+#ifdef CLIENT_DLL
+  HL2SB_OpenWorkshopLibrary( L );
+#endif
+
   // HL2SB (2026-09-21): the error collector's globals in the GAME realms too --
   // hook.lua reports failed hook callbacks through hl2sb_reportluaerror, and
   // the in-game state is where those errors happen.  (The menu window reads the
@@ -1294,6 +1518,10 @@ void luasrc_shutdown (void) {
 	  return;
 
   g_bLuaInitialized = false;
+
+#if defined( CLIENT_DLL ) && !defined( NO_STEAM )
+  s_LuaWorkshopRequests.Clear( L );
+#endif
 
   // HL2SB (2026-10-08): GM:ShutDown() - GMod raises it when the Lua state is
   // about to go away (map change, quit), before anything is torn down, so
@@ -2046,7 +2274,7 @@ void luasrc_AutoRefreshTick( void )
 	}
 }
 
-LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
+static int HL2SB_LoadLuaFile (lua_State *L, const char *filename, bool execute) {
 
 	// HL2SB: an ABSOLUTE path cannot be opened with pathID "MOD" (see
 	// LuaMakeRelative) -- several loaders hand us RelativePathToFullPath output,
@@ -2071,7 +2299,9 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 	// file is not visible through the engine filesystem.
 	if ( !filesystem || !filesystem->FileExists( filename, "MOD" ) )
 	{
-		int iFallback = luaL_dofile(L, filename);
+		int iFallback = luaL_loadfile(L, filename);
+		if ( iFallback == 0 && execute )
+			iFallback = lua_pcall( L, 0, LUA_MULTRET, 0 );
 		if (iFallback != 0) {
 			// HL2SB: greppable marker.  Bulk-importing GMod's derma/ or vgui/
 			// (100+ files) has to be triageable from the log alone, so every
@@ -2129,7 +2359,7 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 	Q_snprintf( chunkname, sizeof( chunkname ), "@%s", filename );
 
 	int iError = luaL_loadbuffer( L, pOut, o, chunkname );
-	if ( iError == 0 )
+	if ( iError == 0 && execute )
 		iError = lua_pcall( L, 0, LUA_MULTRET, 0 );
 	if ( iError != 0 ) {
 		luasrc_LuaErrorMsgF( "[Lua] FAILED %s: %s", filename, lua_tostring(L, -1) );
@@ -2137,6 +2367,10 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 	}
 	free( pOut );
 	return iError;
+}
+
+LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
+	return HL2SB_LoadLuaFile( L, filename, true );
 }
 
 #ifndef CLIENT_DLL

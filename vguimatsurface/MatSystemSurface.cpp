@@ -3271,8 +3271,8 @@ void CMatSystemSurface::PaintTraverseEx(VPANEL panel, bool paintPopups /*= false
 	// draw the popups
 	if ( paintPopups )
 	{
-		// now draw the popups front to back
-		// since depth-test and depth-write are on, the front panels will occlude the underlying ones
+		// Composite translucent popup edges over the panels behind them.
+		// Front-to-back stencil occlusion leaves the world visible under shadows.
 		{
 			VPROF( "CMatSystemSurface::PaintTraverse popups loop" );
 			int popups = GetPopupCount();
@@ -3281,9 +3281,9 @@ void CMatSystemSurface::PaintTraverseEx(VPANEL panel, bool paintPopups /*= false
 				Warning( "Too many popups! Rendering will be bad!\n" );
 			}
 
-			// HACK! Using stencil ref 254 so drag/drop helper can use 255.
-			int nStencilRef = 254;
-			for ( int i = popups - 1; i >= 0; --i )
+			int nStencilRef = 1;
+			for ( int pass = 0; pass < 2; ++pass )
+			for ( int i = 0; i < popups; ++i )
 			{
 				VPANEL popupPanel = GetPopup( i );
 
@@ -3296,14 +3296,17 @@ void CMatSystemSurface::PaintTraverseEx(VPANEL panel, bool paintPopups /*= false
 				if ( !IsPanelUnderRestrictedPanel( popupPanel ) )
 					continue;
 
-				// This makes sure the drag/drop helper is always the first thing drawn
+				// Draw topmost popups last so they composite over ordinary popups.
 				bool bIsTopmostPopup = ( (VPanel *)popupPanel )->IsTopmostPopup();
+				if ( bIsTopmostPopup != ( pass == 1 ) )
+					continue;
 
 				// set our z position
 				pRenderContext->SetStencilReferenceValue( bIsTopmostPopup ? 255 : nStencilRef );
-				--nStencilRef;
+				if ( !bIsTopmostPopup && nStencilRef < 254 )
+					++nStencilRef;
 
-				m_flZPos = ((float)(i) / (float)popups);
+				m_flZPos = bIsTopmostPopup ? 1.0f : ((float)(i) / (float)popups);
 				ipanel()->PaintTraverse( popupPanel, true );
 			}
 		}

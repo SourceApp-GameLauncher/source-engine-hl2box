@@ -272,6 +272,7 @@ bool HL2SB_SetAddonEnabled( const char *pszAddonName, bool bEnabled )
 		// Mirror MountAddons() exactly, then let the GMA pass pick up an
 		// archive the user just re-enabled (mounting is idempotent).
 		filesystem->AddSearchPath( relativepath, "MOD", PATH_ADD_TO_TAIL );
+		filesystem->AddSearchPath( relativepath, "GAME", PATH_ADD_TO_TAIL );
 		HL2SB_MountGMAAddons();
 	}
 	else
@@ -369,6 +370,7 @@ void MountAddons()
 					V_SetCurrentDirectory( gamePath );
 				}
 				filesystem->AddSearchPath( relativepath, "MOD", PATH_ADD_TO_TAIL );
+				filesystem->AddSearchPath( relativepath, "GAME", PATH_ADD_TO_TAIL );
 				if ( bGetCurrentDirectory )
 					V_SetCurrentDirectory( fullpath );
 			}
