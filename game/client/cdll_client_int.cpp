@@ -404,31 +404,9 @@ static ConCommand hl2sb_spawnmenu_cmd( "spawnmenu", HL2SB_SpawnMenuToggle, "Togg
 static ConCommand hl2sb_spawnmenu_context_cmd( "spawnmenu_context", HL2SB_ContextMenuToggle, "Toggle the context menu (console alias of +menu_context)" );
 
 //-----------------------------------------------------------------------------
-// HL2SB: gmod_toolmode -- the convar the GMod spawnmenu reads and nothing here
-// ever created.
-//
-// GMod creates it from its own Lua:
-//   gamemodes/sandbox/entities/weapons/gmod_tool/cl_init.lua:3
-//       CreateClientConVar( "gmod_toolmode", "rope", true, true,
-//                           "Currently selected tool mode for the Tool Gun." )
-// This fork has no gmod_tool at all (no stool registry -- see the gm_spawn gap
-// on the list), so nothing registered it.  GetConVar_Internal() returns nil for
-// an unknown name, which is GMod's documented contract and which GMod's Lua
-// relies on (`if ( !GetConVar( x ) )`), so the reader cannot be "fixed" -- the
-// convar has to exist.  Without it the sandbox spawnmenu build died on
-//
-//   spawnmenu/toolpanel.lua:247
-//       local currentMode = GetConVar( "gmod_toolmode" ):GetString()
-//   Hook 'CreateSpawnMenu' (OnGamemodeLoaded) Failed: ... attempt to index a nil
-//   value
-// leaving ToolToggle nil and 1994 lines of Think errors behind it.
-//
-// Default and help text are GMod's.  Flags: FCVAR_ARCHIVE (GMod's save=true).
-// GMod also passes userinfo=true; that only matters to gmod_tool, which sends
-// the mode to the server, so it is deliberately not set here -- adding
-// FCVAR_USERINFO is a one-word change if the tool gun is ever ported.
-//-----------------------------------------------------------------------------
-static ConVar hl2sb_gmod_toolmode( "gmod_toolmode", "rope", FCVAR_ARCHIVE,
+// The stock tool gun reads this setting through Player:GetInfo on the server.
+// It must participate in userinfo even when Lua reuses this native convar.
+static ConVar hl2sb_gmod_toolmode( "gmod_toolmode", "rope", FCVAR_ARCHIVE | FCVAR_USERINFO,
 	"Currently selected tool mode for the Tool Gun." );
 
 #ifdef HL1MP_CLIENT_DLL

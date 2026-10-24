@@ -907,6 +907,18 @@ static int CBaseEntity_GetBaseAnimating (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_LookupBone (lua_State *L) {
+  CBaseEntity *pEntity = lua_toentity( L, 1 );
+  CBaseAnimating *pAnimating = pEntity ? pEntity->GetBaseAnimating() : NULL;
+  if ( pAnimating == NULL )
+    return 0;
+  const int iBone = pAnimating->LookupBone( luaL_checkstring( L, 2 ) );
+  if ( iBone < 0 )
+    return 0;
+  lua_pushinteger( L, iBone );
+  return 1;
+}
+
 static int CBaseEntity_GetBaseEntity (lua_State *L) {
   lua_pushentity(L, luaL_checkentity(L, 1)->GetBaseEntity());
   return 1;
@@ -1990,11 +2002,6 @@ static int CBaseEntity_SetTrigger (lua_State *L) {
     pEntity->RemoveSolidFlags(FSOLID_TRIGGER);
 
   pEntity->CollisionRulesChanged();
-  return 0;
-}
-
-static int CBaseEntity_ManipulateBoneAngles (lua_State *L) {
-  // ( entity, bone, angle ) -- accepted and ignored, see the note above.
   return 0;
 }
 
@@ -6266,8 +6273,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"WorldToLocalAngles", CBaseEntity_WorldToLocalAngles},
   {"LocalToWorldAngles", CBaseEntity_LocalToWorldAngles},
   {"LookupAttachment", CBaseEntity_LookupAttachment},
+  {"LookupBone", CBaseEntity_LookupBone},
   {"SetTrigger", CBaseEntity_SetTrigger},
-  {"ManipulateBoneAngles", CBaseEntity_ManipulateBoneAngles},
   {"SetSpawnEffect", CBaseEntity_SetSpawnEffect},
   {"GetSpawnEffect", CBaseEntity_GetSpawnEffect},
   {"GetCreationTime", CBaseEntity_GetCreationTime},
