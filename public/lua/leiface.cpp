@@ -285,7 +285,13 @@ static int engine_Time (lua_State *L) {
 }
 
 
+static int engine_TickCount( lua_State *L ) {
+  lua_pushnumber( L, gpGlobals->tickcount );
+  return 1;
+}
+
 static const luaL_Reg enginelib[] = {
+  {"TickCount", engine_TickCount},
   {"AllowImmediateEdictReuse",   engine_AllowImmediateEdictReuse},
   {"ChangeLevel",  engine_ChangeLevel},
   {"ChangeTeam",  engine_ChangeTeam},

@@ -1448,6 +1448,21 @@ static int CBasePlayer_Weapon_CanSwitchTo (lua_State *L) {
   return 1;
 }
 
+// Inventory membership is a boolean and includes every weapon subtype.
+static int CBasePlayer_HasWeapon( lua_State *L ) {
+  CBasePlayer *player = luaL_checkplayer( L, 1 );
+  const char *classname = luaL_checkstring( L, 2 );
+  for ( int i = 0; i < MAX_WEAPONS; ++i ) {
+    CBaseCombatWeapon *weapon = player->GetWeapon( i );
+    if ( weapon != NULL && !Q_strcmp( weapon->GetClassname(), classname ) ) {
+      lua_pushboolean( L, true );
+      return 1;
+    }
+  }
+  lua_pushboolean( L, false );
+  return 1;
+}
+
 static int CBasePlayer_Weapon_OwnsThisType (lua_State *L) {
   lua_pushweapon(L, luaL_checkplayer(L, 1)->Weapon_OwnsThisType(luaL_checkstring(L, 2), luaL_optint(L, 3, 0)));
   return 1;
@@ -2892,6 +2907,7 @@ static const luaL_Reg CBasePlayermeta[] = {
 
   {"GetViewModel", CBasePlayer_GetViewModel},
   {"GetWaterJumpTime", CBasePlayer_GetWaterJumpTime},
+  {"HasWeapon", CBasePlayer_HasWeapon},
   {"GetWeapon", CBasePlayer_GetWeapon},
   {"HintMessage", CBasePlayer_HintMessage},
   //{"IncrementEFNoInterpParity", CBasePlayer_IncrementEFNoInterpParity},

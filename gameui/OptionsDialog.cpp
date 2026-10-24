@@ -110,7 +110,10 @@ COptionsDialog::COptionsDialog(vgui::Panel *parent) : PropertyDialog(parent, "Op
 		 (!ModInfo().IsMultiplayerOnly() && !ModInfo().IsSinglePlayerOnly()) )
 	{
 		m_pOptionsSubMultiplayer = new COptionsSubMultiplayer(this);
-		AddPage(m_pOptionsSubMultiplayer, "#GameUI_Multiplayer");
+		// GMod presents this page as the general Game tab.  The page itself is
+		// the multiplayer options implementation because it owns the spray,
+		// download, loading-screen, fast-switch, FOV and crosshair controls.
+		AddPage(m_pOptionsSubMultiplayer, "#GameUI_Game");
 	}
 
 //	double s5 = system()->GetCurrentTime();

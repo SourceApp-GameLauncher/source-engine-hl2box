@@ -3760,6 +3760,15 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
       }
     }
 
+    // Gamemode send manifests name files relative to the gamemodes root.
+    if ( szResolved[0] == '\0' )
+    {
+      Q_snprintf( szCandidate, sizeof( szCandidate ), "gamemodes/%s", szName );
+      HL2SB_CSNormalizeDots( szCandidate, szNorm, sizeof( szNorm ) );
+      if ( g_pFullFileSystem != NULL && g_pFullFileSystem->FileExists( szNorm, "MOD" ) )
+        Q_strncpy( szResolved, szNorm, sizeof( szResolved ) );
+    }
+
     // 2. The lua search root, then 3. the game root.
     if ( szResolved[0] == '\0' )
     {

@@ -565,7 +565,13 @@ static int engine_Time (lua_State *L) {
 }
 
 
+static int engine_TickCount( lua_State *L ) {
+  lua_pushnumber( L, gpGlobals->tickcount );
+  return 1;
+}
+
 static const luaL_Reg enginelib[] = {
+  {"TickCount", engine_TickCount},
   {"ActivateOccluder",   engine_ActivateOccluder},
   {"ChangeTeam",  engine_ChangeTeam},
   {"CheckDoneKeyTrapping",  engine_CheckDoneKeyTrapping},

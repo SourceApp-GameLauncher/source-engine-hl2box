@@ -232,6 +232,10 @@ CHL2MPRules::CHL2MPRules()
 
 	m_bTeamPlayEnabled = teamplay.GetBool();
 	m_flIntermissionEndTime = 0.0f;
+#ifdef HL2SB
+	m_flLastHealthDropTime = 0.0f;
+	m_flLastGrenadeDropTime = 0.0f;
+#endif
 	m_flGameStartTime = 0;
 
 	m_hRespawnableItemsAndWeapons.RemoveAll();
