@@ -426,11 +426,9 @@ private:
 
 	void SetFlashlightStencilMasks( bool bDoMasking );
 
-	void SetStencilAndScissor( IMatRenderContext *pRenderContext, FlashlightInfo_t &flashlightInfo, bool bUseStencil );
 
-	void EnableStencilAndScissorMasking( IMatRenderContext *pRenderContext, const FlashlightInfo_t &flashlightInfo, bool bDoMasking );
 
-	void DisableStencilAndScissorMasking( IMatRenderContext *pRenderContext );
+	void DisableFlashlightStencil( IMatRenderContext *pRenderContext );
 
 	void RenderShadows( const VMatrix* pModelToWorld );
 
@@ -2856,517 +2854,20 @@ void CShadowMgr::SetFlashlightDepthTexture( ShadowHandle_t shadowHandle, ITextur
 	m_Shadows[shadowHandle].m_ucShadowStencilBit = ucShadowStencilBit;
 }
 
-bool ScreenSpaceRectFromPoints( IMatRenderContext *pRenderContext, Vector vClippedPolygons[8][10], int *pNumPoints, int nNumPolygons, int *nLeft, int *nTop, int *nRight, int *nBottom )
-{
-	if( nNumPolygons == 0 )
-		return false;
+// GMod retains the stencil diagnostic switch but does not build light-volume masks.
+static ConVar r_flashlightclip( "r_flashlightclip", "0", FCVAR_CHEAT );
+static ConVar r_flashlightdrawclip( "r_flashlightdrawclip", "0", FCVAR_CHEAT );
 
-	VMatrix matView, matProj, matViewProj;
-	pRenderContext->GetMatrix( MATERIAL_VIEW, &matView );
-	pRenderContext->GetMatrix( MATERIAL_PROJECTION, &matProj );
-	MatrixMultiply( matProj, matView, matViewProj );
-
-	float fMinX, fMaxX, fMinY, fMaxY;								// Init bounding rect
-	fMinX = fMinY =  FLT_MAX;
-	fMaxX = fMaxY = -FLT_MAX;
-
-	for ( int i=0; i<nNumPolygons; i++ )
-	{
-		for ( int j=0; j<pNumPoints[i]; j++ )
-		{
-			Vector vScreenSpacePoint;
-			matViewProj.V3Mul( vClippedPolygons[i][j], vScreenSpacePoint );	// Transform from World to screen space
-
-			fMinX = fpmin( fMinX, vScreenSpacePoint.x );				// Update mins/maxes
-			fMaxX = fpmax( fMaxX, vScreenSpacePoint.x );				//
-			fMinY = fpmin( fMinY, -vScreenSpacePoint.y );				// These are in -1 to +1 range
-			fMaxY = fpmax( fMaxY, -vScreenSpacePoint.y );				//
-		}
-	}
-
-	int nWidth, nHeight;
-	g_pMaterialSystem->GetBackBufferDimensions( nWidth, nHeight );	// Get render target dimensions
-
-	*nLeft	 = ((fMinX * 0.5f + 0.5f) * (float) nWidth ) - 1;		// Convert to render target pixel units
-	*nTop    = ((fMinY * 0.5f + 0.5f) * (float) nHeight) - 1; 
-	*nRight  = ((fMaxX * 0.5f + 0.5f) * (float) nWidth ) + 1;
-	*nBottom = ((fMaxY * 0.5f + 0.5f) * (float) nHeight) + 1;  
-
-	*nLeft   = clamp( *nLeft,   0, nWidth  );						// Clamp to render target dimensions
-	*nTop    = clamp( *nTop,    0, nHeight );
-	*nRight  = clamp( *nRight,  0, nWidth  );
-	*nBottom = clamp( *nBottom, 0, nHeight );
-
-	Assert( (*nLeft <= *nRight) && (*nTop <= *nBottom) );
-
-	// Do we have an actual subrect of the whole screen?
-	bool bWithinBounds = ((*nLeft > 0 ) || (*nTop > 0) || (*nRight < nWidth) || (*nBottom < nHeight));	
-
-	// Compute valid area
-	nWidth  = (*nRight - *nLeft);
-	nHeight = (*nBottom - *nTop);
-	int nArea = ( nWidth > 0 ) && ( nHeight > 0 ) ? nWidth * nHeight : 0;
-
-	// Valid rect?
-	return bWithinBounds && (nArea > 0);
-}
-
-// Turn this optimization off by default
-static ConVar r_flashlightclip("r_flashlightclip", "0", FCVAR_CHEAT );
-static ConVar r_flashlightdrawclip("r_flashlightdrawclip", "0", FCVAR_CHEAT );
-static ConVar r_flashlightscissor( "r_flashlightscissor", "1", 0 );
-
-void ExtractFrustumPlanes( Frustum frustumPlanes, float flPlaneEpsilon )
-{
-	const CViewSetup &view = g_EngineRenderer->ViewGetCurrent();
-
-	float flFOVy = CalcFovY( view.fov, view.m_flAspectRatio );
-
-	Frustum_t frustum;
-
-	Vector vForward, vRight, vUp;
-	AngleVectors( view.angles, &vForward, &vRight, &vUp );
-
-	GeneratePerspectiveFrustum( view.origin, vForward, vRight, vUp,
-								view.zNear + flPlaneEpsilon, view.zFar - flPlaneEpsilon,	// Apply epsilon to near and far
-								view.fov, flFOVy, frustum );
-
-	// Copy out to the planes that the engine renderer uses.
-	for( int i=0; i < FRUSTUM_NUMPLANES; i++ )
-	{
-		frustumPlanes[i].m_Normal = frustum.GetPlane(i)->normal;
-		frustumPlanes[i].m_Dist = frustum.GetPlane(i)->dist;
-	}
-}
-
-void ConstructNearAndFarPolygons( Vector *pVecNearPlane, Vector *pVecFarPlane, float flPlaneEpsilon )
-{
-	const CViewSetup &view = g_EngineRenderer->ViewGetCurrent();
-
-	float fovY = CalcFovY( view.fov, view.m_flAspectRatio );
-
-	// Compute near and far plane half-width and half-height
-	float flTanHalfAngleRadians = tan( view.fov * ( 0.5f * M_PI / 180.0f ) );
-	float flHalfNearWidth = flTanHalfAngleRadians * ( view.zNear + flPlaneEpsilon );
-	float flHalfFarWidth  = flTanHalfAngleRadians * ( view.zFar  - flPlaneEpsilon );
-	flTanHalfAngleRadians = tan( fovY * ( 0.5f * M_PI / 180.0f ) );
-	float flHalfNearHeight = flTanHalfAngleRadians * ( view.zNear + flPlaneEpsilon );
-	float flHalfFarHeight  = flTanHalfAngleRadians * ( view.zFar  - flPlaneEpsilon );
-
-	// World-space orientation of viewer
-	Vector vForward, vRight, vUp;
-	AngleVectors( view.angles, &vForward, &vRight, &vUp );
-	vForward.NormalizeInPlace();
-	vRight.NormalizeInPlace();
-	vUp.NormalizeInPlace();
-
-	// Center of near and far planes in world space
-	Vector vCenterNear = view.origin + vForward * ( view.zNear + flPlaneEpsilon );
-	Vector vCenterFar  = view.origin + vForward * ( view.zFar  - flPlaneEpsilon );
-
-	pVecNearPlane[0] = vCenterNear - ( vRight * flHalfNearWidth ) - ( vUp * flHalfNearHeight );
-	pVecNearPlane[1] = vCenterNear - ( vRight * flHalfNearWidth ) + ( vUp * flHalfNearHeight );
-	pVecNearPlane[2] = vCenterNear + ( vRight * flHalfNearWidth ) + ( vUp * flHalfNearHeight );
-	pVecNearPlane[3] = vCenterNear + ( vRight * flHalfNearWidth ) - ( vUp * flHalfNearHeight );
-
-	pVecFarPlane[0]  = vCenterNear - ( vRight * flHalfFarWidth )  - ( vUp * flHalfFarHeight );
-	pVecFarPlane[1]  = vCenterNear + ( vRight * flHalfFarWidth )  - ( vUp * flHalfFarHeight );
-	pVecFarPlane[2]  = vCenterNear + ( vRight * flHalfFarWidth )  + ( vUp * flHalfFarHeight );
-	pVecFarPlane[3]  = vCenterNear - ( vRight * flHalfFarWidth )  + ( vUp * flHalfFarHeight );
-}
-
-void DrawDebugPolygon( int nNumVerts, Vector *pVecPoints, bool bFrontFacing, bool bNearPlane )
-{
-	int r=0, g=0, b=0;
-	if ( bFrontFacing )
-		b = 255;
-	else
-		r = 255; 
-
-	if ( bNearPlane )	// Draw near plane green for visualization
-	{
-		r = b = 0;
-		g = 255;
-	}
-
-	// Draw triangles fanned out from vertex zero
-	for (int i=1; i<(nNumVerts-1); i++)
-	{
-		Vector v0 = pVecPoints[0];
-		Vector v1 = pVecPoints[bFrontFacing ? i : i+1];
-		Vector v2 = pVecPoints[bFrontFacing ? i+1 : i];
-
-		CDebugOverlay::AddTriangleOverlay(v0, v1, v2, r, g, b, 20, true, 0 );
-	}
-
-	// Draw solid lines around the polygon
-	for (int i=0; i<nNumVerts; i++)
-	{
-		Vector v0 = pVecPoints[i];
-		Vector v1 = pVecPoints[ (i+1) % nNumVerts];
-
-		CDebugOverlay::AddLineOverlay( v0, v1, 255, 255, 255, 255, false, 0);
-	}
-}
-
-void DrawPolygonToStencil( IMatRenderContext *pRenderContext, int nNumVerts, Vector *pVecPoints, bool bFrontFacing, bool bNearPlane )
-{
-	IMaterial *pMaterial = materials->FindMaterial( "engine/writestencil", TEXTURE_GROUP_OTHER, true );
-
-	pRenderContext->Bind( pMaterial );
-	IMesh* pMesh = pRenderContext->GetDynamicMesh( true );
-
-	pRenderContext->MatrixMode( MATERIAL_MODEL );
-	pRenderContext->PushMatrix();
-	pRenderContext->LoadIdentity();
-
-	CMeshBuilder meshBuilder;
-	meshBuilder.Begin( pMesh, MATERIAL_TRIANGLES, nNumVerts-2 );
-
-	// Fan out from vertex zero
-	for (int i=1; i<(nNumVerts-1); i++)
-	{
-		meshBuilder.Position3f( pVecPoints[0].x, pVecPoints[0].y, pVecPoints[0].z );
-		meshBuilder.AdvanceVertex();
-
-		int index = bFrontFacing ? i : i+1;
-		meshBuilder.Position3f( pVecPoints[index].x, pVecPoints[index].y, pVecPoints[index].z );
-		meshBuilder.AdvanceVertex();
-
-		index = bFrontFacing ? i+1 : i;
-		meshBuilder.Position3f( pVecPoints[index].x, pVecPoints[index].y, pVecPoints[index].z );
-		meshBuilder.AdvanceVertex();
-	}
-
-	meshBuilder.End( false, true );
-
-	pRenderContext->MatrixMode( MATERIAL_MODEL );
-	pRenderContext->PopMatrix();
-}
-
-// Determine if two Vectors are sufficiently close (Manhattan-ish distance, not Euclidean)
-bool SufficientlyClose( Vector v1, Vector v2, float flEpsilon )
-{
-	if ( fabs( v1.x - v2.x ) > flEpsilon )			// Bail if x components are sufficiently different
-		return false;
-
-	if ( fabs( v1.y - v2.y ) > flEpsilon )			// Bail if y components are sufficiently different
-		return false;
-
-	if ( fabs( v1.z - v2.z ) > flEpsilon )			// Bail if z components are sufficiently different
-		return false;
-
-	return true;
-}
-
-
-int ClipPlaneToFrustum( Vector *pInPoints, Vector *pOutPoints, Vector *pVecWorldFrustumPoints )
-{
-	Vector vClipPing[10];			// Vector lists to ping-pong between while clipping
-	Vector vClipPong[10];			//
-	bool bPing = true;				// Ping holds the latest polygon
-
-	vClipPing[0] = pInPoints[0];	// Copy into Ping
-	vClipPing[1] = pInPoints[1];
-	vClipPing[2] = pInPoints[2];
-	vClipPing[3] = pInPoints[3];
-
-	int nNumPoints = 4;
-
-	for ( int i=0; i < 6; i++ )
-	{
-		Vector vNormal;
-		float flDist;
-		
-		if ( nNumPoints < 3 )	// If we're already clipped away, bail out entirely
-			break;
-
-		Vector *pClipPolygon = pVecWorldFrustumPoints+(4*i);										// Polygon defining clip plane
-		ComputeTrianglePlane( pClipPolygon[0], pClipPolygon[1], pClipPolygon[2], vNormal, flDist );	// Compute plane normal and dist
-
-		if ( bPing )
-			nNumPoints = ClipPolyToPlane( vClipPing, nNumPoints, vClipPong, vNormal, flDist ); // Clip Ping into Pong
-		else
-			nNumPoints = ClipPolyToPlane( vClipPong, nNumPoints, vClipPing, vNormal, flDist ); // Clip Pong into Ping
-
-		bPing = !bPing;	// Flip buffers
-	}
-
-	if ( nNumPoints < 3)
-		return 0;
-
-	if ( bPing )
-		memcpy( pOutPoints, vClipPing, nNumPoints * sizeof(Vector) );
-	else
-		memcpy( pOutPoints, vClipPong, nNumPoints * sizeof(Vector) );
-
-	return nNumPoints;
-}
-
-
-
-void CShadowMgr::SetStencilAndScissor( IMatRenderContext *pRenderContext, FlashlightInfo_t &flashlightInfo, bool bUseStencil )
-{
-	VMatrix matFlashlightToWorld;
-	MatrixInverseGeneral( m_Shadows[flashlightInfo.m_Shadow].m_WorldToShadow, matFlashlightToWorld );
-
-	// Eight points defining the frustum in Flashlight space
-	Vector vFrustumPoints[24] = { Vector(0.0f, 0.0f, 0.0f), Vector(1.0f, 0.0f, 0.0f), Vector(1.0f, 1.0f, 0.0f), Vector(0.0f, 1.0f, 0.0f),	// Near
-								  Vector(0.0f, 0.0f, 1.0f), Vector(0.0f, 1.0f, 1.0f), Vector(1.0f, 1.0f, 1.0f), Vector(1.0f, 0.0f, 1.0f),	// Far
-								  Vector(1.0f, 0.0f, 0.0f), Vector(1.0f, 0.0f, 1.0f), Vector(1.0f, 1.0f, 1.0f), Vector(1.0f, 1.0f, 0.0f),	// Right
-								  Vector(0.0f, 0.0f, 0.0f), Vector(0.0f, 1.0f, 0.0f), Vector(0.0f, 1.0f, 1.0f), Vector(0.0f, 0.0f, 1.0f),	// Left
-								  Vector(0.0f, 1.0f, 0.0f), Vector(1.0f, 1.0f, 0.0f), Vector(1.0f, 1.0f, 1.0f), Vector(0.0f, 1.0f, 1.0f),	// Bottom
-								  Vector(0.0f, 0.0f, 0.0f), Vector(0.0f, 0.0f, 1.0f), Vector(1.0f, 0.0f, 1.0f), Vector(1.0f, 0.0f, 0.0f)};	// Top
-
-	// Transform points to world space
-	Vector vWorldFrustumPoints[24];
-	for ( int i=0; i < 24; i++ )
-	{
-		matFlashlightToWorld.V3Mul( vFrustumPoints[i], vWorldFrustumPoints[i] );
-	}
-
-	// Express near and far planes of View frustum in world space
-	Frustum frustumPlanes;
-	const float flPlaneEpsilon = 0.4f;
-	ExtractFrustumPlanes( frustumPlanes, flPlaneEpsilon );
-	Vector vNearNormal = frustumPlanes[FRUSTUM_NEARZ].m_Normal;
-	Vector vFarNormal  = frustumPlanes[FRUSTUM_FARZ].m_Normal;
-	float flNearDist   = frustumPlanes[FRUSTUM_NEARZ].m_Dist;
-	float flFarDist    = frustumPlanes[FRUSTUM_FARZ].m_Dist;
-
-	Vector	vTempFace[5];
-	Vector	vClippedFace[6];
-	Vector	vClippedPolygons[8][10];	// Array of up to eight polygons (10 verts is more than enough for each)
-	int nNumVertices[8];				// Number vertices on each of the of clipped polygons
-	int nNumPolygons = 0;				// How many polygons have survived the clip
-
-	// Clip each face individually to near and far planes
-	for ( int i=0; i < 6; i++ )
-	{
-		Vector *inVerts   = vWorldFrustumPoints+(4*i);	// Series of quadrilateral inputs
-		Vector *tempVerts = vTempFace;
-		Vector *outVerts  = vClippedFace;
-
-		int nClipCount = ClipPolyToPlane( inVerts, 4, tempVerts, vNearNormal, flNearDist );			// need to set fOnPlaneEpsilon?
-
-		if ( nClipCount > 2 )	// If the polygon survived the near clip, try the far as well
-		{
-			nClipCount = ClipPolyToPlane( tempVerts, nClipCount, outVerts, vFarNormal, flFarDist );	// need to set fOnPlaneEpsilon?
-
-			if ( nClipCount > 2 )	// If we still have a poly after clipping to both planes, add it to the list
-			{
-				memcpy( vClippedPolygons[nNumPolygons], outVerts, nClipCount * sizeof (Vector) );
-				nNumVertices[nNumPolygons] = nClipCount;
-				nNumPolygons++;
-			}
-		}
-	}
-
-	// Construct polygons for near and far planes
-	Vector	vNearPlane[4], vFarPlane[4];
-	ConstructNearAndFarPolygons( vNearPlane, vFarPlane, flPlaneEpsilon );
-	bool bNearPlane = false;
-
-	// Clip near plane to flashlight frustum and tack on to list
-	int nClipCount = ClipPlaneToFrustum( vNearPlane, vClippedPolygons[nNumPolygons], vWorldFrustumPoints );
-	if ( nClipCount > 2 )		// If the near plane clipped and resulted in a polygon, take note in the polygon list
-	{
-		nNumVertices[nNumPolygons] = nClipCount;
-		nNumPolygons++;
-		bNearPlane = true;
-	}
-
-/*
-TODO: do we even need to do the far plane?
-
-		// Clip near plane to flashlight frustum and tack on to list
-		nClipCount = ClipPlaneToFrustum( vFarPlane, vClippedPolygons[nNumPolygons], vWorldFrustumPoints );
-		if ( nClipCount > 2 )		// If the near plane clipped and resulted in a polygon, take note in the polygon list
-		{
-			nNumVertices[nNumPolygons] = nClipCount;
-			nNumPolygons++;
-		}
-*/
-	// Fuse positions of any verts which are within epsilon
-	for (int i=0; i<nNumPolygons; i++)							// For each polygon
-	{
-		for (int j=0; j<nNumVertices[i]; j++)					// For each vertex
-		{
-			for (int k=i+1; k<nNumPolygons; k++)				// For each later polygon
-			{
-				for (int m=0; m<nNumVertices[k]; m++)			// For each vertex
-				{
-					if ( SufficientlyClose(vClippedPolygons[i][j], vClippedPolygons[k][m], 0.1f) )
-					{
-						vClippedPolygons[k][m] = vClippedPolygons[i][j];
-					}
-				}
-			}
-		}
-	}
-
-	// Calculate scissoring rect
-	flashlightInfo.m_FlashlightState.m_bScissor = false;
-	if ( r_flashlightscissor.GetBool() && (nNumPolygons > 0) )
-	{
-		int nLeft, nTop, nRight, nBottom;
-		flashlightInfo.m_FlashlightState.m_bScissor = ScreenSpaceRectFromPoints( pRenderContext, vClippedPolygons, nNumVertices, nNumPolygons, &nLeft, &nTop, &nRight, &nBottom );
-		if ( flashlightInfo.m_FlashlightState.m_bScissor )
-		{
-			flashlightInfo.m_FlashlightState.m_nLeft   = nLeft;
-			flashlightInfo.m_FlashlightState.m_nTop    = nTop;
-			flashlightInfo.m_FlashlightState.m_nRight  = nRight;
-			flashlightInfo.m_FlashlightState.m_nBottom = nBottom;
-		}
-	}
-
-	if ( r_flashlightdrawclip.GetBool() && r_flashlightclip.GetBool() && bUseStencil )
-	{
-		// Draw back facing debug polygons
-		for (int i=0; i<nNumPolygons; i++)
-		{
-			DrawDebugPolygon( nNumVertices[i], vClippedPolygons[i], false, false );
-		}
-/*
-		// Draw front facing debug polygons
-		for (int i=0; i<nNumPolygons; i++)
-		{
-			DrawDebugPolygon( nNumVertices[i], vClippedPolygons[i], true, bNearPlane && (i == nNumPolygons-1)  );
-		}
-*/
-	}
-
-	if ( r_flashlightclip.GetBool() && bUseStencil )
-	{
-/*
-		// The traditional settings...
-
-		// Set up to set stencil bit on front facing polygons
-		pRenderContext->SetStencilEnable( true );
-		pRenderContext->SetStencilFailOperation( STENCILOPERATION_KEEP );						// Stencil fails
-		pRenderContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );						// Stencil passes but depth fails
-		pRenderContext->SetStencilPassOperation( STENCILOPERATION_REPLACE );					// Z and stencil both pass
-		pRenderContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_ALWAYS );			// Stencil always pass
-		pRenderContext->SetStencilReferenceValue( m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit );
-		pRenderContext->SetStencilTestMask( m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit );
-		pRenderContext->SetStencilWriteMask( m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit );		// Bit mask which is specific to this shadow
-*/
-
-		// Just blast front faces into the stencil buffer no matter what...
-		pRenderContext->SetStencilEnable( true );
-		pRenderContext->SetStencilFailOperation( STENCILOPERATION_REPLACE );					// Stencil fails
-		pRenderContext->SetStencilZFailOperation( STENCILOPERATION_REPLACE );					// Stencil passes but depth fails
-		pRenderContext->SetStencilPassOperation( STENCILOPERATION_REPLACE );					// Z and stencil both pass
-		pRenderContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_ALWAYS );			// Stencil always pass
-		pRenderContext->SetStencilReferenceValue( m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit );
-		pRenderContext->SetStencilTestMask( m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit );
-		pRenderContext->SetStencilWriteMask( m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit );		// Bit mask which is specific to this shadow
-
-		for ( int i=0; i<nNumPolygons; i++ )													// Set the stencil bit on front facing
-		{
-			DrawPolygonToStencil( pRenderContext, nNumVertices[i], vClippedPolygons[i], true, false );
-		}
-
-/*
-		pRenderContext->SetStencilReferenceValue( 0x00000000 );									// All bits cleared
-
-		for (int i=0; i<nNumPolygons; i++)														// Clear the stencil bit on back facing
-		{
-			DrawPolygonToStencil( nNumVertices[i], vClippedPolygons[i], false, false );
-		}
-*/
-
-		pRenderContext->SetStencilEnable( false );
-	}
-}
-
-//---------------------------------------------------------------------------------------
-// Set masking stencil bits for all flashlights
-//---------------------------------------------------------------------------------------
 void CShadowMgr::SetFlashlightStencilMasks( bool bDoMasking )
 {
-	VPROF_BUDGET( "CShadowMgr::RenderFlashlights", VPROF_BUDGETGROUP_SHADOW_RENDERING );
-
-	if ( IsX360() || r_flashlight_version2.GetInt() )
-		return;
-
-	// Bail out if we're not doing any of these optimizations
-	if ( !( r_flashlightclip.GetBool() || r_flashlightscissor.GetBool()) )
-		return;
-
-	FlashlightHandle_t flashlightID = m_FlashlightStates.Head();
-	if ( flashlightID == m_FlashlightStates.InvalidIndex() )
-		return;
-
-	CMatRenderContextPtr pRenderContext( materials );
-
-	for( ; 
-		 flashlightID != m_FlashlightStates.InvalidIndex(); 
-		 flashlightID = m_FlashlightStates.Next( flashlightID ) )
-	{
-		FlashlightInfo_t &flashlightInfo = m_FlashlightStates[flashlightID];
-
-		SetStencilAndScissor( pRenderContext, flashlightInfo, m_Shadows[flashlightInfo.m_Shadow].m_pFlashlightDepthTexture != NULL );
-	}
+    (void)bDoMasking;
 }
 
-
-void CShadowMgr::DisableStencilAndScissorMasking( IMatRenderContext *pRenderContext )
+void CShadowMgr::DisableFlashlightStencil( IMatRenderContext *pRenderContext )
 {
-	if ( r_flashlightclip.GetBool() )
-	{
-		pRenderContext->SetStencilEnable( false );
-	}
-
-	// Scissor even if we're not shadow depth mapping
-	if ( r_flashlightscissor.GetBool() )
-	{
-		pRenderContext->SetScissorRect( -1, -1, -1, -1, false );
-	}
+    if ( r_flashlightclip.GetBool() )
+        pRenderContext->SetStencilEnable( false );
 }
-
-
-//---------------------------------------------------------------------------------------
-// Enable/Disable masking based on stencil bit
-//---------------------------------------------------------------------------------------
-void CShadowMgr::EnableStencilAndScissorMasking( IMatRenderContext *pRenderContext, const FlashlightInfo_t &flashlightInfo, bool bDoMasking )
-{
-	// Bail out if we're not doing any of these optimizations
-	if ( !( r_flashlightclip.GetBool() || r_flashlightscissor.GetBool()) || !bDoMasking )
-		return;
-
-	// Only turn on scissor when rendering to the back buffer
-	if ( pRenderContext->GetRenderTarget() == NULL )
-	{
-		// Only do the stencil optimization when shadow depth mapping
-		if ( r_flashlightclip.GetBool() && m_Shadows[flashlightInfo.m_Shadow].m_pFlashlightDepthTexture != NULL )
-		{
-			unsigned char ucShadowStencilBit = m_Shadows[flashlightInfo.m_Shadow].m_ucShadowStencilBit;
-
-			pRenderContext->SetStencilEnable( true );
-			pRenderContext->SetStencilFailOperation( STENCILOPERATION_KEEP );				// Stencil fails
-			pRenderContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );				// Stencil passes but depth fails
-			pRenderContext->SetStencilPassOperation( STENCILOPERATION_KEEP );				// Z and stencil both pass
-
-			pRenderContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_EQUAL );	// Bit must be set
-			pRenderContext->SetStencilReferenceValue( ucShadowStencilBit );					// Specific bit
-			pRenderContext->SetStencilTestMask( ucShadowStencilBit );						// Specific bit
-			pRenderContext->SetStencilWriteMask( 0x00000000 );
-		}
-
-		// Scissor even if we're not shadow depth mapping
-		if ( r_flashlightscissor.GetBool() && flashlightInfo.m_FlashlightState.m_bScissor )
-		{
-			pRenderContext->SetScissorRect( flashlightInfo.m_FlashlightState.m_nLeft, flashlightInfo.m_FlashlightState.m_nTop,
-											flashlightInfo.m_FlashlightState.m_nRight, flashlightInfo.m_FlashlightState.m_nBottom, true );
-		}
-	}
-	else // disable
-	{
-		DisableStencilAndScissorMasking( pRenderContext );
-	}
-}
-
 
 //---------------------------------------------------------------------------------------
 // Sets the render states necessary to render a flashlight
@@ -3426,7 +2927,7 @@ void CShadowMgr::RenderFlashlights( bool bDoMasking, const VMatrix* pModelToWorl
 			continue;
 
 		pRenderContext->SetFlashlightStateEx(flashlightInfo.m_FlashlightState, m_Shadows[flashlightInfo.m_Shadow].m_WorldToShadow, m_Shadows[flashlightInfo.m_Shadow].m_pFlashlightDepthTexture );
-		EnableStencilAndScissorMasking( pRenderContext, flashlightInfo, bDoMasking );
+
 
 		for( ; sortIDHandle != materialBuckets.InvalidSortIDHandle();
 			 sortIDHandle = materialBuckets.GetNextUsedSortID( sortIDHandle ) )
@@ -3526,8 +3027,8 @@ void CShadowMgr::RenderFlashlights( bool bDoMasking, const VMatrix* pModelToWorl
 	// Tell the materialsystem that we are finished drawing additive flashlight lighting.
 	pRenderContext->SetFlashlightMode( false );
 
-	// Turn off stencil masking
-	DisableStencilAndScissorMasking( pRenderContext );
+	// Restore the flashlight stencil state
+	DisableFlashlightStencil( pRenderContext );
 #endif
 }
 
@@ -3567,7 +3068,6 @@ void CShadowMgr::DrawFlashlightDecals( int sortGroup, bool bDoMasking )
 		FlashlightInfo_t &flashlightInfo = m_FlashlightStates[flashlightID];
 		pRenderContext->SetFlashlightState(flashlightInfo.m_FlashlightState, m_Shadows[flashlightInfo.m_Shadow].m_WorldToShadow );
 
-		EnableStencilAndScissorMasking( pRenderContext, flashlightInfo, bDoMasking );
 
 		DecalSurfaceDraw( pRenderContext, sortGroup );
 	}
@@ -3575,8 +3075,8 @@ void CShadowMgr::DrawFlashlightDecals( int sortGroup, bool bDoMasking )
 	// Tell the materialsystem that we are finished drawing additive flashlight lighting.
 	pRenderContext->SetFlashlightMode( false );
 
-	// Turn off stencil masking
-	DisableStencilAndScissorMasking( pRenderContext );
+	// Restore the flashlight stencil state
+	DisableFlashlightStencil( pRenderContext );
 }
 
 void CShadowMgr::DrawFlashlightDecalsOnDisplacements( int sortGroup, CDispInfo *visibleDisps[MAX_MAP_DISPINFO], int nVisibleDisps, bool bDoMasking )
@@ -3603,7 +3103,6 @@ void CShadowMgr::DrawFlashlightDecalsOnDisplacements( int sortGroup, CDispInfo *
 		FlashlightInfo_t &flashlightInfo = m_FlashlightStates[flashlightID];
 		pRenderContext->SetFlashlightState(flashlightInfo.m_FlashlightState, m_Shadows[flashlightInfo.m_Shadow].m_WorldToShadow );
 
-		EnableStencilAndScissorMasking( pRenderContext, flashlightInfo, bDoMasking );
 
 		DispInfo_DrawDecals( visibleDisps, nVisibleDisps );
 	}
@@ -3611,8 +3110,8 @@ void CShadowMgr::DrawFlashlightDecalsOnDisplacements( int sortGroup, CDispInfo *
 	// Tell the materialsystem that we are finished drawing additive flashlight lighting.
 	pRenderContext->SetFlashlightMode( false );
 
-	// Turn off stencil masking
-	DisableStencilAndScissorMasking( pRenderContext );
+	// Restore the flashlight stencil state
+	DisableFlashlightStencil( pRenderContext );
 }
 
 void CShadowMgr::DrawFlashlightDecalsOnSingleSurface( SurfaceHandle_t surfID, bool bDoMasking )
@@ -3637,7 +3136,6 @@ void CShadowMgr::DrawFlashlightDecalsOnSingleSurface( SurfaceHandle_t surfID, bo
 		FlashlightInfo_t &flashlightInfo = m_FlashlightStates[flashlightID];
 		pRenderContext->SetFlashlightState(flashlightInfo.m_FlashlightState, m_Shadows[flashlightInfo.m_Shadow].m_WorldToShadow );
 
-		EnableStencilAndScissorMasking( pRenderContext, flashlightInfo, bDoMasking );
 
 		DrawDecalsOnSingleSurface( pRenderContext, surfID );
 	}
@@ -3645,8 +3143,8 @@ void CShadowMgr::DrawFlashlightDecalsOnSingleSurface( SurfaceHandle_t surfID, bo
 	// Tell the materialsystem that we are finished drawing additive flashlight lighting.
 	pRenderContext->SetFlashlightMode( false );
 
-	// Turn off stencil masking
-	DisableStencilAndScissorMasking( pRenderContext );
+	// Restore the flashlight stencil state
+	DisableFlashlightStencil( pRenderContext );
 }
 
 void CShadowMgr::DrawFlashlightOverlays( int nSortGroup, bool bDoMasking )
@@ -3674,7 +3172,6 @@ void CShadowMgr::DrawFlashlightOverlays( int nSortGroup, bool bDoMasking )
 		FlashlightInfo_t &flashlightInfo = m_FlashlightStates[flashlightID];
 		pRenderContext->SetFlashlightState(flashlightInfo.m_FlashlightState, m_Shadows[flashlightInfo.m_Shadow].m_WorldToShadow );
 
-		EnableStencilAndScissorMasking( pRenderContext, flashlightInfo, bDoMasking );
 
 		OverlayMgr()->RenderOverlays( nSortGroup );
 	}
@@ -3682,8 +3179,8 @@ void CShadowMgr::DrawFlashlightOverlays( int nSortGroup, bool bDoMasking )
 	// Tell the materialsystem that we are finished drawing additive flashlight lighting.
 	pRenderContext->SetFlashlightMode( false );
 
-	// Turn off stencil masking
-	DisableStencilAndScissorMasking( pRenderContext );
+	// Restore the flashlight stencil state
+	DisableFlashlightStencil( pRenderContext );
 }
 
 void CShadowMgr::DrawFlashlightDepthTexture( )

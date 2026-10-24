@@ -2903,7 +2903,13 @@ IMaterial* CMaterialSystem::FindMaterialEx( char const* pMaterialName, const cha
 		else
 		{
 			pMat = m_MaterialDict.AddMaterial( pMatName, pTextureGroupName );
-			if ( g_pShaderDevice->IsUsingGraphics() )
+			if ( bImageMaterial )
+			{
+				// A synthesized image has no VMT to reload after a map change.
+				// Retain its definition just like a runtime-created material.
+				pMat->SetShaderAndParams( pKeyValues );
+			}
+			else if ( g_pShaderDevice->IsUsingGraphics() )
 			{
 				if ( !bIsUNC )
 				{

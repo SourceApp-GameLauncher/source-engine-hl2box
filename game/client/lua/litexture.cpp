@@ -576,9 +576,10 @@ IMaterial *HL2SB_FindImageMaterial( const char *pMaterialName, const char *pDigi
         // GMod reuses a cached FreeImage material only while it (and its
         // basetexture) is not the error material.
         IMaterial *pCached = s_ImageMaterials[iFound];
-        if ( pCached && !pCached->IsErrorMaterial() )
+        ITexture *pTexture = pCached && !pCached->IsErrorMaterial()
+            ? HL2SB_MaterialBaseTexture( pCached ) : NULL;
+        if ( pTexture && !IsErrorTexture( pTexture ) )
             return pCached;
-        return NULL;
     }
 
     IMaterial *pMaterial = NULL;
@@ -589,6 +590,11 @@ IMaterial *HL2SB_FindImageMaterial( const char *pMaterialName, const char *pDigi
     if ( g_pFullFileSystem->FileExists( szImageFile, "GAME" ) ||
          g_pFullFileSystem->FileExists( pMaterialName, "GAME" ) )
     {
+        // Resolve the raw image before publishing the wrapper material.  A
+        // VGUI consumer may bind it immediately, and deferring this work lets
+        // the normal material path try to load entities/jeep as a VMT.
+        materials->FindTexture( szKey, TEXTURE_GROUP_VGUI );
+
         KeyValues *pKV = new KeyValues( ( pDigits[0] == '1' ) ? "VertexLitGeneric" : "UnlitGeneric" );
         pKV->SetString( "$basetexture", szKey );
         pKV->SetInt( "$vertexcolor", 1 );
@@ -604,13 +610,23 @@ IMaterial *HL2SB_FindImageMaterial( const char *pMaterialName, const char *pDigi
         }
         if ( pDigits[6] == '1' )
             pKV->SetInt( "$ignorez", 1 );
-        pMaterial = materials->CreateMaterial( szKey, pKV );
-        // CreateMaterial takes ownership of pKV; do not deleteThis().
+        if ( iFound != s_ImageMaterials.InvalidIndex() && s_ImageMaterials[iFound] )
+        {
+            // Keep existing Lua and VGUI references on the same material.
+            pMaterial = s_ImageMaterials[iFound];
+            pMaterial->SetShaderAndParams( pKV );
+            pKV->deleteThis();
+        }
+        else
+        {
+            // CreateMaterial takes ownership of pKV.
+            pMaterial = materials->CreateMaterial( szKey, pKV );
+        }
 
         if ( pMaterial && pMaterial->IsErrorMaterial() )
             pMaterial = NULL;
 
-        if ( pMaterial )
+        if ( pMaterial && iFound == s_ImageMaterials.InvalidIndex() )
         {
             // The cache holds this material for the process lifetime; without
             // the reference the material system may cull it (same as
@@ -619,7 +635,7 @@ IMaterial *HL2SB_FindImageMaterial( const char *pMaterialName, const char *pDigi
         }
     }
 
-    if ( pMaterial )
+    if ( pMaterial && iFound == s_ImageMaterials.InvalidIndex() )
         s_ImageMaterials.Insert( strdup( szKey ), pMaterial );
 
     return pMaterial;
@@ -862,8 +878,8 @@ static int HL2SB_Material( lua_State *L )
             lua_pushnumber( L, (lua_Number)( Plat_FloatTime() - flStart ) );
             return 2;
         }
-        // Not a loadable image: fall through, FindMaterial returns the error
-        // material -- which is what GMod hands out for a missing image too.
+        // Preserve the normal lookup's error result so ContentIcon can try
+        // the legacy VGUI/entities material when the PNG does not exist.
     }
 
     HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_MATERIAL_VMT );

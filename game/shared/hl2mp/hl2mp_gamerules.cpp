@@ -37,6 +37,7 @@
 #else
 	#include "eventqueue.h"
 	#include "player.h"
+	#include "hl2sb_pickupnotice.h"
 	#include "gamerules.h"
 	#include "game.h"
 	#include "items.h"
@@ -451,6 +452,23 @@ void CHL2MPRules::PlayerThink( CBasePlayer *pPlayer )
 
 void CHL2MPRules::PlayerSpawn( CBasePlayer *pPlayer )
 {
+	// Spawn loadouts are inventory initialization, not world pickups. Restore
+	// the caller's notice preference even when Lua handles the spawn early.
+	struct SpawnPickupNotices
+	{
+		CBasePlayer *player;
+		bool suppressed;
+		explicit SpawnPickupNotices( CBasePlayer *p )
+			: player( p ), suppressed( HL2SB_IsPickupNoticeSuppressed( p ) )
+		{
+			HL2SB_SetPickupNoticeSuppressed( player, true );
+		}
+		~SpawnPickupNotices()
+		{
+			HL2SB_SetPickupNoticeSuppressed( player, suppressed );
+		}
+	} spawnPickupNotices( pPlayer );
+
 	BEGIN_LUA_CALL_HOOK( "PlayerSpawn" );
 		lua_pushplayer( L, pPlayer );
 	END_LUA_CALL_HOOK( 1, 1 );

@@ -430,8 +430,7 @@ IMotionEvent::simresult_e CGravControllerPoint::Simulate( IPhysicsMotionControll
 	// -- physgun_timeToArrive (0.05) normally, physgun_timeToArriveRagdoll
 	// (0.1) when the held entity is a ragdoll; it is NOT frametime-based.
 	float flTimeToArrive = physgun_timeToArrive.GetFloat();
-	CBaseAnimating *pAttached = (CBaseAnimating *)( CBaseEntity *)m_attachedEntity;
-	if ( pAttached != NULL && pAttached->IsRagdoll() )
+	if ( HL2SB_PhysgunIsRagdoll( m_attachedEntity ) )
 		flTimeToArrive = physgun_timeToArriveRagdoll.GetFloat();
 	m_timeToArrive = pObject->ComputeShadowControl( shadowParams, flTimeToArrive, deltaTime );
 #else

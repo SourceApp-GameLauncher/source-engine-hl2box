@@ -115,6 +115,7 @@ IMPLEMENT_CLIENTCLASS_DT(C_HL2MP_Player, DT_HL2MP_Player, CHL2MP_Player)
 	RecvPropFloat( RECVINFO( m_flHL2SBDuckSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBUnDuckSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBTauntEnd ) ),
+	RecvPropInt( RECVINFO( m_iHL2SBPlayerClassID ) ),
 	RecvPropEHandle( RECVINFO( m_hHands ) ),
 END_RECV_TABLE()
 
@@ -799,8 +800,12 @@ void C_HL2MP_Player::AddEntity( void )
 
 ShadowType_t C_HL2MP_Player::ShadowCastType( void ) 
 {
-	if ( !IsVisible() )
-		 return SHADOWS_NONE;
+	if ( !IsVisible() || IsEffectActive( EF_NOSHADOW ) )
+		return SHADOWS_NONE;
+
+	static ConVarRef drawOwnShadow( "cl_drawownshadow" );
+	if ( IsLocalPlayer() && !C_BasePlayer::ShouldDrawLocalPlayer() && !drawOwnShadow.GetBool() )
+		return SHADOWS_NONE;
 
 	return SHADOWS_RENDER_TO_TEXTURE_DYNAMIC;
 }

@@ -262,11 +262,9 @@ void HL2SB_AddRuntimeModelConfig( const char *pszName, const char *pszPlayerMode
 	if ( pszHandsModel )
 		Q_strncpy( pConfig->szHandsModel, pszHandsModel, sizeof( pConfig->szHandsModel ) );
 
-	HL2SB_PrecacheModelConfig( *pConfig );
-
-	Msg( "[HL2SB] Runtime model '%s' -> %s (hands: '%s')\n",
-		 pConfig->szName, pConfig->szPlayerModel,
-		 pConfig->szHandsModel[0] ? pConfig->szHandsModel : "none" );
+	// Registering a selectable player model must not load every model at map
+	// startup. GMod's player_manager records registrations; the selected model
+	// is loaded when it is applied to a player.
 }
 
 //-----------------------------------------------------------------------------
