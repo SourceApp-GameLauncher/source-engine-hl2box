@@ -6583,7 +6583,7 @@ static int luasrc_ents_GetByIndex (lua_State *L) {
   // feed this from network data where a desynced stream must degrade to
   // nil, not crash the client.
   int iIndex = luaL_checkint( L, 1 );
-  if ( iIndex <= 0 || iIndex >= NUM_ENT_ENTRIES )
+  if ( iIndex < 0 || iIndex >= NUM_ENT_ENTRIES )
   {
     lua_pushnil( L );
     return 1;
