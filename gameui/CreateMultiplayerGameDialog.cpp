@@ -1017,11 +1017,10 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		m_pBackButton->SetVisible( true );
 
 		// HL2SB: start at 1 (real single player - game.SinglePlayer() is
-		// maxclients<=1) and stop at 64, the largest value GetPlayerLimits
-		// actually serves; offering 128 here used to silently start a
-		// clamped server.  The 1 entry reads "single player" and is the
-		// default selection.
-		for ( int i = 1; i <= 64; i *= 2 )
+		// maxclients<=1) and stop at 128, the limit GetPlayerLimits serves
+		// (reference behavior: GMod's menu offers 1..128).  The 1 entry reads
+		// "single player" and is the default selection.
+		for ( int i = 1; i <= 128; i *= 2 )
 		{
 			if ( i == 1 )
 			{
@@ -1043,8 +1042,16 @@ void CCreateMultiplayerGameDialog::ApplySchemeSettings( vgui::IScheme *pScheme )
 		}
 
 		if(m_pSavedData->FindKey("sv_lan"))m_pLanCheck->SetSelected(m_pSavedData->GetInt("sv_lan",1)!=0);
-		// Every newly constructed dialog starts in real single-player mode.
-		m_pMaxPlayers->ActivateItemByRow( 0 );
+		// HL2SB: restore the saved player count; the default is the single
+		// player row.  The single player row hides server name / password / LAN
+		// on purpose - they reappear when a multiplayer row is picked.
+		{
+			int nSaved = m_pSavedData->GetInt( "maxplayers", 1 );
+			int nRow = 0;	// row 0 == single player (1); rows double: 2,4,8,16,32,64,128
+			while ( nRow < 7 && ( 1 << ( nRow + 1 ) ) <= nSaved )
+				nRow++;
+			m_pMaxPlayers->ActivateItemByRow( nRow );
+		}
 		static_cast<CLaunchSettingsList *>(m_pSandboxList)->Configure(m_pSavedData);
 
 		UpdateSidebarMode();

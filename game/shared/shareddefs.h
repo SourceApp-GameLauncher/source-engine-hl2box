@@ -236,11 +236,12 @@ enum CastVote
 #if defined( CSTRIKE_DLL )
 	#define MAX_PLAYERS				65  // Absolute max players supported
 #else
-	// HL2SB: was 33, which made GetPlayerLimits cap the server there and the
-	// start-game menu's 64-player option silently start a 33-slot server.  65
-	// is the shipped CS configuration (64 players + the HLTV/replay slot), so
-	// every player-indexed array in the game code is proven at this size.
-	#define MAX_PLAYERS				65  // Absolute max players supported
+	// HL2SB: reference behavior - GMod serves 128-player servers (its
+	// GetPlayerLimits reports max 128 / default 128).  129 = the 128 observable
+	// limit plus the CS "+1 proxy slot" headroom the engine adds on top when
+	// replay or SourceTV is enabled, so every player-indexed array stays safe
+	// in both configurations.
+	#define MAX_PLAYERS				129  // Absolute max players supported
 #endif
 
 #define MAX_PLACE_NAME_LENGTH		18
