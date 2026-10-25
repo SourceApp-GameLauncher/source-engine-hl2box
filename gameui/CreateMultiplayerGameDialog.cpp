@@ -36,7 +36,7 @@ using namespace vgui;
 #include "vgui_controls/PanelListPanel.h"
 #include "vgui_controls/ImagePanel.h"
 #include "vgui_controls/CheckButton.h"
-#include "vgui_controls/ToolTip.h"
+#include "vgui_controls/Tooltip.h"
 #include <vgui/ILocalize.h>
 #include <vgui/ISurface.h>
 #include <vgui/IScheme.h>
