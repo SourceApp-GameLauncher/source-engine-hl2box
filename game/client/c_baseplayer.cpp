@@ -1397,12 +1397,11 @@ bool C_BasePlayer::ShouldInterpolate()
 
 bool C_BasePlayer::ShouldDraw()
 {
-	// HL2SB: always return true for local player so engine includes it in render lists.
-	// Actual rendering is controlled by DrawModel() using g_bRenderingReflection.
-	if ( IsLocalPlayer() )
-		return true;
-
-	return ShouldDrawThisPlayer() && BaseClass::ShouldDraw();
+    // Local players can enter reflection lists, but still obey visibility and
+    // observer state before any first-person rendering exception.
+    if (GetMoveType() == MOVETYPE_OBSERVER || !BaseClass::ShouldDraw())
+        return false;
+    return IsLocalPlayer() || ShouldDrawThisPlayer();
 }
 
 int C_BasePlayer::DrawModel( int flags )

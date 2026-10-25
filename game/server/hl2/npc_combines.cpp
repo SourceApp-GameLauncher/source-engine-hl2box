@@ -343,43 +343,22 @@ void CNPC_CombineS::Event_Killed( const CTakeDamageInfo &info )
 			}
 		}
 
-//#ifndef HL2SB
-		CHalfLife2 *pHL2GameRules = static_cast<CHalfLife2 *>(g_pGameRules);
-//#else
-		CHL2MPRules *pHL2MPRules = static_cast<CHL2MPRules *>(g_pGameRules);
-//#endif
+#ifdef HL2SB
+		CHL2MPRules *pDropRules = HL2MPRules();
+#else
+		CHalfLife2 *pDropRules = HL2GameRules();
+#endif
 
-		// Attempt to drop health
-//#ifndef HL2SB
-		if ( pHL2GameRules->NPC_ShouldDropHealth( pPlayer ) )
-//#else
-//		if ( pHL2MPRules->NPC_ShouldDropHealth( pPlayer ) )
-//#endif
+		if ( pDropRules->NPC_ShouldDropHealth( pPlayer ) )
 		{
 			DropItem( "item_healthvial", WorldSpaceCenter()+RandomVector(-4,4), RandomAngle(0,360) );
-//#ifndef HL2SB
-			pHL2GameRules->NPC_DroppedHealth();
-//#else
-//			pHL2MPRules->NPC_DroppedHealth();
-//#endif
+			pDropRules->NPC_DroppedHealth();
 		}
-		
-		if ( HasSpawnFlags( SF_COMBINE_NO_GRENADEDROP ) == false )
+
+		if ( !HasSpawnFlags( SF_COMBINE_NO_GRENADEDROP ) && pDropRules->NPC_ShouldDropGrenade( pPlayer ) )
 		{
-			// Attempt to drop a grenade
-//ifndef HL2SB
-			if ( pHL2GameRules->NPC_ShouldDropGrenade( pPlayer ) )
-//#else
-//			if ( pHL2MPRules->NPC_ShouldDropGrenade( pPlayer ) )
-//#endif
-			{
-				DropItem( "weapon_frag", WorldSpaceCenter()+RandomVector(-4,4), RandomAngle(0,360) );
-//#ifndef HL2SB
-				pHL2GameRules->NPC_DroppedGrenade();
-//#else
-//				pHL2MPRules->NPC_DroppedGrenade();
-//#endif //FIXME FIX FIX FIX
-			}
+			DropItem( "weapon_frag", WorldSpaceCenter()+RandomVector(-4,4), RandomAngle(0,360) );
+			pDropRules->NPC_DroppedGrenade();
 		}
 	}
 

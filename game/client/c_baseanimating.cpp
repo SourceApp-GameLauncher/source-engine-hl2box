@@ -1476,6 +1476,17 @@ bool C_BaseAnimating::IsBoneMatrixAvailable( int iBone, bool bForWrite )
 	return ( mask & hdr->boneFlags( iBone ) ) != 0;
 }
 
+extern int HL2SB_GetBoneJiggle(CBaseEntity *entity, int bone);
+
+static mstudiojigglebone_t *LuaForcedJiggleProperties()
+{
+    static mstudiojigglebone_t properties = {
+        JIGGLE_IS_FLEXIBLE | JIGGLE_HAS_ANGLE_CONSTRAINT | JIGGLE_HAS_LENGTH_CONSTRAINT,
+        50.0f, 100.0f, 10.0f, 1.0f, 10.0f, 1.0f, 10.0f, 1.0f, DEG2RAD(22.0f)
+    };
+    return &properties;
+}
+
 void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quaternion *q, const matrix3x4_t &cameraTransform, int boneMask, CBoneBitList &boneComputed )
 {
 	VPROF_BUDGET( "C_BaseAnimating::BuildTransformations", VPROF_BUDGETGROUP_CLIENT_ANIMATION );
@@ -1566,8 +1577,10 @@ void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quater
 			Assert( fabs( pos[i].y ) < 100000 );
 			Assert( fabs( pos[i].z ) < 100000 );
 
-			if ( (hdr->boneFlags( i ) & BONE_ALWAYS_PROCEDURAL) && 
-				 (hdr->pBone( i )->proctype & STUDIO_PROC_JIGGLE) )
+            const int jiggleOverride = HL2SB_GetBoneJiggle(this, i);
+            if (jiggleOverride == 1 || (jiggleOverride != 2 &&
+                (hdr->boneFlags(i) & BONE_ALWAYS_PROCEDURAL) &&
+                (hdr->pBone(i)->proctype & STUDIO_PROC_JIGGLE)))
 			{
 				//
 				// Physics-based "jiggle" bone
@@ -1588,7 +1601,7 @@ void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quater
 				}
 
 				// get jiggle properties from QC data
-				mstudiojigglebone_t *jiggleInfo = (mstudiojigglebone_t *)pbones[i].pProcedure( );
+				mstudiojigglebone_t *jiggleInfo = jiggleOverride == 1 ? LuaForcedJiggleProperties() : (mstudiojigglebone_t *)pbones[i].pProcedure();
 
 				if (!m_pJiggleBones)
 				{

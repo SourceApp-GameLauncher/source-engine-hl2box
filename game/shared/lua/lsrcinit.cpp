@@ -1895,72 +1895,9 @@ static void HL2SB_NWReplicatedStore( int iFamily, int entindex, const char *pszN
 		s_NWReplicated.Insert( key, blob );
 }
 
-// Push the replicated value for (entity index, key), or nil.  Returns whether
-// a replicated value existed.
-static bool HL2SB_NWReplicatedPush( lua_State *L, int entindex, const char *pszKey, const char *pszType )
-{
-	char key[ 192 ];
-	Q_snprintf( key, sizeof( key ), "%d|%d|%s", HL2SB_NWFAMILY_NETWORKVAR, entindex, pszKey );
-
-	unsigned short idx = s_NWReplicated.Find( key );
-	if ( !s_NWReplicated.IsValidIndex( idx ) )
-		return false;
-
-	HL2SB_NWBlob_t &val = s_NWReplicated[ idx ];
-	if ( val.nBytes < 1 )
-		return false;
-
-	char tag = ( char )val.buf[ 0 ];
-	bf_read r( "HL2SB_NW", val.buf + 1, val.nBytes - 1 );
-
-	switch ( tag )
-	{
-		case HL2SB_NWTAG_FLOAT:
-			lua_pushnumber( L, ( lua_Number )r.ReadFloat() );
-			return true;
-		case HL2SB_NWTAG_VECTOR:
-		{
-			Vector v;
-			v.x = r.ReadFloat();
-			v.y = r.ReadFloat();
-			v.z = r.ReadFloat();
-			lua_pushvector( L, v );
-			return true;
-		}
-		case HL2SB_NWTAG_ANGLE:
-		{
-			QAngle a;
-			a.x = r.ReadFloat();
-			a.y = r.ReadFloat();
-			a.z = r.ReadFloat();
-			lua_pushangle( L, a );
-			return true;
-		}
-		case HL2SB_NWTAG_BOOL:
-			lua_pushboolean( L, r.ReadByte() != 0 );
-			return true;
-		case HL2SB_NWTAG_INT:
-			lua_pushinteger( L, ( lua_Integer )r.ReadLong() );
-			return true;
-		case HL2SB_NWTAG_STRING:
-		{
-			int n = r.ReadByte();
-			char sz[ 256 ];
-			if ( n > 0 )
-				r.ReadBytes( sz, n );
-			sz[ n ] = 0;
-			lua_pushstring( L, sz );
-			return true;
-		}
-		default:
-			return false;	// Entity payloads are not replicated to a value
-	}
-}
-
-// Family-aware reader for the SetNW*/SetNW2* getters (lbaseentity_shared.cpp):
-// same blob store, family-namespaced key -- and unlike the legacy reader it
-// answers ENTITY tags by resolving the entindex back to a client entity (the
-// NULL sentinel when the handle does not resolve, GMod's answer too).
+// Shared reader for generated NetworkVar and SetNW*/SetNW2* getters. Entity
+// values resolve on every read so a target that arrives later becomes visible;
+// a target that does not resolve answers the NULL sentinel.
 bool HL2SB_NWReplicatedPushFamily( lua_State *L, int iFamily, int entindex,
 								   const char *pszName )
 {
@@ -2596,69 +2533,10 @@ static int HL2SB_Lua_EntityNetworkVarGet (lua_State *L) {
     CBaseEntity *pSelf = lua_toentity( L, 1 );
     if ( pSelf != NULL && pSelf->entindex() > 0 ) {
       const char *pszName = ( pszKey != NULL ) ? ( pszKey + strlen( "__hl2sb_nw_" ) ) : "";
-      // Key format must match HL2SB_NWReplicatedStore exactly: the family byte
-      // namespaced the store ("family|entindex|name"), the legacy channel is
-      // family 0.  A stale "entindex_name" lookup here always missed after the
-      // namespace change, so every replicated NetworkVar (env_skypaint's whole
-      // palette included) fell back to the type default and the sky rendered
-      // black while the world drew normally.
-      char key[ 192 ];
-      Q_snprintf( key, sizeof( key ), "%d|%d|%s", HL2SB_NWFAMILY_NETWORKVAR,
-                  pSelf->entindex(), pszName );
-
-      unsigned short idx = s_NWReplicated.Find( key );
-      if ( s_NWReplicated.IsValidIndex( idx ) && s_NWReplicated[ idx ].nBytes >= 1 ) {
-        const HL2SB_NWBlob_t &val = s_NWReplicated[ idx ];
-        char tag = ( char )val.buf[ 0 ];
-        bf_read r( "HL2SB_NW", val.buf + 1, val.nBytes - 1 );
-
-        switch ( tag )
-        {
-          case HL2SB_NWTAG_FLOAT:
-            lua_pushnumber( L, ( lua_Number )r.ReadFloat() );
-            break;
-          case HL2SB_NWTAG_VECTOR:
-          {
-            Vector v;
-            v.x = r.ReadFloat();
-            v.y = r.ReadFloat();
-            v.z = r.ReadFloat();
-            lua_pushvector( L, v );
-            break;
-          }
-          case HL2SB_NWTAG_ANGLE:
-          {
-            QAngle a;
-            a.x = r.ReadFloat();
-            a.y = r.ReadFloat();
-            a.z = r.ReadFloat();
-            lua_pushangle( L, a );
-            break;
-          }
-          case HL2SB_NWTAG_BOOL:
-            lua_pushboolean( L, r.ReadByte() != 0 );
-            break;
-          case HL2SB_NWTAG_INT:
-            lua_pushinteger( L, ( lua_Integer )r.ReadLong() );
-            break;
-          case HL2SB_NWTAG_STRING:
-          {
-            int n = r.ReadByte();
-            char sz[ 256 ];
-            if ( n > 0 )
-              r.ReadBytes( sz, n );
-            sz[ n ] = 0;
-            lua_pushstring( L, sz );
-            break;
-          }
-          default:
-            // GMod getters NEVER return nil -- fall back to the type default.
-            // (A nil here made sent_ball index a nil color, and the error
-            // reporting chain then aborted the process.)
-            HL2SB_NWPushValue( L, pszType );
-            break;
-        }
-        lua_remove( L, iTable );
+      if ( HL2SB_NWReplicatedPushFamily( L, HL2SB_NWFAMILY_NETWORKVAR,
+                                       pSelf->entindex(), pszName ) ) {
+        if ( iTable != 0 )
+          lua_remove( L, iTable );
         return 1;
       }
     }
@@ -3758,6 +3636,15 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
         if ( g_pFullFileSystem != NULL && g_pFullFileSystem->FileExists( szNorm, "MOD" ) )
           Q_strncpy( szResolved, szNorm, sizeof( szResolved ) );
       }
+    }
+
+    // Gamemode send manifests name files relative to the gamemodes root.
+    if ( szResolved[0] == '\0' )
+    {
+      Q_snprintf( szCandidate, sizeof( szCandidate ), "gamemodes/%s", szName );
+      HL2SB_CSNormalizeDots( szCandidate, szNorm, sizeof( szNorm ) );
+      if ( g_pFullFileSystem != NULL && g_pFullFileSystem->FileExists( szNorm, "MOD" ) )
+        Q_strncpy( szResolved, szNorm, sizeof( szResolved ) );
     }
 
     // 2. The lua search root, then 3. the game root.

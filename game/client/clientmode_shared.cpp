@@ -978,21 +978,27 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 	// consumer; the wheel keeps its stock engine behavior on foot (weapon
 	// selection) and for the gravity gun (its own KeyInput).
 
-#ifdef LUA_SDK
-	if ( g_bLuaInitialized )
-	{
-		BEGIN_LUA_CALL_HOOK( "KeyInput" );
-			lua_pushinteger( L, down );
-			lua_pushinteger( L, keynum );
-			lua_pushstring( L, pszCurrentBinding );
-		END_LUA_CALL_HOOK( 3, 1 );
-
-		RETURN_LUA_INTEGER();
-	}
-#endif
-
 	if ( engine->Con_IsVisible() )
 		return 1;
+
+#ifdef LUA_SDK
+	C_BasePlayer *pBindPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( g_bLuaInitialized && L != NULL && pBindPlayer &&
+		( !pszCurrentBinding || Q_strcmp( pszCurrentBinding, "toggleconsole" ) != 0 ) )
+	{
+		BEGIN_LUA_CALL_HOOK( "PlayerBindPress" );
+			lua_pushplayer( L, pBindPlayer );
+			lua_pushstring( L, pszCurrentBinding ? pszCurrentBinding : "" );
+			lua_pushboolean( L, down != 0 );
+			lua_pushinteger( L, keynum );
+		END_LUA_CALL_HOOK( 4, 1 );
+
+		const bool handled = lua_isboolean( L, -1 ) && lua_toboolean( L, -1 );
+		lua_pop( L, 1 );
+		if ( handled )
+			return 0;
+	}
+#endif
 
 	// Should we start typing a message?
 	if ( pszCurrentBinding &&
@@ -1028,6 +1034,8 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 	}
 #endif
 
+// GMod leaves observer buttons in user commands for the gamemode.
+#ifndef LUA_SDK
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 
 	// if ingame spectator mode, let spectator input intercept key event here
@@ -1037,6 +1045,7 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 	{
 		return 0;
 	}
+#endif
 
 	// Let game-specific hud elements get a crack at the key input
 	if ( !HudElementKeyInput( down, keynum, pszCurrentBinding ) )

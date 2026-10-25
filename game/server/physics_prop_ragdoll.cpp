@@ -20,6 +20,10 @@
 #include "AI_Criteria.h"
 #include "ragdoll_shared.h"
 #include "hierarchy.h"
+#ifdef LUA_SDK
+#include "luamanager.h"
+#include "lbaseentity_shared.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -1508,6 +1512,18 @@ CBaseEntity *CreateServerRagdoll( CBaseAnimating *pAnimating, int forceBone, con
 	mins = pAnimating->CollisionProp()->OBBMins();
 	maxs = pAnimating->CollisionProp()->OBBMaxs();
 	pRagdoll->CollisionProp()->SetCollisionBounds( mins, maxs );
+
+#ifdef LUA_SDK
+	if ( L != NULL )
+	{
+		// The original gamemode transfers undo and cleanup ownership here,
+		// before the source entity is removed by its death path.
+		BEGIN_LUA_CALL_HOOK( "CreateEntityRagdoll" );
+			lua_pushentity( L, pAnimating );
+			lua_pushentity( L, pRagdoll );
+		END_LUA_CALL_HOOK( 2, 0 );
+	}
+#endif
 
 	return pRagdoll;
 }

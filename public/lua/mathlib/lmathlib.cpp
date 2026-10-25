@@ -199,6 +199,13 @@ static int mathlib_Rand (lua_State *L) {
   return 1;
 }
 
+static int mathlib_Distance (lua_State *L) {
+  const float dx = (float)(luaL_checknumber(L, 3) - luaL_checknumber(L, 1));
+  const float dy = (float)(luaL_checknumber(L, 4) - luaL_checknumber(L, 2));
+  lua_pushnumber(L, sqrtf(dx * dx + dy * dy));
+  return 1;
+}
+
 
 static const luaL_Reg mathliblib[] = {
   {"clamp",   mathlib_clamp},
@@ -220,6 +227,8 @@ LUALIB_API int luaopen_mathlib (lua_State *L) {
   if (lua_istable(L, -1)) {
     lua_pushcfunction(L, mathlib_Rand);
     lua_setfield(L, -2, "Rand");
+    lua_pushcfunction(L, mathlib_Distance);
+    lua_setfield(L, -2, "Distance");
   }
   lua_pop(L, 1);
 

@@ -1242,24 +1242,41 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	// keep track of amount of damage last sustained
 	m_lastDamageAmount = info.GetDamage();
 
-#if defined ( LUA_SDK )
-	// HL2SB GMod compat (2026-10-08): GM:HandlePlayerArmorReduction( ply,
-	// dmginfo ), raised just before the armor math below reads the damage.
-	// GMod's own C++ no longer reduces armor itself - the base gamemode body
-	// does the whole 80/20 job with SetArmor/SetDamage - while this fork keeps
-	// the engine block authoritative, so the base Lua body stays a no-op and
-	// addons use the hook to scale or veto through dmginfo first.
+#if defined( LUA_SDK )
+	bool bLuaArmor = false;
+	if ( L != NULL )
 	{
-		CTakeDamageInfo mutableInfo = info;
-
+		lua_getglobal( L, "_GAMEMODE" );
+		if ( lua_istable( L, -1 ) )
+		{
+			luasrc_PushScriptField( L, -1, "HandlePlayerArmorReduction" );
+			bLuaArmor = lua_isfunction( L, -1 ) != 0;
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+	}
+	if ( bLuaArmor )
+	{
+		// Damage userdata is a copy; keep it alive until its changes are applied.
+		const int armorBefore = ArmorValue();
+		lua_pushdamageinfo( L, info );
+		const int damageRef = luaL_ref( L, LUA_REGISTRYINDEX );
 		BEGIN_LUA_CALL_HOOK( "HandlePlayerArmorReduction" );
 			lua_pushplayer( L, this );
-			lua_pushdamageinfo( L, mutableInfo );
-			END_LUA_CALL_HOOK( 2, 0 );
+			lua_rawgeti( L, LUA_REGISTRYINDEX, damageRef );
+		END_LUA_CALL_HOOK( 2, 0 );
+		lua_rawgeti( L, LUA_REGISTRYINDEX, damageRef );
+		info = lua_todamageinfo( L, -1 );
+		lua_pop( L, 1 );
+		luaL_unref( L, LUA_REGISTRYINDEX, damageRef );
+		m_DmgSave = ArmorValue() - armorBefore;
 	}
 #endif
 
-	// Armor.
+	// Native armor remains a fallback for games without a Lua armor handler.
+#if defined( LUA_SDK )
+	if ( !bLuaArmor )
+#endif
 	if (m_ArmorValue && !(info.GetDamageType() & (DMG_FALL | DMG_DROWN | DMG_POISON | DMG_RADIATION)) )// armor doesn't protect against fall or drown damage!
 	{
 		float flNew = info.GetDamage() * flRatio;
@@ -1577,6 +1594,22 @@ void CBasePlayer::PackDeadPlayerItems( void )
 	// get the game rules 
 	iWeaponRules = g_pGameRules->DeadPlayerWeapons( this );
  	iAmmoRules = g_pGameRules->DeadPlayerAmmo( this );
+
+#if defined( LUA_SDK )
+	if ( L != NULL && m_nTableReference >= 0 )
+	{
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) )
+		{
+			lua_pushliteral( L, "__hl2sbDropWeaponOnDeath" );
+			lua_rawget( L, -2 );
+			if ( lua_isboolean( L, -1 ) && !lua_toboolean( L, -1 ) )
+				iWeaponRules = GR_PLR_DROP_GUN_NO;
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+	}
+#endif
 
 	if ( iWeaponRules == GR_PLR_DROP_GUN_NO && iAmmoRules == GR_PLR_DROP_AMMO_NO )
 	{
@@ -2276,7 +2309,28 @@ void CBasePlayer::PlayerDeathThink(void)
 
 	IncrementInterpolationFrame();
 	m_flPlaybackRate = 0.0;
-	
+
+#if defined( LUA_SDK )
+	if ( L != NULL )
+	{
+		lua_getglobal( L, "_GAMEMODE" );
+		bool handlesRespawn = false;
+		if ( lua_istable( L, -1 ) )
+		{
+			luasrc_PushScriptField( L, -1, "PlayerDeathThink" );
+			handlesRespawn = lua_isfunction( L, -1 ) != 0;
+			lua_pop( L, 1 );
+		}
+		lua_pop( L, 1 );
+		if ( handlesRespawn )
+		{
+			BEGIN_LUA_CALL_HOOK( "PlayerDeathThink" );
+				lua_pushplayer( L, this );
+			END_LUA_CALL_HOOK( 1, 0 );
+			return;
+		}
+	}
+#endif
 	int fAnyButtonDown = (m_nButtons & ~IN_SCORE);
 	
 	// Strip out the duck key from this check if it's toggled
@@ -2376,6 +2430,116 @@ void CBasePlayer::StartDeathCam( void )
 		return;
 	}
 } */
+
+struct LuaObserverTarget
+{
+    EHANDLE player;
+    EHANDLE target;
+};
+static CUtlVector<LuaObserverTarget> s_LuaObserverTargets;
+
+static CBaseEntity *LuaObserverTargetFor(CBasePlayer *player)
+{
+    for (int i = s_LuaObserverTargets.Count() - 1; i >= 0; --i)
+    {
+        if (!s_LuaObserverTargets[i].player.Get()) s_LuaObserverTargets.FastRemove(i);
+        else if (s_LuaObserverTargets[i].player.Get() == player) return s_LuaObserverTargets[i].target.Get();
+    }
+    return NULL;
+}
+
+void CBasePlayer::LuaKillSilent()
+{
+#if defined(LUA_SDK)
+    if (L != NULL) {
+        BEGIN_LUA_CALL_HOOK("PlayerSilentDeath");
+            lua_pushplayer(L, this);
+        END_LUA_CALL_HOOK(1, 0);
+    }
+#endif
+    ExitVehicle();
+    ClearUseEntity();
+#if defined(LUA_SDK)
+    extern void HL2SB_PrepareSilentPlayerDeath(CBasePlayer *player);
+    HL2SB_PrepareSilentPlayerDeath(this);
+#endif
+    SetHealth(0);
+    if (GetActiveWeapon()) GetActiveWeapon()->Holster();
+    SetViewOffset(VEC_DEAD_VIEWHEIGHT_SCALED(this));
+    m_lifeState = LIFE_DYING;
+    pl.deadflag = true;
+    AddSolidFlags(FSOLID_NOT_SOLID);
+    SetMoveType(MOVETYPE_NONE);
+    SetGroundEntity(NULL);
+    SetSuitUpdate(NULL, false, 0);
+    SetFOV(this, 0);
+    m_flDeathTime = gpGlobals->curtime;
+    CTakeDamageInfo info(this, this, 0.0f, DMG_GENERIC);
+    DeathSound(info);
+    m_lifeState = LIFE_DEAD;
+    RemoveEffects(EF_NODRAW);
+    FlashlightTurnOff();
+    RemoveAllItems(true);
+    EnableButtons(0x03ffffff);
+    UnforceButtons(0x03ffffff);
+#if defined(LUA_SDK)
+    if (L != NULL) {
+        BEGIN_LUA_CALL_HOOK("PostPlayerDeath");
+            lua_pushplayer(L, this);
+        END_LUA_CALL_HOOK(1, 0);
+    }
+#endif
+}
+
+void CBasePlayer::LuaSpectate(int mode)
+{
+    if (mode < OBS_MODE_NONE || mode >= NUM_OBSERVER_MODES) return;
+    if (mode == OBS_MODE_NONE) { LuaUnSpectate(); SetMoveType(MOVETYPE_OBSERVER); return; }
+    if (!IsObserver())
+    {
+        SetAbsOrigin(GetAbsOrigin() + GetViewOffset());
+        SetViewOffset(vec3_origin);
+    }
+    m_afPhysicsFlags |= PFLAG_OBSERVER;
+    if (GetActiveWeapon()) GetActiveWeapon()->Holster();
+    SetGroundEntity(NULL);
+    RemoveFlag(FL_DUCKING | FL_ANIMDUCKING);
+    AddSolidFlags(FSOLID_NOT_SOLID);
+    AddEffects(EF_NODRAW);
+    SetObserverMode(mode);
+    m_Local.m_iHideHUD = HIDEHUD_HEALTH;
+    m_takedamage = DAMAGE_NO;
+    SetMoveType(MOVETYPE_OBSERVER);
+}
+
+void CBasePlayer::LuaSpectateEntity(CBaseEntity *target)
+{
+    for (int i = s_LuaObserverTargets.Count() - 1; i >= 0; --i)
+        if (!s_LuaObserverTargets[i].player.Get() || s_LuaObserverTargets[i].player.Get() == this)
+            s_LuaObserverTargets.FastRemove(i);
+    if (target && target != this)
+    {
+        LuaObserverTarget entry;
+        entry.player = this;
+        entry.target = target;
+        s_LuaObserverTargets.AddToTail(entry);
+        SetObserverTarget(target);
+    }
+    else m_hObserverTarget = NULL;
+}
+
+void CBasePlayer::LuaUnSpectate()
+{
+    StopObserverMode();
+    ResetObserverMode();
+    LuaSpectateEntity(NULL);
+    RemoveSolidFlags(FSOLID_NOT_SOLID);
+    RemoveEffects(EF_NODRAW);
+    RemoveFlag(FL_DUCKING);
+    m_Local.m_iHideHUD = 0;
+    m_takedamage = DAMAGE_YES;
+    SetMoveType(MOVETYPE_WALK);
+}
 
 void CBasePlayer::StopObserverMode()
 {
@@ -2817,6 +2981,8 @@ bool CBasePlayer::SetObserverTarget(CBaseEntity *target)
 
 bool CBasePlayer::IsValidObserverTarget(CBaseEntity * target)
 {
+    if (target && target != this && LuaObserverTargetFor(this) == target)
+        return !target->IsMarkedForDeletion();
 	if ( target == NULL )
 		return false;
 
@@ -3997,18 +4163,6 @@ void CBasePlayer::PreThink(void)
 	if ( g_fGameOver || m_iPlayerLocked )
 		return;         // intermission or finale
 
-#if defined ( LUA_SDK )
-	// HL2SB GMod compat (2026-10-08): GM:StartCommand( ply, cmd ).  GMod fires
-	// it right before the player's input is processed each tick so scripts can
-	// rewrite buttons/viewangles (bot control, forced moves).  m_pCurrentCommand
-	// is only meaningful inside RunCommand - outside that window the hook is
-	// skipped rather than handed a stale command.
-	if ( m_pCurrentCommand != NULL )
-	{
-		extern void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd );
-		HL2SB_LuaStartCommand( this, m_pCurrentCommand );
-	}
-#endif
 
 	if ( Hints() )
 	{

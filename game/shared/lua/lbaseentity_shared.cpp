@@ -907,6 +907,18 @@ static int CBaseEntity_GetBaseAnimating (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_LookupBone (lua_State *L) {
+  CBaseEntity *pEntity = lua_toentity( L, 1 );
+  CBaseAnimating *pAnimating = pEntity ? pEntity->GetBaseAnimating() : NULL;
+  if ( pAnimating == NULL )
+    return 0;
+  const int iBone = pAnimating->LookupBone( luaL_checkstring( L, 2 ) );
+  if ( iBone < 0 )
+    return 0;
+  lua_pushinteger( L, iBone );
+  return 1;
+}
+
 static int CBaseEntity_GetBaseEntity (lua_State *L) {
   lua_pushentity(L, luaL_checkentity(L, 1)->GetBaseEntity());
   return 1;
@@ -972,6 +984,20 @@ static int CBaseEntity_GetFirstThinkTick (lua_State *L) {
   lua_pushinteger(L, luaL_checkentity(L, 1)->GetFirstThinkTick());
   return 1;
 }
+
+#ifndef CLIENT_DLL
+static int CBaseEntity_GetPhysicsAttacker (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  lua_pushentity(L, entity->HasPhysicsAttacker((float)luaL_optnumber(L, 2, 1.0)));
+  return 1;
+}
+
+static int CBaseEntity_IsPlayerHolding (lua_State *L) {
+  IPhysicsObject *phys = luaL_checkentity(L, 1)->VPhysicsGetObject();
+  lua_pushboolean(L, phys && (phys->GetGameFlags() & FVPHYSICS_PLAYER_HELD));
+  return 1;
+}
+#endif
 
 static int CBaseEntity_GetFlags (lua_State *L) {
   lua_pushinteger(L, luaL_checkentity(L, 1)->GetFlags());
@@ -1990,11 +2016,6 @@ static int CBaseEntity_SetTrigger (lua_State *L) {
     pEntity->RemoveSolidFlags(FSOLID_TRIGGER);
 
   pEntity->CollisionRulesChanged();
-  return 0;
-}
-
-static int CBaseEntity_ManipulateBoneAngles (lua_State *L) {
-  // ( entity, bone, angle ) -- accepted and ignored, see the note above.
   return 0;
 }
 
@@ -6044,6 +6065,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"AddEffects", CBaseEntity_AddEffects},
   {"AddEFlags", CBaseEntity_AddEFlags},
   {"AddFlag", CBaseEntity_AddFlag},
+  {"AddFlags", CBaseEntity_AddFlag},
   {"IsFlagSet", CBaseEntity_IsFlagSet},
   {"AddSolidFlags", CBaseEntity_AddSolidFlags},
   {"ApplyAbsVelocityImpulse", CBaseEntity_ApplyAbsVelocityImpulse},
@@ -6132,6 +6154,10 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetElasticity", CBaseEntity_GetElasticity},
   {"GetFirstThinkTick", CBaseEntity_GetFirstThinkTick},
   {"GetFlags", CBaseEntity_GetFlags},
+#ifndef CLIENT_DLL
+  {"GetPhysicsAttacker", CBaseEntity_GetPhysicsAttacker},
+  {"IsPlayerHolding", CBaseEntity_IsPlayerHolding},
+#endif
   {"GetFollowedEntity", CBaseEntity_GetFollowedEntity},
   {"GetGravity", CBaseEntity_GetGravity},
   {"GetGroundChangeTime", CBaseEntity_GetGroundChangeTime},
@@ -6266,8 +6292,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"WorldToLocalAngles", CBaseEntity_WorldToLocalAngles},
   {"LocalToWorldAngles", CBaseEntity_LocalToWorldAngles},
   {"LookupAttachment", CBaseEntity_LookupAttachment},
+  {"LookupBone", CBaseEntity_LookupBone},
   {"SetTrigger", CBaseEntity_SetTrigger},
-  {"ManipulateBoneAngles", CBaseEntity_ManipulateBoneAngles},
   {"SetSpawnEffect", CBaseEntity_SetSpawnEffect},
   {"GetSpawnEffect", CBaseEntity_GetSpawnEffect},
   {"GetCreationTime", CBaseEntity_GetCreationTime},
@@ -6332,6 +6358,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"RemoveEffects", CBaseEntity_RemoveEffects},
   {"RemoveEFlags", CBaseEntity_RemoveEFlags},
   {"RemoveFlag", CBaseEntity_RemoveFlag},
+  {"RemoveFlags", CBaseEntity_RemoveFlag},
   {"RemoveSolidFlags", CBaseEntity_RemoveSolidFlags},
   {"SendViewModelMatchingSequence", CBaseEntity_SendViewModelMatchingSequence},
 {"SetAbsAngles", CBaseEntity_SetAbsAngles},

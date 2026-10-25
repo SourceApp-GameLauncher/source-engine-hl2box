@@ -2611,7 +2611,25 @@ static const luaL_Reg NPCmeta[] = {
 /*
 ** Open NPC object
 */
+#ifndef CLIENT_DLL
+static int ai_GetSquadMemberCount( lua_State *L ) {
+  CAI_Squad *squad = g_AI_SquadManager.FindSquad( AllocPooledString( luaL_checkstring( L, 1 ) ) );
+  lua_pushnumber( L, squad ? squad->NumMembers( false ) : 0 );
+  return 1;
+}
+#endif
+
 LUALIB_API int luaopen_NPC_shared (lua_State *L) {
+#ifndef CLIENT_DLL
+  lua_getglobal( L, "ai" );
+  if ( !lua_istable( L, -1 ) ) {
+    lua_pop( L, 1 );
+    lua_newtable( L );
+  }
+  lua_pushcfunction( L, ai_GetSquadMemberCount );
+  lua_setfield( L, -2, "GetSquadMemberCount" );
+  lua_setglobal( L, "ai" );
+#endif
   /* HL2SB: GMod-shaped creation -- the type id (9 = TYPE_ENTITY, the same
   ** family id GMod's own registry wiring passes for NPC; verified from its
   ** wire call) rides lua_shared's type slot, which stamps MetaName/MetaID on

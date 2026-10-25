@@ -135,7 +135,7 @@ END_PREDICTION_DATA()
 // lists are gone, so an empty/invalid cl_playermodel now lands here (the server
 // side falls back to the same path).
 static ConVar cl_playermodel( "cl_playermodel", "models/player/kleiner.mdl", FCVAR_USERINFO | FCVAR_ARCHIVE | FCVAR_SERVER_CAN_EXECUTE, "Default Player Model");
-static ConVar cl_defaultweapon( "cl_defaultweapon", "weapon_physcannon", FCVAR_USERINFO | FCVAR_ARCHIVE, "Default Spawn Weapon");
+static ConVar cl_defaultweapon( "cl_defaultweapon", "weapon_physgun", FCVAR_USERINFO | FCVAR_ARCHIVE, "Default Spawn Weapon");
 
 /*
 ** HL2SB: the rest of GMod's player-editor settings.  GMod's player model selector
@@ -823,8 +823,15 @@ const QAngle& C_HL2MP_Player::GetRenderAngles()
 	}
 }
 
+C_BaseEntity *C_HL2MP_Player::GetRagdollEntity() const
+{
+    return m_hRagdoll.Get();
+}
+
 bool C_HL2MP_Player::ShouldDraw( void )
 {
+    if (GetMoveType() == MOVETYPE_OBSERVER || IsEffectActive(EF_NODRAW))
+        return false;
 	// If we're dead, our ragdoll will be drawn for us instead.
 	if ( !IsAlive() )
 		return false;

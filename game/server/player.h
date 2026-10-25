@@ -466,6 +466,11 @@ public:
 	bool					HandleVoteCommands( const CCommand &args );
 	
 	// Observer functions
+    // Lua spectator transitions retain the player's health and life state.
+    void LuaSpectate(int mode);
+    void LuaSpectateEntity(CBaseEntity *target);
+    void LuaUnSpectate();
+    void LuaKillSilent();
 	virtual bool			StartObserverMode(int mode); // true, if successful
 	virtual void			StopObserverMode( void );	// stop spectator mode
 	virtual bool			ModeWantsSpectatorGUI( int iMode ) { return true; }

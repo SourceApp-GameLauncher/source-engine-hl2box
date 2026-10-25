@@ -39,6 +39,17 @@ vgui::HScheme g_hVGuiCombineScheme = 0;
 // default of 75.
 ConVar fov_desired( "fov_desired", "75", FCVAR_ARCHIVE | FCVAR_USERINFO, "Sets the base field-of-view.", true, 75.0, true, 110.0 );
 
+// GMod's Game options page owns these client settings.  The crosshair renderer
+// and the menu Lua read them by name, so they must exist even when the active
+// game is not the Counter-Strike weapon module that supplies the older color
+// and size variables.
+ConVar cl_crosshairstyle( "cl_crosshairstyle", "2", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+ConVar cl_crosshairgap( "cl_crosshairgap", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+ConVar cl_crosshair_t( "cl_crosshair_t", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+ConVar cl_crosshair_drawoutline( "cl_crosshair_drawoutline", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+ConVar cl_crosshair_outlinethickness( "cl_crosshair_outlinethickness", "1", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+ConVar cl_enable_loadingurl( "cl_enable_loadingurl", "1", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+
 // Instance the singleton and expose the interface to it.
 IClientMode *GetClientModeNormal()
 {

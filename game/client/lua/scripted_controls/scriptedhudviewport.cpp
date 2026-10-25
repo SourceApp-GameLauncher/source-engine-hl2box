@@ -77,11 +77,20 @@ void CScriptedHudViewport::Paint()
 		END_LUA_CALL_WEAPON_HOOK( 0, 0 );
 	}
 
-	// The gamemode dispatches the weapon HUD. Paint it once, before Lua panels.
+	// The gamemode and the active weapon each own a separate HUD callback.
 	BEGIN_LUA_CALL_HOOK( "HUDPaint" );
 	END_LUA_CALL_HOOK( 0, 0 );
 	if ( bFrameStats )
 		HL2SB_FrameStats_NoteLuaHook( "HUDPaint", Plat_FloatTime() - flHookStart );
+
+	// HUDPaint can change the active weapon or remove its owner.
+	pPlayer = C_BasePlayer::GetLocalPlayer();
+	pWeapon = pPlayer && pPlayer->IsAlive() ? pPlayer->GetActiveWeapon() : NULL;
+	if ( pWeapon && pWeapon->IsScripted() )
+	{
+		BEGIN_LUA_CALL_WEAPON_HOOK( "DrawHUD", pWeapon );
+		END_LUA_CALL_WEAPON_HOOK( 0, 0 );
+	}
 
 	BEGIN_LUA_CALL_HOOK( "PostDrawHUD" );
 	END_LUA_CALL_HOOK( 0, 0 );

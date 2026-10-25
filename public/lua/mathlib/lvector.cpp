@@ -172,6 +172,14 @@ static int Vector_GetNormal (lua_State *L) {
   return 1;
 }
 
+static int Vector_SetUnpacked (lua_State *L) {
+  Vector &vec = luaL_checkvector(L, 1);
+  vec.x = (float)luaL_checknumber(L, 2);
+  vec.y = (float)luaL_checknumber(L, 3);
+  vec.z = (float)luaL_checknumber(L, 4);
+  return 0;
+}
+
 static int Vector_Unpack (lua_State *L) {
   Vector vec = luaL_checkvector(L, 1);
   lua_pushnumber(L, vec.x);
@@ -568,6 +576,7 @@ static const luaL_Reg Vectormeta[] = {
 // HL2SB GMod compat: GMod's documented Vector surface (see the definitions above).
 {"GetNormal", Vector_GetNormal},
 {"Unpack", Vector_Unpack},
+  {"SetUnpacked", Vector_SetUnpacked},
 {"IsEqualTol", Vector_IsEqualTol},
   {"Normalize", Vector_Normalize},
   {"Rotate", Vector_Rotate},

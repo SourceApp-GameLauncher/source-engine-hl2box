@@ -11,6 +11,7 @@
 #include "lPanel.h"
 #include "vgui/IInput.h"
 #include "vgui/IPanel.h"
+#include "vgui/ISurface.h"
 #include "vgui_controls/Panel.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -168,10 +169,16 @@ static int lua_vgui_FocusedHasParent (lua_State *L) {
   return 1;
 }
 
+static int lua_vgui_CursorVisible (lua_State *L) {
+  lua_pushboolean(L, vgui::surface() && vgui::surface()->IsCursorVisible());
+  return 1;
+}
+
 static const luaL_Reg vgui_funcs[] = {
   {"Create", lua_vgui_Create},
   {"GetAll", lua_vgui_GetAll},
   {"FocusedHasParent", lua_vgui_FocusedHasParent},
+  {"CursorVisible", lua_vgui_CursorVisible},
   {NULL, NULL}
 };
 

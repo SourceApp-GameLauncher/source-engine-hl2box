@@ -354,7 +354,7 @@ static int HL2SB_IncludeFile (lua_State *L, bool execute) {
     }
   }
   if (!found) {
-    const char *roots[] = { "lua/%s", "lua/includes/%s", "%s" };
+    const char *roots[] = { "lua/%s", "lua/includes/%s", "gamemodes/%s", "%s" };
     for (int i = 0; i < ARRAYSIZE(roots); ++i) {
       char candidate[MAX_PATH];
       Q_snprintf(candidate, sizeof(candidate), roots[i], name);
@@ -384,11 +384,29 @@ static int luasrc_CompileFile( lua_State *L ) {
   return HL2SB_IncludeFile( L, false );
 }
 
+static int luasrc_GetGamemode( lua_State *state ) {
+  lua_getglobal( state, "_GAMEMODE" );
+  return 1;
+}
+
+static int luasrc_DeriveGamemode( lua_State *state ) {
+  const char *name = luaL_checkstring( state, 1 );
+  lua_getglobal( state, "GM" );
+  if ( lua_istable( state, -1 ) ) {
+    lua_pushstring( state, name );
+    lua_setfield( state, -2, "__base" );
+  }
+  lua_pop( state, 1 );
+  return 0;
+}
+
 static const luaL_Reg base_funcs[] = {
   {"print", luasrc_print},
   {"type", luasrc_type},
   {"include", luasrc_include},
   {"CompileFile", luasrc_CompileFile},
+  {"GetGamemode", luasrc_GetGamemode},
+  {"DeriveGamemode", luasrc_DeriveGamemode},
   {NULL, NULL}
 };
 
@@ -599,6 +617,11 @@ static void base_open (lua_State *L) {
   /* set global _R */
   lua_pushvalue(L, LUA_REGISTRYINDEX);
   lua_setglobal(L, "_R");
+  // Modules capture this library before a gamemode has been selected.
+  lua_newtable( L );
+  lua_pushcfunction( L, luasrc_GetGamemode );
+  lua_setfield( L, -2, "GetGamemode" );
+  lua_setglobal( L, "gmod" );
   /* open lib into global table */
   luaL_register(L, "_G", base_funcs);
   lua_pop(L, 1);
@@ -755,6 +778,9 @@ void luasrc_init_gameui (void) {
   luaopen_Localizations(LGameUI);
   luaopen_Panel(LGameUI);
   luaopen_surface(LGameUI);
+  // The menu realm uses Material() through util.lua and the GMod crosshair
+  // editor. Open the real IMaterial constructor before loading those files.
+  luaopen_IMaterial(LGameUI);
   luaopen_vgui(LGameUI);
 
   /*
@@ -855,6 +881,12 @@ void luasrc_init_gameui (void) {
       luasrc_LuaWarnMsgF("HL2SB: main menu module failed to load: %s\n", menuFiles[i]);
   }
 
+  // Surface aliases such as SetDrawColor and DrawRect are shared by GMod's
+  // menu Lua and client Lua. The menu realm has no CLIENT flag, so load the
+  // compatibility layer explicitly after its raw surface library exists.
+  if (luasrc_dofile(LGameUI, LUA_PATH_EXTENSIONS "/gmod_surface.lua") != 0)
+    luasrc_LuaWarnMsgF("HL2SB: menu realm: surface compatibility failed to load\n");
+
   // ---------------------------------------------------------------------------
   // HL2SB: the GMod-style derma stack in the menu realm, so main-menu dialogs
   // are real DFrames (the Addons dialog is built on DFrame/DScrollPanel/
@@ -890,6 +922,19 @@ void luasrc_init_gameui (void) {
   // module has to exist in whatever realm runs such a file.
   if (luasrc_dofile(LGameUI, LUA_ROOT "/includes/modules/baseclass.lua") != 0)
     luasrc_LuaWarnMsgF("HL2SB: menu realm: baseclass module failed to load\n");
+
+  // The GMod menu realm uses the same scripted panel registry as the client
+  // realm. Load it before Derma so menu-only controls such as DNumSlider and
+  // DColorMixer can inherit from the native Panel classes.
+  if (luasrc_dofile(LGameUI, LUA_PATH_EXTENSIONS "/client/panel/scriptedpanels.lua") != 0)
+    luasrc_LuaWarnMsgF("HL2SB: menu realm: scripted panel registry failed to load\n");
+
+  if (luasrc_dofile(LGameUI, LUA_ROOT "/derma/init.lua") != 0)
+    luasrc_LuaWarnMsgF("HL2SB: menu realm: Derma initialization failed\n");
+  if (luasrc_dofile(LGameUI, LUA_ROOT "/includes/vgui_base.lua") != 0)
+    luasrc_LuaWarnMsgF("HL2SB: menu realm: VGUI control library failed to load\n");
+  if (luasrc_dofile(LGameUI, LUA_ROOT "/menu/crosshair_setup.lua") != 0)
+    luasrc_LuaWarnMsgF("HL2SB: menu realm: crosshair setup failed to load\n");
 
   // NOTE: the full derma stack (lua/derma + lua/includes/vgui_base.lua) is NOT
   // loaded here any more.  It registered nothing in this realm -- every control
@@ -2688,6 +2733,10 @@ LUA_API int luasrc_pcall (lua_State *L, int nargs, int nresults, int errfunc) {
     lua_remove(L, errfunc);
 
   if (iError != 0) {
+#ifdef CLIENT_DLL
+    extern void HL2SB_AbortLuaMesh();
+    HL2SB_AbortLuaMesh();
+#endif
     luasrc_LuaErrorMsg( lua_tostring(L, -1) );
     lua_pop(L, 1);
     /* HL2SB (2026-10-04): leave ONE nil behind when results were requested.
@@ -3407,6 +3456,17 @@ static void luasrc_LoadOneEntity (const char *filename, const char *className)
 	lua_setglobal( L, "ENT" );
 }
 
+static void luasrc_ClassScriptRoot( const char *path, const char *kind,
+                                  char *root, int size )
+{
+  const char *prefix = path ? path : "";
+  const int length = Q_strlen( prefix );
+  const bool canonical = length >= 9 &&
+    !Q_strnicmp( prefix, "gamemodes/", 10 ) &&
+    !Q_stricmp( prefix + length - 9, "entities/" );
+  Q_snprintf( root, size, "%s%s%s", prefix, canonical ? "" : "lua/", kind );
+}
+
 void luasrc_LoadEntities (const char *path)
 {
 	FileFindHandle_t fh;
@@ -3418,12 +3478,14 @@ void luasrc_LoadEntities (const char *path)
 
 	luasrc_EnsureGamemodeStub( L );
 
+	char scriptRoot[ MAX_PATH ];
+	luasrc_ClassScriptRoot( path, "entities", scriptRoot, sizeof( scriptRoot ) );
 	char root[ MAX_PATH ] = { 0 };
 
 	char filename[ MAX_PATH ] = { 0 };
 	char className[ 255 ] = { 0 };
 
-	Q_snprintf( root, sizeof( root ), "%s" LUA_PATH_ENTITIES "/*", path );
+	Q_snprintf( root, sizeof( root ), "%s/*", scriptRoot );
 
 	char const *fn = g_pFullFileSystem->FindFirstEx( root, "MOD", &fh );
 	while ( fn )
@@ -3435,15 +3497,15 @@ void luasrc_LoadEntities (const char *path)
 			if ( g_pFullFileSystem->FindIsDirectory( fh ) )
 			{
 #ifdef CLIENT_DLL
-				Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_ENTITIES "/%s/cl_init.lua", path, className );
+				Q_snprintf( filename, sizeof( filename ), "%s/%s/cl_init.lua", scriptRoot, className );
 #else
-				Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_ENTITIES "/%s/init.lua", path, className );
+				Q_snprintf( filename, sizeof( filename ), "%s/%s/init.lua", scriptRoot, className );
 #endif
 				// GMod compatibility: scripted entities that ship only
 				// shared.lua must still load.
 				if ( !filesystem->FileExists( filename, "MOD" ) )
 				{
-					Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_ENTITIES "/%s/shared.lua", path, className );
+					Q_snprintf( filename, sizeof( filename ), "%s/%s/shared.lua", scriptRoot, className );
 				}
 				luasrc_LoadOneEntity( filename, className );
 			}
@@ -3451,7 +3513,7 @@ void luasrc_LoadEntities (const char *path)
 			{
 				// GMod: "lua/entities/<name>.lua" is a complete scripted entity,
 				// registered under the file's basename.
-				Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_ENTITIES "/%s", path, fn );
+				Q_snprintf( filename, sizeof( filename ), "%s/%s", scriptRoot, fn );
 				luasrc_LoadOneEntity( filename, className );
 			}
 		}
@@ -3628,12 +3690,14 @@ void luasrc_LoadWeapons (const char *path)
 
 	luasrc_EnsureGamemodeStub( L );
 
+	char scriptRoot[ MAX_PATH ];
+	luasrc_ClassScriptRoot( path, "weapons", scriptRoot, sizeof( scriptRoot ) );
 	char root[ MAX_PATH ] = { 0 };
 
 	char filename[ MAX_PATH ] = { 0 };
 	char className[ MAX_WEAPON_STRING ] = { 0 };
 
-	Q_snprintf( root, sizeof( root ), "%s" LUA_PATH_WEAPONS "/*", path );
+	Q_snprintf( root, sizeof( root ), "%s/*", scriptRoot );
 
 	char const *fn = g_pFullFileSystem->FindFirstEx( root, "MOD", &fh );
 	while ( fn )
@@ -3645,15 +3709,15 @@ void luasrc_LoadWeapons (const char *path)
 			if ( g_pFullFileSystem->FindIsDirectory( fh ) )
 			{
 #ifdef CLIENT_DLL
-				Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_WEAPONS "/%s/cl_init.lua", path, className );
+				Q_snprintf( filename, sizeof( filename ), "%s/%s/cl_init.lua", scriptRoot, className );
 #else
-				Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_WEAPONS "/%s/init.lua", path, className );
+				Q_snprintf( filename, sizeof( filename ), "%s/%s/init.lua", scriptRoot, className );
 #endif
 				// GMod compatibility: SWEPs that ship only shared.lua (no
 				// init.lua / cl_init.lua) must still load.
 				if ( !filesystem->FileExists( filename, "MOD" ) )
 				{
-					Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_WEAPONS "/%s/shared.lua", path, className );
+					Q_snprintf( filename, sizeof( filename ), "%s/%s/shared.lua", scriptRoot, className );
 				}
 				luasrc_LoadOneWeapon( filename, className );
 			}
@@ -3662,7 +3726,7 @@ void luasrc_LoadWeapons (const char *path)
 				// GMod: "lua/weapons/<name>.lua" is a complete SWEP, registered
 				// under the file's basename.  HL2SB used to skip these entirely,
 				// so a flat SWEP did nothing at all and said nothing about it.
-				Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_WEAPONS "/%s", path, fn );
+				Q_snprintf( filename, sizeof( filename ), "%s/%s", scriptRoot, fn );
 				luasrc_LoadOneWeapon( filename, className );
 			}
 		}
@@ -3699,12 +3763,14 @@ void luasrc_LoadEffects (const char *path)
 		path = "";
 	}
 
+	char scriptRoot[ MAX_PATH ];
+	luasrc_ClassScriptRoot( path, "effects", scriptRoot, sizeof( scriptRoot ) );
 	char root[ MAX_PATH ] = { 0 };
 	char filename[ MAX_PATH ] = { 0 };
 	char fullpath[ MAX_PATH ] = { 0 };
 	char className[ 255 ] = { 0 };
 
-	Q_snprintf( root, sizeof( root ), "%s" LUA_PATH_EFFECTS "/*", path );
+	Q_snprintf( root, sizeof( root ), "%s/*", scriptRoot );
 
 	char const *fn = g_pFullFileSystem->FindFirstEx( root, "MOD", &fh );
 	while ( fn )
@@ -3725,7 +3791,7 @@ void luasrc_LoadEffects (const char *path)
 			// did, directories were still skipped, and nuke_effect_ground stayed
 			// unregistered).  Only requirements: not hidden, and init.lua exists.
 			bool bIsDirEffect = false;
-			Q_snprintf( szDirFile, sizeof( szDirFile ), "%s" LUA_PATH_EFFECTS "/%s/init.lua", path, fn );
+			Q_snprintf( szDirFile, sizeof( szDirFile ), "%s/%s/init.lua", scriptRoot, fn );
 			if ( filesystem->FileExists( szDirFile, "MOD" ) )
 				bIsDirEffect = true;
 
@@ -3787,7 +3853,7 @@ void luasrc_LoadEffects (const char *path)
 		if ( fn[0] != '.' && !g_pFullFileSystem->FindIsDirectory( fh )
 		     && luasrc_IsFlatLuaFile( fn, className, sizeof( className ) ) )
 		{
-			Q_snprintf( filename, sizeof( filename ), "%s" LUA_PATH_EFFECTS "/%s", path, fn );
+			Q_snprintf( filename, sizeof( filename ), "%s/%s", scriptRoot, fn );
 			if ( filesystem->FileExists( filename, "MOD" ) )
 			{
 				filesystem->RelativePathToFullPath( filename, "MOD", fullpath, sizeof( fullpath ) );
@@ -3875,6 +3941,10 @@ bool luasrc_LoadGamemode (const char *gamemode) {
   Q_snprintf( gamemodepath, sizeof( gamemodepath ), "gamemodes/%s", gamemode );
   lua_pushstring(L, gamemodepath);
   lua_settable(L, -3);
+  lua_pushstring( L, gamemodepath );
+  lua_setfield( L, -2, "Folder" );
+  lua_pushstring( L, gamemode );
+  lua_setfield( L, -2, "FolderName" );
   lua_setglobal(L, "GM");
   char filename[MAX_PATH];
   char fullpath[MAX_PATH];
@@ -3887,15 +3957,8 @@ bool luasrc_LoadGamemode (const char *gamemode) {
   {
     filesystem->RelativePathToFullPath( filename, "MOD", fullpath, sizeof( fullpath ) );
 	if (luasrc_dofile(L, fullpath) == 0) {
-	#ifndef CLIENT_DLL
-	  if ( !Q_stricmp( gamemode, "sandbox" ) )
-	  {
-	    extern void HL2SB_InstallPhysgunGamemodeEffects( lua_State *state );
-	    HL2SB_InstallPhysgunGamemodeEffects( L );
-	  }
-	#endif
 	  lua_getglobal(L, "gamemode");
-	  lua_getfield(L, -1, "register");
+	  lua_getfield(L, -1, "Register");
 	  lua_remove(L, -2);
 	  lua_getglobal(L, "GM");
 	  lua_pushstring(L, gamemode);
@@ -3929,7 +3992,7 @@ bool luasrc_LoadGamemode (const char *gamemode) {
 bool luasrc_SetGamemode (const char *gamemode) {
   lua_getglobal(L, "gamemode");
   if (lua_istable(L, -1)) {
-    lua_getfield(L, -1, "get");
+    lua_getfield(L, -1, "Get");
 	if (lua_isfunction(L, -1)) {
 	  lua_remove(L, -2);
 	  lua_pushstring(L, gamemode);
@@ -3960,6 +4023,19 @@ bool luasrc_SetGamemode (const char *gamemode) {
 	  luasrc_LoadWeapons( loadPath );
 	  luasrc_LoadEntities( loadPath );
 	  luasrc_LoadEffects( loadPath );
+
+	  char canonicalPath[MAX_PATH];
+	  Q_snprintf( canonicalPath, sizeof( canonicalPath ), "gamemodes/%s/entities/", LUA_BASE_GAMEMODE );
+	  luasrc_LoadWeapons( canonicalPath );
+	  luasrc_LoadEntities( canonicalPath );
+	  luasrc_LoadEffects( canonicalPath );
+	  if ( Q_stricmp( gamemode, LUA_BASE_GAMEMODE ) != 0 )
+	  {
+	    Q_snprintf( canonicalPath, sizeof( canonicalPath ), "gamemodes/%s/entities/", gamemode );
+	    luasrc_LoadWeapons( canonicalPath );
+	    luasrc_LoadEntities( canonicalPath );
+	    luasrc_LoadEffects( canonicalPath );
+	  }
 
 	  // HL2SB: the baseclass registry is built at the END of the loader sequence
 	  // (after weapons/entities/effects), exactly like the reference -- its own

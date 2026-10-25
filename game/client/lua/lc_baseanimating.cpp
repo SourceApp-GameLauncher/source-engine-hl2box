@@ -10,6 +10,7 @@
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lc_baseanimating.h"
+#include "lua/hl2sb_bonemanipulator.h"
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
 #include "basescripted.h"	// HL2SB (2026-10-04): pre-bind write diagnostic reads C_BaseScripted::GetScriptedClassname
@@ -148,91 +149,6 @@ void HL2SB_RunEntityCallbacks( C_BaseAnimating *pEntity, const char *pszName )
 	}
 
 	s_bInEntityCallbacks = false;
-}
-
-//-----------------------------------------------------------------------------
-// Position and angle offsets participate in the local pose before IK and
-// parent transforms. Scale is applied after BuildBonePositions callbacks.
-//-----------------------------------------------------------------------------
-struct HL2SB_BoneManip_t
-{
-	EHANDLE hEntity;
-	int nBone;
-	Vector vecPos;
-	Vector vecScale;
-	QAngle angAngles;
-	bool bHasPos;
-	bool bHasScale;
-	bool bHasAngles;
-};
-
-static CUtlVector< HL2SB_BoneManip_t > s_BoneManips;
-
-static HL2SB_BoneManip_t *HL2SB_FindBoneManip( C_BaseAnimating *pEntity, int nBone, bool bCreate )
-{
-	for ( int i = 0; i < s_BoneManips.Count(); ++i )
-	{
-		if ( s_BoneManips[i].hEntity.Get() == pEntity && s_BoneManips[i].nBone == nBone )
-			return &s_BoneManips[i];
-	}
-	if ( !bCreate )
-		return NULL;
-	HL2SB_BoneManip_t &manip = s_BoneManips[s_BoneManips.AddToTail()];
-	manip.hEntity = pEntity;
-	manip.nBone = nBone;
-	manip.vecPos = vec3_origin;
-	manip.vecScale = vec3_origin;
-	manip.angAngles = vec3_angle;
-	manip.bHasPos = false;
-	manip.bHasScale = false;
-	manip.bHasAngles = false;
-	return &manip;
-}
-
-void HL2SB_ApplyBonePoseManipulations( C_BaseAnimating *pEntity, CStudioHdr *pHdr,
-	Vector *pos, Quaternion *q )
-{
-	if ( pEntity == NULL || pHdr == NULL )
-		return;
-	for ( int i = s_BoneManips.Count() - 1; i >= 0; --i )
-	{
-		HL2SB_BoneManip_t &manip = s_BoneManips[i];
-		if ( manip.hEntity.Get() == NULL )
-		{
-			s_BoneManips.FastRemove( i );
-			continue;
-		}
-		if ( manip.hEntity.Get() != pEntity || manip.nBone < 0 || manip.nBone >= pHdr->numbones() )
-			continue;
-		if ( manip.bHasPos )
-			pos[manip.nBone] += manip.vecPos;
-		if ( manip.bHasAngles )
-		{
-			Quaternion offset, result;
-			AngleQuaternion( manip.angAngles, offset );
-			QuaternionMult( q[manip.nBone], offset, result );
-			q[manip.nBone] = result;
-		}
-	}
-}
-
-void HL2SB_ApplyBoneScaleManipulations( C_BaseAnimating *pEntity, CStudioHdr *pHdr, int boneMask )
-{
-	if ( pEntity == NULL || pHdr == NULL )
-		return;
-	for ( int i = 0; i < s_BoneManips.Count(); ++i )
-	{
-		const HL2SB_BoneManip_t &manip = s_BoneManips[i];
-		if ( manip.hEntity.Get() != pEntity || !manip.bHasScale || manip.nBone < 0 ||
-			manip.nBone >= pHdr->numbones() || !( pHdr->boneFlags( manip.nBone ) & boneMask ) )
-			continue;
-		matrix3x4_t &bone = pEntity->GetBoneForWrite( manip.nBone );
-		for ( int row = 0; row < 3; ++row )
-		{
-			for ( int column = 0; column < 3; ++column )
-				bone[row][column] *= manip.vecScale[column];
-		}
-	}
 }
 
 //-----------------------------------------------------------------------------
@@ -817,20 +733,14 @@ static int CBaseAnimating_GetCallbacks (lua_State *L) {
 }
 
 static int CBaseAnimating_ManipulateBoneScale (lua_State *L) {
-  // Store the per-bone scale for the end of the current or next build.
-  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
-  if (pEntity == NULL)
-    return 0;
-  int nBone = luaL_checkint(L, 2);
-  Vector scale = luaL_checkvector(L, 3);
-  if ( scale.LengthSqr() > 512.0f * 512.0f )
-    scale *= 512.0f / scale.Length();
-
-  HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, nBone, true );
-  pManip->vecScale = scale;
-  pManip->bHasScale = true;
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  if (!entity) return 0;
+  const int bone = luaL_checkint(L, 2);
+  const Vector value = luaL_checkvector(L, 3);
+  HL2SB_SetBoneScale(entity, bone, value, lua_isnoneornil(L, 4) || lua_toboolean(L, 4));
   return 0;
 }
+
 
 static int CBaseAnimating_FindBodygroupByName (lua_State *L) {
   lua_pushinteger(L, luaL_checkanimating(L, 1)->FindBodygroupByName(luaL_checkstring(L, 2)));
@@ -1189,89 +1099,48 @@ static int CBaseAnimating_GetPoseParameterName (lua_State *L) {
 
 // Store the bounded local offset. Client writes do not start a bone build.
 static int CBaseAnimating_ManipulateBonePosition (lua_State *L) {
-  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
-  if (pEntity == NULL)
-    return 0;
-  int nBone = luaL_checkint(L, 2);
-  Vector vecPos = luaL_checkvector(L, 3);
-  if ( vecPos.LengthSqr() > 128.0f * 128.0f )
-    vecPos *= 128.0f / vecPos.Length();
-
-  HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, nBone, true );
-  pManip->vecPos = vecPos;
-  pManip->bHasPos = true;
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  if (!entity) return 0;
+  const int bone = luaL_checkint(L, 2);
+  const Vector value = luaL_checkvector(L, 3);
+  HL2SB_SetBonePositionOffset(entity, bone, value, lua_isnoneornil(L, 4) || lua_toboolean(L, 4));
   return 0;
 }
 
-// HL2SB GMod compat (2026-10-03): Entity:ManipulateBoneAngles( bone, ang ).
-// Same per-(entity, bone) storage as Position/Scale; the portalgun's viewmodel
-// bone-mod base writes angles, scales and offsets together every frame and
-// reads all three back through GetManipulateBone*.
-//
-// HL2SB (2026-10-16) GMod compat: tolerant self for the whole manipulation
-// family, proven against GMod win64 client.dll --
-//   ManipulateBoneAngles 0x18011EF50 / ManipulateBonePosition 0x18011F2E0 /
-//   ManipulateBoneScale 0x18011F310: non-animating self -> no-op, return 0;
-//   GetManipulateBoneAngles 0x180118410 -> zero angle;
-//   GetManipulateBoneScale 0x1801188C0 -> (1,1,1);
-//   GetManipulateBonePosition 0x180118730 -> zero vector.
-// These are reached through the Entity metatable chain (gmod_globals.lua
-// installs __index on the CBaseEntity metatable), so no raise may escape on a
-// non-animating self.
+
 static int CBaseAnimating_ManipulateBoneAngles (lua_State *L) {
-  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
-  if (pEntity == NULL)
-    return 0;
-  int nBone = luaL_checkint(L, 2);
-  const QAngle &angAngles = luaL_checkangle(L, 3);
-
-  HL2SB_BoneManip_t *pManip = HL2SB_FindBoneManip( pEntity, nBone, true );
-  pManip->angAngles = angAngles;
-  pManip->bHasAngles = true;
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  if (!entity) return 0;
+  const int bone = luaL_checkint(L, 2);
+  const QAngle value = luaL_checkangle(L, 3);
+  HL2SB_SetBoneAngleOffset(entity, bone, value, lua_isnoneornil(L, 4) || lua_toboolean(L, 4));
   return 0;
 }
 
-// GetManipulateBone{Scale,Angles,Position}: the stored manipulated values.
-// Unmanipulated bones answer the identity (1 1 1 / 0 0 0 / 0 0 0) - the
-// viewmodel bone-mod base compares these against what it is about to write,
-// so the identity defaults are what keeps it from re-writing every frame.
-// HL2SB (2026-10-16): a non-animating self also answers the same identity
-// (GMod win64 0x1801188C0 / 0x180118410 / 0x180118730).
+
 static int CBaseAnimating_GetManipulateBoneScale (lua_State *L) {
-  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
-  HL2SB_BoneManip_t *pManip = ( pEntity != NULL ) ? HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false ) : NULL;
-  if ( pManip == NULL || !pManip->bHasScale )
-  {
-    lua_pushvector( L, Vector( 1.0f, 1.0f, 1.0f ) );
-    return 1;
-  }
-  lua_pushvector( L, pManip->vecScale );
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  const int bone = entity ? luaL_checkint(L, 2) : -1;
+  lua_pushvector(L, HL2SB_GetBoneScale(entity, bone));
   return 1;
 }
+
 
 static int CBaseAnimating_GetManipulateBoneAngles (lua_State *L) {
-  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
-  HL2SB_BoneManip_t *pManip = ( pEntity != NULL ) ? HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false ) : NULL;
-  if ( pManip == NULL || !pManip->bHasAngles )
-  {
-    lua_pushangle( L, QAngle( 0.0f, 0.0f, 0.0f ) );
-    return 1;
-  }
-  lua_pushangle( L, pManip->angAngles );
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  const int bone = entity ? luaL_checkint(L, 2) : -1;
+  lua_pushangle(L, HL2SB_GetBoneAngleOffset(entity, bone));
   return 1;
 }
 
+
 static int CBaseAnimating_GetManipulateBonePosition (lua_State *L) {
-  C_BaseAnimating *pEntity = lua_toanimating(L, 1);
-  HL2SB_BoneManip_t *pManip = ( pEntity != NULL ) ? HL2SB_FindBoneManip( pEntity, luaL_checkint(L, 2), false ) : NULL;
-  if ( pManip == NULL || !pManip->bHasPos )
-  {
-    lua_pushvector( L, Vector( 0.0f, 0.0f, 0.0f ) );
-    return 1;
-  }
-  lua_pushvector( L, pManip->vecPos );
+  CBaseAnimating *entity = lua_toanimating(L, 1);
+  const int bone = entity ? luaL_checkint(L, 2) : -1;
+  lua_pushvector(L, HL2SB_GetBonePositionOffset(entity, bone));
   return 1;
 }
+
 
 // Entity:GetBoneParent( bone ) moved to lua_bindings/lbaseanimating_shared.cpp
 // (2026-10-16): the bone-manipulation widget calls it from BOTH realms, so a
@@ -1410,6 +1279,17 @@ static int CBaseAnimating_GetRenderOrigin (lua_State *L) {
 
 static int CBaseAnimating_GetSequence (lua_State *L) {
   lua_pushinteger(L, luaL_checkanimating(L, 1)->GetSequence());
+  return 1;
+}
+
+static int CBaseAnimating_GetSequenceCount( lua_State *L ) {
+  C_BaseAnimating *pAnimating = luaL_checkentity( L, 1 )->GetBaseAnimating();
+  if ( pAnimating == NULL )
+    return 0;
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL )
+    return 0;
+  lua_pushinteger( L, pStudioHdr->GetNumSeq() );
   return 1;
 }
 
@@ -2171,6 +2051,25 @@ static int CBaseAnimating___tostring (lua_State *L) {
 }
 
 
+extern bool HL2SB_HasBoneManipulations(CBaseEntity *entity);
+extern int HL2SB_GetBoneJiggle(CBaseEntity *entity, int bone);
+extern void HL2SB_SetBoneJiggle(CBaseEntity *entity, int bone, int value);
+
+static int CBaseAnimating_HasBoneManipulations(lua_State *L) {
+  lua_pushboolean(L, HL2SB_HasBoneManipulations(luaL_checkentity(L, 1)));
+  return 1;
+}
+
+static int CBaseAnimating_GetManipulateBoneJiggle(lua_State *L) {
+  lua_pushinteger(L, HL2SB_GetBoneJiggle(luaL_checkentity(L, 1), (int)luaL_checknumber(L, 2)));
+  return 1;
+}
+
+static int CBaseAnimating_ManipulateBoneJiggle(lua_State *L) {
+  HL2SB_SetBoneJiggle(luaL_checkentity(L, 1), (int)luaL_checknumber(L, 2), (int)luaL_checknumber(L, 3));
+  return 0;
+}
+
 static const luaL_Reg CBaseAnimatingmeta[] = {
   {"AddCallback", CBaseAnimating_AddCallback},
   {"AddEntity", CBaseAnimating_AddEntity},
@@ -2204,6 +2103,9 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetManipulateBoneScale", CBaseAnimating_GetManipulateBoneScale},
   {"GetManipulateBoneAngles", CBaseAnimating_GetManipulateBoneAngles},
   {"GetManipulateBonePosition", CBaseAnimating_GetManipulateBonePosition},
+  {"HasBoneManipulations", CBaseAnimating_HasBoneManipulations},
+  {"GetManipulateBoneJiggle", CBaseAnimating_GetManipulateBoneJiggle},
+  {"ManipulateBoneJiggle", CBaseAnimating_ManipulateBoneJiggle},
   {"GetCallbacks", CBaseAnimating_GetCallbacks},
   {"GetChildBones", CBaseAnimating_GetChildBones},
   {"GetFlexNum", CBaseAnimating_GetFlexNum},
@@ -2254,6 +2156,7 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetRenderBounds", CBaseAnimating_GetRenderBounds},
   {"GetRenderOrigin", CBaseAnimating_GetRenderOrigin},
   {"GetSequence", CBaseAnimating_GetSequence},
+  {"GetSequenceCount", CBaseAnimating_GetSequenceCount},
   {"GetSequenceActivity", CBaseAnimating_GetSequenceActivity},
   {"GetSequenceActivityName", CBaseAnimating_GetSequenceActivityName},
   {"GetSequenceGroundSpeed", CBaseAnimating_GetSequenceGroundSpeed},

@@ -1502,6 +1502,8 @@ bool CBaseCombatCharacter::BecomeRagdollBoogie( CBaseEntity *pKiller, const Vect
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+extern bool HL2SB_NPCShouldKeepCorpse( const CBaseEntity *entity );
+
 bool CBaseCombatCharacter::BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector )
 {
 	if ( (info.GetDamageType() & DMG_VEHICLE) && !g_pGameRules->IsMultiplayer() )
@@ -1568,6 +1570,17 @@ bool CBaseCombatCharacter::BecomeRagdoll( const CTakeDamageInfo &info, const Vec
 	bMegaPhyscannonActive = HL2MPRules()->MegaPhyscannonActive();
 #endif
 #endif // !HL2MP
+
+	// Explicitly retained corpses use normal collisions and stay out of the
+	// temporary-ragdoll retirement queue.
+	if ( HL2SB_NPCShouldKeepCorpse( this ) )
+	{
+		if ( !CanBecomeServerRagdoll() )
+			return false;
+		CreateServerRagdoll( this, m_nForceBone, newinfo, COLLISION_GROUP_NONE, false );
+		RemoveDeferred();
+		return true;
+	}
 
 	// Mega physgun requires everything to be a server-side ragdoll
 	if ( m_bForceServerRagdoll == true || ( ( bMegaPhyscannonActive == true ) && !IsPlayer() && Classify() != CLASS_PLAYER_ALLY_VITAL && Classify() != CLASS_PLAYER_ALLY ) )
@@ -3035,6 +3048,10 @@ CBaseEntity *CBaseCombatCharacter::Weapon_FindUsable( const Vector &range )
 //-----------------------------------------------------------------------------
 int CBaseCombatCharacter::GiveAmmo( int iCount, int iAmmoIndex, bool bSuppressSound)
 {
+#if defined(LUA_SDK)
+    extern bool HL2SB_IsGiveAmmoSuppressed(CBaseCombatCharacter *recipient);
+    if (HL2SB_IsGiveAmmoSuppressed(this)) return 0;
+#endif
 	if (iCount <= 0)
 		return 0;
 

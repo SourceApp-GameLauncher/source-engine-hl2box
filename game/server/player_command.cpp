@@ -49,6 +49,12 @@ void CPlayerMove::StartCommand( CBasePlayer *player, CUserCmd *cmd )
 #endif
 
 	player->m_pCurrentCommand = cmd;
+#if defined( LUA_SDK )
+	// Input hooks run for every command, including players whose PreThink
+	// implementation does not call the base player.
+	extern void HL2SB_LuaStartCommand( CBasePlayer *, CUserCmd * );
+	HL2SB_LuaStartCommand( player, cmd );
+#endif
 	// HL2SB (sbrust): accumulate this command's mouse wheel for the tick's
 	// consumers (the vehicle third person camera state update runs in
 	// ItemPostFrame, after this command's scope ends).  GMod's GM:VehicleMove

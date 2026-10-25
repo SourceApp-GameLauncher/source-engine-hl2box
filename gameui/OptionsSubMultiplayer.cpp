@@ -1246,6 +1246,13 @@ void COptionsSubMultiplayer::OnCommand( const char *command )
 		m_hImportSprayDialog->Activate();
 	}
 
+	else if ( !stricmp( command, "crosshair_setup" ) )
+	{
+		// GameUI and the client use separate Lua states. Forward the command to
+		// the client realm where the GMod crosshair editor is registered.
+		engine->ClientCmd_Unrestricted( "crosshair_setup" );
+	}
+
 	else if ( !stricmp( command, "ResetStats" ) )
 	{
 		QueryBox *box = new QueryBox("#GameUI_ConfirmResetStatsTitle", "#GameUI_ConfirmResetStatsText", this);
