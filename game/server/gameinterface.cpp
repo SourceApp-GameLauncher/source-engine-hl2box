@@ -1023,10 +1023,7 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	// the same function; the .hl2sb_gma marker makes the second call cheap.
 	HL2SB_MountGMAAddons();
 
-	// HL2SB: see the client call site -- extensions/ is scanned before modules/,
-	// and extensions/util/worldpicker.lua:40 indexes `hook` at load time, so the
-	// hook module has to exist first.  The modules pass skips it again.
-	luasrc_dofile_includes( L, "modules/hook.lua" );
+	// The native state bootstrap prepares type helpers and dispatch before extensions.
 
 	luasrc_dofolder( L, LUA_PATH_EXTENSIONS );
 	luasrc_dofolder( L, LUA_PATH_MODULES );

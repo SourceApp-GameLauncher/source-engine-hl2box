@@ -20,9 +20,8 @@
 //       extra = { speed, spread, delay, flags, framerate, material } -- all
 //       optional; material defaults to "sprites/lgtning.vmt", like GMod.
 //
-// effects.TracerSound stays a Lua shim in the game repo's effects.lua: the
-// engine already registers a "TracerSound" client effect callback
-// (fx_tracer.cpp) and the shim only re-frames it through util.Effect.
+// TracerSound uses the native near-miss distance and cooldown service.
+// Its optional fourth argument replaces the selected sound script.
 //
 // Everything plays through the client's own local effect systems -- the
 // tempents manager (c_te_bubbles.cpp / c_te_bubbletrail.cpp) and the view
@@ -161,7 +160,20 @@ static int leffects_BeamRingPoint( lua_State *L )
 	return 0;
 }
 
+extern void FX_TracerSound( const Vector &start, const Vector &end, int type, const char *soundOverride );
+
+static int leffects_TracerSound( lua_State *L )
+{
+    const Vector &start = luaL_checkvector( L, 1 );
+    const Vector &end = luaL_checkvector( L, 2 );
+    const int type = (int)luaL_optnumber( L, 3, 1 );
+    const char *soundOverride = luaL_optstring( L, 4, NULL );
+    FX_TracerSound( start, end, type, soundOverride );
+    return 0;
+}
+
 static const luaL_Reg leffects_funcs[] = {
+	{ "TracerSound", leffects_TracerSound },
 	{ "Bubbles", leffects_Bubbles },
 	{ "BubbleTrail", leffects_BubbleTrail },
 	{ "BeamRingPoint", leffects_BeamRingPoint },

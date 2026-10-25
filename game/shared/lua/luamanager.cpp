@@ -766,6 +766,7 @@ void luasrc_init_gameui (void) {
   luasrc_setmodulepaths(LGameUI);
 
   luaopen_ConCommand(LGameUI);
+  luaopen_ConVar(LGameUI);
   luaopen_dbg(LGameUI);
   luaopen_engine(LGameUI);
   luaopen_enginevgui(LGameUI);
@@ -779,8 +780,9 @@ void luasrc_init_gameui (void) {
   luaopen_Panel(LGameUI);
   luaopen_surface(LGameUI);
   // The menu realm uses Material() through util.lua and the GMod crosshair
-  // editor. Open the real IMaterial constructor before loading those files.
+  // editor. ITexture installs the constructors and extends the material metatable.
   luaopen_IMaterial(LGameUI);
+  luaopen_ITexture(LGameUI);
   luaopen_vgui(LGameUI);
 
   /*
@@ -858,6 +860,10 @@ void luasrc_init_gameui (void) {
   // reads the collector and copies error text through these globals.
   HL2SB_LuaRegisterErrorCollector(LGameUI);
 
+  luasrc_register_metatable_globals( LGameUI );
+  if ( luasrc_dofile( LGameUI, LUA_ROOT "/includes/util.lua" ) != 0 )
+    luasrc_LuaWarnMsgF( "HL2SB: menu type helpers failed to load\n" );
+
   static const char *const menuFiles[] = {
     LUA_PATH_EXTENSIONS "/table.lua",     // table.merge, used by vgui.register
     LUA_PATH_EXTENSIONS "/vgui.lua",      // vgui.register
@@ -879,6 +885,9 @@ void luasrc_init_gameui (void) {
     // luasrc_dofile already reports what went wrong.
     if (luasrc_dofile(LGameUI, menuFiles[i]) != 0)
       luasrc_LuaWarnMsgF("HL2SB: main menu module failed to load: %s\n", menuFiles[i]);
+    if ( Q_stristr( menuFiles[i], "/hook.lua" ) || Q_stristr( menuFiles[i], "/concommand.lua" ) )
+      if ( luasrc_dofile( LGameUI, LUA_ROOT "/hl2sb/compat/dispatch.lua" ) != 0 )
+        luasrc_LuaWarnMsgF( "HL2SB: menu dispatch aliases failed to load\n" );
   }
 
   // Surface aliases such as SetDrawColor and DrawRect are shared by GMod's
@@ -914,8 +923,7 @@ void luasrc_init_gameui (void) {
   // realm loads from init.lua and the menu realm never did -- derma calls
   // istable at load time and died with
   // "attempt to call a nil value (global 'istable')" (hl2sb_derma.lua:190).
-  if (luasrc_dofile(LGameUI, LUA_ROOT "/includes/util.lua") != 0)
-    luasrc_LuaWarnMsgF("HL2SB: menu realm: GMod type helpers (lua/includes/util.lua) failed to load\n");
+  // Type helpers were loaded before the dispatch modules captured them.
 
   // GMod's DEFINE_BASECLASS is a PREPROCESSOR keyword here (see the rewrite pass
   // below): it expands to `local BaseClass = baseclass.Get( "X" )`, so the
@@ -957,7 +965,7 @@ void luasrc_init_gameui (void) {
   static const char *const s_pMenuSelfCheck =
     "local need = { 'include', 'istable', 'isfunction', 'ispanel', 'AccessorFunc',"
     " 'ToPanel', 'IsValid', 'Msg', 'MsgN', 'Warning', 'ErrorNoHalt', 'surface',"
-    " 'vgui', 'file', 'baseclass' }\n"
+    " 'vgui', 'file', 'baseclass', 'ConVar', 'GetConVar_Internal', 'Material', 'C_Material' }\n"
     "local missing = {}\n"
     "for _, n in ipairs( need ) do\n"
     "  if ( _G[ n ] == nil ) then missing[ #missing + 1 ] = n end\n"
@@ -982,6 +990,8 @@ void luasrc_init_gameui (void) {
 
 void luasrc_shutdown_gameui (void) {
   ResetGameUIConCommandDatabase();
+  extern void ResetGameUIConVarDatabase( void );
+  ResetGameUIConVarDatabase();
 
   // HL2SB (sbrust): GMod 的 gmod13_close 生命周期 -- 状态销毁前逐个通知
   // 已加载的二进制模块（见 lua/src/hl2sb_binmod.c）。
@@ -1496,6 +1506,8 @@ static int HL2SB_LuaPanic( lua_State *pL )
 	return 0;
 }
 
+static int HL2SB_LoadBootstrapModule( lua_State *state, const char *filename, const char *name );
+
 void luasrc_init (void) {
   if (g_bLuaInitialized)
 	  return;
@@ -1539,6 +1551,11 @@ void luasrc_init (void) {
   luasrc_setmodulepaths(L);
 
   luasrc_openlibs(L);
+
+  // Original dispatch modules capture the type helpers when first loaded.
+  if ( HL2SB_LoadBootstrapModule( L, LUA_ROOT "/includes/util.lua", "util.lua" ) != 0 ||
+       HL2SB_LoadBootstrapModule( L, LUA_PATH_MODULES "/hook.lua", "hook.lua" ) != 0 )
+    luasrc_LuaWarnMsgF( "HL2SB: shared Lua prerequisites failed to load\n" );
 
 #ifdef CLIENT_DLL
   HL2SB_OpenWorkshopLibrary( L );
@@ -2433,6 +2450,88 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 extern void HL2SB_InstallNativeUserMessages( lua_State *L );
 #endif
 
+// Original modules execute once per Lua state and follow their owning realm.
+static bool HL2SB_ShouldLoadModule( lua_State *state, const char *name )
+{
+    // This module registers Derma controls and is required after Derma initialization.
+    if ( !Q_stricmp( name, "notification.lua" ) )
+        return false;
+    static const char *const clientOnly[] = {
+        "draw.lua", "markup.lua", "effects.lua", "halo.lua", "killicon.lua",
+        "spawnmenu.lua", "controlpanel.lua", "presets.lua", "menubar.lua",
+        "matproxy.lua", "notification.lua", "search.lua", NULL
+    };
+    lua_getglobal( state, "CLIENT" );
+    const bool client = lua_toboolean( state, -1 ) != 0;
+    lua_pop( state, 1 );
+    if ( !client )
+        for ( int i = 0; clientOnly[i]; ++i )
+            if ( !Q_stricmp( name, clientOnly[i] ) )
+                return false;
+    return true;
+}
+
+static int HL2SB_LoadBootstrapModule( lua_State *state, const char *filename, const char *name )
+{
+    const int top = lua_gettop( state );
+    char moduleName[128];
+    Q_FileBase( name, moduleName, sizeof( moduleName ) );
+    luaL_getsubtable( state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE );
+    lua_getfield( state, -1, moduleName );
+    bool loaded = false;
+    if ( lua_istable( state, -1 ) )
+    {
+        // Native libraries also publish tables before their Lua extension runs.
+        lua_getfield( state, -1, "_NAME" );
+        const char *publishedName = lua_tostring( state, -1 );
+        loaded = publishedName && !Q_strcmp( publishedName, moduleName );
+    }
+    luaL_getsubtable( state, LUA_REGISTRYINDEX, "HL2SB.BootstrapModules" );
+    lua_getfield( state, -1, moduleName );
+    loaded = loaded || lua_toboolean( state, -1 ) != 0;
+    lua_settop( state, top );
+    if ( loaded )
+        return 0;
+
+    const int status = luasrc_dofile( state, filename );
+    if ( status == 0 )
+    {
+        luaL_getsubtable( state, LUA_REGISTRYINDEX, "HL2SB.BootstrapModules" );
+        lua_pushboolean( state, true );
+        lua_setfield( state, -2, moduleName );
+        lua_pop( state, 1 );
+        // module() publishes its table. Plain global libraries need a cache entry too.
+        luaL_getsubtable( state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE );
+        lua_getfield( state, -1, moduleName );
+        if ( lua_isnil( state, -1 ) )
+        {
+            lua_pop( state, 1 );
+            lua_getglobal( state, moduleName );
+            if ( lua_isnil( state, -1 ) )
+            {
+                lua_pop( state, 1 );
+                lua_pushboolean( state, true );
+            }
+            lua_setfield( state, -2, moduleName );
+        }
+    }
+    else
+    {
+        // module() may publish its table before a chunk raises an error.
+        luaL_getsubtable( state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE );
+        lua_pushnil( state );
+        lua_setfield( state, -2, moduleName );
+    }
+    lua_settop( state, top );
+    if ( status == 0 && ( !Q_strcmp( moduleName, "hook" ) || !Q_strcmp( moduleName, "concommand" ) ) )
+    {
+        const int aliasStatus = luasrc_dofile( state, LUA_ROOT "/hl2sb/compat/dispatch.lua" );
+        lua_settop( state, top );
+        if ( aliasStatus != 0 ) return aliasStatus;
+    }
+    return status;
+}
+
 LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 {
 	FileFindHandle_t fh;
@@ -2448,6 +2547,9 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 	// stack leak that took the HUD down (see AGENTS.md 5.4.2).
 	int nFailed = 0;
 	const int nTop = lua_gettop( L );
+	const bool moduleFolder = Q_stristr( path, "/includes/modules" ) != NULL;
+    if ( moduleFolder && HL2SB_LoadBootstrapModule( L, LUA_ROOT "/includes/util.lua", "util.lua" ) != 0 )
+        ++nFailed;
 
 	//-----------------------------------------------------------------------------
 	// HL2SB: GMod's module dependency order.
@@ -2489,14 +2591,16 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 		char relative[ 512 ];
 		Q_snprintf( relative, sizeof( relative ), "%s/%s", path, s_pHL2SBFirst[ k ] );
 
-		if ( !LuaFileExists( relative ) )
+		if ( !LuaFileExists( relative ) ||
+		     ( moduleFolder && !HL2SB_ShouldLoadModule( L, s_pHL2SBFirst[k] ) ) )
 			continue;
 
 		char loadname[ 512 ];
 		filesystem->RelativePathToFullPath( relative, "MOD", loadname, sizeof( loadname ) );
 
 		luasrc_LuaInfoMsgF( "[Lua]   %s  (prerequisite)\n", relative );
-		if ( luasrc_dofile( L, loadname ) != 0 )
+		if ( ( moduleFolder ? HL2SB_LoadBootstrapModule( L, loadname, s_pHL2SBFirst[k] )
+		                    : luasrc_dofile( L, loadname ) ) != 0 )
 			++nFailed;
 		lua_settop( L, nTop );
 
@@ -2519,7 +2623,7 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 				}
 			}
 
-			if ( bAlreadyLoaded )
+			if ( bAlreadyLoaded || ( moduleFolder && !HL2SB_ShouldLoadModule( L, fn ) ) )
 			{
 				fn = g_pFullFileSystem->FindNext( fh );
 				continue;
@@ -2535,7 +2639,8 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 				filesystem->RelativePathToFullPath( relative, "MOD", loadname, sizeof( loadname ) );
 				// HL2SB: load diagnostics - "which Lua files actually ran".
 				luasrc_LuaInfoMsgF( "[Lua]   %s\n", relative );
-				if ( luasrc_dofile( L, loadname ) != 0 )
+				if ( ( moduleFolder ? HL2SB_LoadBootstrapModule( L, loadname, fn )
+				                    : luasrc_dofile( L, loadname ) ) != 0 )
 					++nFailed;
 				lua_settop( L, nTop );
 				++nLoaded;

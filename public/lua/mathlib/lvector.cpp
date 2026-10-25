@@ -138,10 +138,10 @@ static int Vector_AngleEx (lua_State *L) {
 static int Vector_ToTable (lua_State *L) {
   Vector vec = luaL_checkvector(L, 1);
 
-  lua_newtable(L);
-  lua_pushnumber(L, vec.x); lua_setfield(L, -2, "x");
-  lua_pushnumber(L, vec.y); lua_setfield(L, -2, "y");
-  lua_pushnumber(L, vec.z); lua_setfield(L, -2, "z");
+  lua_createtable(L, 3, 0);
+  lua_pushnumber(L, vec.x); lua_rawseti(L, -2, 1);
+  lua_pushnumber(L, vec.y); lua_rawseti(L, -2, 2);
+  lua_pushnumber(L, vec.z); lua_rawseti(L, -2, 3);
   return 1;
 }
 
@@ -927,6 +927,7 @@ static const luaL_Reg QAnglemeta_extra[] = {
 
 static const luaL_Reg QAngle_funcs[] = {
   {"QAngle", luasrc_QAngle},
+  {"Angle", luasrc_QAngle},
   {NULL, NULL}
 };
 

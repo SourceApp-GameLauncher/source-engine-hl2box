@@ -1820,13 +1820,7 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 		luasrc_dofolder( L, LUA_PATH_CACHE LUA_PATH_GAME_CLIENT );
 	}
 
-	// HL2SB: GMod's engine loads lua/includes/init.lua first, and that file
-	// requires "hook" before anything else.  Here extensions/ is scanned BEFORE
-	// modules/, and extensions/util/worldpicker.lua:40 indexes `hook` at load
-	// time -- so it failed with "attempt to index a nil value (global 'hook')".
-	// Load the hook module up front; the modules pass then skips it again
-	// (luasrc_dofolder keeps a prerequisite list for exactly this).
-	luasrc_dofile_includes( L, "modules/hook.lua" );
+	// The native state bootstrap prepares type helpers and dispatch before extensions.
 
 	luasrc_dofolder( L, LUA_PATH_EXTENSIONS );
 	luasrc_dofolder( L, LUA_PATH_MODULES );
