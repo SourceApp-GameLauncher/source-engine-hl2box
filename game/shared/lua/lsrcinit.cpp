@@ -2925,6 +2925,74 @@ static int HL2SB_Lua_EngineCommand (lua_State *L) {
   return 0;
 }
 
+static int HL2SB_Lua_RunConsoleCommand( lua_State *L )
+{
+  const char *name = luaL_checkstring( L, 1 );
+  for ( const unsigned char *p = (const unsigned char *)name; *p; ++p )
+  {
+    if ( !( ( *p >= 'a' && *p <= 'z' ) || ( *p >= 'A' && *p <= 'Z' ) ||
+            ( *p >= '0' && *p <= '9' ) || *p == '!' || *p == '+' || *p == '-' ||
+            *p == '.' || *p == '^' || *p == '_' || *p == '~' ) )
+      return luaL_error( L, "RunConsoleCommand: Command has invalid characters! (%s)\n\tThe first parameter of this function should contain only the command, the second parameter should contain arguments.", name );
+  }
+  if ( Q_strlen( name ) < 2 )
+    return luaL_error( L, "RunConsoleCommand: Command is too short, bailing! (%s)", name );
+
+  char command[1024];
+  Q_strncpy( command, name, sizeof( command ) );
+  for ( int index = 2; index < 64 && index <= lua_gettop( L ); ++index )
+  {
+    const int type = lua_type( L, index );
+    const char *value = lua_tostring( L, index );
+    if ( !value ) break;
+    if ( !Q_stricmp( value, "con_logfile" ) || !Q_stricmp( value, "quitnoconfirm" ) )
+      return luaL_error( L, "RunConsoleCommand: Command argument is blocked! (%s %s)", name, value );
+
+    char number[1024];
+    if ( type == LUA_TNUMBER )
+    {
+      Q_snprintf( number, sizeof( number ), "%.2f", (double)lua_tonumber( L, index ) );
+      value = number;
+    }
+    char argument[512];
+    int length = 0;
+    while ( value[length] && length < (int)sizeof( argument ) - 1 )
+    {
+      argument[length] = value[length] == '"' ? '\'' : ( value[length] == '\n' ? ' ' : value[length] );
+      ++length;
+    }
+    argument[length] = '\0';
+    Q_strncat( command, " \"", sizeof( command ) );
+    Q_strncat( command, argument, sizeof( command ) );
+    Q_strncat( command, "\"", sizeof( command ) );
+  }
+  Q_strncat( command, ";", sizeof( command ) );
+
+  lua_pushcfunction( L, lua_IsConCommandBlocked );
+  lua_pushstring( L, command );
+  lua_call( L, 1, 1 );
+  const bool blocked = lua_toboolean( L, -1 ) != 0;
+  lua_pop( L, 1 );
+  if ( blocked )
+    return luaL_error( L, "RunConsoleCommand: Command is blocked! (%s)", name );
+#ifdef CLIENT_DLL
+  engine->ClientCmd( command );
+#else
+  engine->ServerCommand( command );
+#endif
+  return 0;
+}
+
+void HL2SB_RegisterConsoleGlobals( lua_State *state )
+{
+  lua_pushcfunction( state, lua_IsConCommandBlocked );
+  lua_setglobal( state, "IsConCommandBlocked" );
+  lua_pushcfunction( state, HL2SB_Lua_EngineCommand );
+  lua_setglobal( state, "HL2SB_EngineCommand" );
+  lua_pushcfunction( state, HL2SB_Lua_RunConsoleCommand );
+  lua_setglobal( state, "RunConsoleCommand" );
+}
+
 // self:NetworkVar( type, slot, name [, options] )
 static int HL2SB_Lua_EntityNetworkVar (lua_State *L) {
   const char *pszType = luaL_checkstring( L, 2 );
@@ -4035,10 +4103,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_setglobal( L, "HL2SB_EntityNetworkVar" );
   lua_pushcfunction( L, HL2SB_Lua_EntityNetworkVarNotify );
   lua_setglobal( L, "HL2SB_EntityNetworkVarNotify" );
-  lua_pushcfunction( L, lua_IsConCommandBlocked );
-  lua_setglobal( L, "IsConCommandBlocked" );
-  lua_pushcfunction( L, HL2SB_Lua_EngineCommand );
-  lua_setglobal( L, "HL2SB_EngineCommand" );
+  HL2SB_RegisterConsoleGlobals( L );
 
   /* HL2SB: GMod's `achievements` table, as a STUB.
   **

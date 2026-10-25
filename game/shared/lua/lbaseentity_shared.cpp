@@ -6660,6 +6660,20 @@ static int luasrc_EyePos( lua_State *L )
 	return 1;
 }
 
+#ifdef CLIENT_DLL
+static int luasrc_MainEyePos( lua_State *L )
+{
+	lua_pushvector( L, MainViewOrigin() );
+	return 1;
+}
+
+static int luasrc_MainEyeAngles( lua_State *L )
+{
+	lua_pushangle( L, MainViewAngles() );
+	return 1;
+}
+#endif
+
 static const luaL_Reg ents_funcs[] = {
   {"Create", luasrc_ents_Create},
   {"GetByIndex", luasrc_ents_GetByIndex},
@@ -6671,6 +6685,10 @@ static const luaL_Reg CBaseEntity_funcs[] = {
   {"CreateEntityByName", luasrc_CreateEntityByName},
   {"SetPhysConstraintSystem", Lua_SetPhysConstraintSystem},
   {"EyePos", luasrc_EyePos},
+#ifdef CLIENT_DLL
+  {"MainEyePos", luasrc_MainEyePos},
+  {"MainEyeAngles", luasrc_MainEyeAngles},
+#endif
   // HL2SB: GMod's BroadcastLua( code ) -- server realm broadcasts to every
   // connected player through the same lua_run_cl transport; client realm
   // is a no-op (see the function above).

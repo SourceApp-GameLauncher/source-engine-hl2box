@@ -734,6 +734,7 @@ void luasrc_setmodulepaths(lua_State *L) {
 // Defined below (HL2SB_LuaPanic); the menu state gets it too, otherwise an
 // unprotected error in a GameUI script aborts the process the same way.
 static int HL2SB_LuaPanic( lua_State *pL );
+extern void HL2SB_RegisterConsoleGlobals( lua_State *state );
 
 void luasrc_init_gameui (void) {
   LGameUI = luaL_newstate();
@@ -741,6 +742,7 @@ void luasrc_init_gameui (void) {
 
   luaL_openlibs(LGameUI);
   base_open(LGameUI);
+  HL2SB_RegisterConsoleGlobals( LGameUI );
   lua_pushboolean(LGameUI, 1);
   lua_setglobal(LGameUI, "_GAMEUI");  /* set global _GAMEUI */
 

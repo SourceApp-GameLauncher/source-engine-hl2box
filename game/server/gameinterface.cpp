@@ -1052,12 +1052,6 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN, false );
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN_SERVER, true );
 
-	// HL2SB (2026-10-08) GMod compat: lua/matproxy/*.lua on the server realm
-	// too (see the client call site) -- GMod loads the folder on both realms
-	// and the registration is a plain table entry here, keeping the realms in
-	// step for lua_reloadents.
-	luasrc_dofolder( L, LUA_ROOT "/matproxy" );
-
 	// GMod's loading order (wiki: Lua Loading Order): weapons, entities and
 	// effects are loaded AFTER the gamemode files, so a gamemode can register its
 	// own bases first and the folders override them.  They run further down,

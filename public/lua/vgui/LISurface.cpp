@@ -22,6 +22,8 @@
 #include "vgui/IInput.h"
 #include "ienginevgui.h"
 #include "iviewrender.h"       // HL2SB: gui.ScreenToVector -> view->GetViewSetup()
+#include "iclientmode.h"
+#include "vgui_controls/Panel.h"
 #include "view_shared.h"       // HL2SB: CViewSetup fields (origin/angles/fov)
 #include "mathlib/lvector.h"   // HL2SB: lua_pushvector
 #include "hl2sb_framestats.h"	// HL2SB: hl2sb_framestats surface draw counter
@@ -107,7 +109,8 @@ static void LuaFont_Store (lua_State *L, const char *szName, HFont hFont) {
 //      fills (LuaFont_Find above) -- this is the cache, and it is exactly what
 //      DermaDefault / DermaDefaultBold / DermaLarge / GModNotify land in,
 //      because lua/derma/init.lua creates them with the GMod table form;
-//   2. the active scheme's font table (that is where "Default",
+//   2. the HUD viewport's scheme in game, or the menu scheme in GameUI
+//      (that is where "Default",
 //      "DefaultSmall", "HL2MPTypeDeath" ... come from, via clientscheme.res);
 //   3. the scheme's "Default", so an unknown name degrades to a visible font
 //      instead of failing.
@@ -120,7 +123,21 @@ LUA_API lua_HFont LuaFont_ResolveByName (lua_State *L, const char *szName) {
   if ( hFont != 0 )
     return hFont;
 
-  vgui::IScheme *pScheme = scheme()->GetIScheme( scheme()->GetDefaultScheme() );
+  vgui::HScheme schemeHandle = 0;
+  bool menu = false;
+  if ( L )
+  {
+    lua_getglobal( L, "_GAMEUI" );
+    menu = lua_toboolean( L, -1 ) != 0;
+    lua_pop( L, 1 );
+  }
+  if ( !menu && g_pClientMode && g_pClientMode->GetViewport() )
+    schemeHandle = g_pClientMode->GetViewport()->GetScheme();
+  if ( !schemeHandle && !menu )
+    schemeHandle = scheme()->GetScheme( "ClientScheme" );
+  if ( !schemeHandle )
+    schemeHandle = scheme()->GetDefaultScheme();
+  vgui::IScheme *pScheme = scheme()->GetIScheme( schemeHandle );
   if ( pScheme == NULL )
     return 0;
 
@@ -380,6 +397,18 @@ static int surface_DrawPrintText (lua_State *L) {
 	  g_pVGuiLocalize->ConvertANSIToUnicode( sz, wbuf, bufSize);
 	  surface()->DrawPrintText( wbuf, wcslen( wbuf ), (FontDrawType_t)luaL_optint(L, 3, FONT_DRAW_DEFAULT));
   }
+  return 0;
+}
+
+static int surface_DrawText( lua_State *L )
+{
+  const FontDrawType_t drawType = lua_isnoneornil( L, 2 ) ? FONT_DRAW_DEFAULT :
+    ( lua_toboolean( L, 2 ) ? FONT_DRAW_ADDITIVE : FONT_DRAW_NONADDITIVE );
+  lua_settop( L, 3 );
+  lua_pushinteger( L, drawType );
+  lua_replace( L, 3 );
+  surface_DrawPrintText( L );
+  surface()->DrawFlushText();
   return 0;
 }
 
@@ -744,6 +773,44 @@ static int surface_DrawTexturedRectRotated (lua_State *L) {
   }
 
   surface()->DrawTexturedPolygon( 4, verts, true );
+  return 0;
+}
+
+static float surface_PolyNumber( lua_State *L, const char *name )
+{
+  lua_getfield( L, -1, name );
+  const float value = lua_type( L, -1 ) == LUA_TNUMBER ? (float)lua_tonumber( L, -1 ) : 0.0f;
+  lua_pop( L, 1 );
+  return value;
+}
+
+static int surface_DrawPoly( lua_State *L )
+{
+  luaL_checktype( L, 1, LUA_TTABLE );
+  Vertex_t vertices[4095];
+  int count = 0;
+  for ( int index = 1; index < 4096; ++index )
+  {
+    lua_pushinteger( L, index );
+    lua_gettable( L, 1 );
+    if ( !lua_istable( L, -1 ) )
+    {
+      lua_pop( L, 1 );
+      break;
+    }
+    Vertex_t &vertex = vertices[count++];
+    vertex.m_Position.x = surface_PolyNumber( L, "x" );
+    vertex.m_Position.y = surface_PolyNumber( L, "y" );
+    vertex.m_TexCoord.x = surface_PolyNumber( L, "u" );
+    vertex.m_TexCoord.y = surface_PolyNumber( L, "v" );
+    lua_pop( L, 1 );
+  }
+  if ( count < 3 )
+    return luaL_argerror( L, 1, "table must contain at least three vertices" );
+
+  HL2SB_FrameStats_AddSurfaceDraw();
+  HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_SURF_TEXRECT );
+  surface()->DrawTexturedPolygon( count, vertices, true );
   return 0;
 }
 
@@ -1154,6 +1221,7 @@ static const luaL_Reg surfacelib[] = {
   {"DrawOutlinedCircle",   surface_DrawOutlinedCircle},
   {"DrawOutlinedRect",   surface_DrawOutlinedRect},
   {"DrawPrintText",   surface_DrawPrintText},
+  {"DrawText",   surface_DrawText},
   {"DrawSetAlphaMultiplier",   surface_DrawSetAlphaMultiplier},
   {"DrawSetColor",   surface_DrawSetColor},
   {"DrawSetTextColor",   surface_DrawSetTextColor},
@@ -1170,6 +1238,7 @@ static const luaL_Reg surfacelib[] = {
   // and cl_hudpickup.lua run unmodified.
   {"DrawTexturedRectUV",   surface_DrawTexturedRectUV},
   {"DrawTexturedRectRotated",   surface_DrawTexturedRectRotated},
+  {"DrawPoly",   surface_DrawPoly},
   {"EnableMouseCapture",   surface_EnableMouseCapture},
   {"FlashWindow",   surface_FlashWindow},
   {"GetAbsoluteWindowBounds",   surface_GetAbsoluteWindowBounds},
