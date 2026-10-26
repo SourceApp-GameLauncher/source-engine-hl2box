@@ -371,6 +371,29 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		bSeeded = !lua_isnil( L, -1 );
 		lua_pop( L, 1 );
 	}
+#ifndef CLIENT_DLL
+	// Apply type defaults once, before script setup. A later Spawn must retain
+	// explicit state configured between ents.Create and Spawn, including hands
+	// attached to a viewmodel by the original Player:SetupHands.
+	if ( lua_istable( L, -1 ) && !bSeeded )
+	{
+		luasrc_PushScriptField( L, -1, "Type" );
+		const bool hasType = lua_type( L, -1 ) == LUA_TSTRING;
+		bool isAnimating = hasType && !Q_stricmp( lua_tostring( L, -1 ), "anim" );
+		lua_pop( L, 1 );
+		if ( !hasType )
+		{
+			luasrc_PushScriptField( L, -1, "Base" );
+			isAnimating = lua_type( L, -1 ) == LUA_TSTRING && !Q_stricmp( lua_tostring( L, -1 ), "base_anim" );
+			lua_pop( L, 1 );
+		}
+		if ( isAnimating )
+		{
+			if ( GetSolid() == SOLID_NONE ) SetSolid( SOLID_VPHYSICS );
+			if ( GetMoveType() == MOVETYPE_NONE ) SetMoveType( MOVETYPE_VPHYSICS );
+		}
+	}
+#endif
 	if ( lua_istable( L, -1 ) && !bSeeded )
 	{
 		// HL2SB GMod compat: `self.Entity` is the entity, exactly as GMod's
@@ -489,88 +512,6 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		}
 		lua_pop( L, 1 );
 	}
-
-	// HL2SB GMod SENT compat: the engine defaults for an "anim" scripted entity.
-	//
-	// Measured, not guessed.  A live sent_ball spawned inside Garry's Mod reports
-	//
-	//     GetSolid()    = 6   SOLID_VPHYSICS
-	//     GetMoveType() = 6   MOVETYPE_VPHYSICS
-	//     GetModel()    = models/combine_helicopter/helicopter_bomb01.mdl
-	//
-	// while the SAME script under this fork left the entity at
-	//
-	//     solid = 0   SOLID_NONE
-	//
-	// lua/entities/sent_ball.lua never calls SetSolid or SetMoveType (its
-	// Initialize only sets the model, rebuilds physics, and picks a size/colour),
-	// and base_anim.lua -- which in GMod supplies ENT.Type = "anim" and nothing
-	// else of substance -- has no SetSolid either.  So those two values come from
-	// GMod's ENGINE, keyed off the entity's type:
-	//
-	//     BaseClasses["anim"] = "base_anim"        (scripted_ents.lua:13)
-	//
-	// A SOLID_NONE entity also cannot take part in physics collisions, which is
-	// not what a bouncy ball is for; ent_nyan_bomb escaped this only because its
-	// own Initialize() happens to call SetMoveType/SetSolid explicitly.
-	//
-	// STATUS: this restores GMod's documented-by-measurement state for an "anim"
-	// SENT.  It is NOT a confirmed fix for the separate "invisible sent_ball"
-	// report -- diagnostics showed the server reaching FL_EDICT_PVSCHECK (i.e.
-	// deciding to transmit) for sent_ball either way, while the client still never
-	// created the entity.  That report is unresolved; see AGENTS.md 9.17.
-	//
-	// Applied BEFORE the Initialize dispatch so a script that overrides either
-	// value still wins.  Only the types this fork can back are handled; a script
-	// that declares no Type at all keeps the inherited behaviour.
-#ifndef CLIENT_DLL
-	{
-		const char *pszType = NULL;
-
-		if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
-		{
-			lua_getref( L, m_nTableReference );
-			if ( lua_istable( L, -1 ) )
-			{
-				luasrc_PushScriptField( L, -1, "Type" );
-				if ( lua_type( L, -1 ) == LUA_TSTRING )
-					pszType = lua_tostring( L, -1 );
-			}
-			lua_pop( L, 2 );
-		}
-
-		// GMod also derives the base class from the type, and a SENT that only
-		// says DEFINE_BASECLASS("base_anim") while omitting ENT.Type still ends
-		// up anim-typed there (base_anim.lua sets it).  This fork maps base_anim
-		// onto prop_scripted, which carries no Type, so fall back to the declared
-		// base name -- otherwise sent_ball, whose own file sets no Type, would
-		// miss these defaults even though it is plainly an anim entity.
-		if ( pszType == NULL )
-		{
-			if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
-			{
-				lua_getref( L, m_nTableReference );
-				if ( lua_istable( L, -1 ) )
-				{
-					luasrc_PushScriptField( L, -1, "Base" );
-					if ( lua_type( L, -1 ) == LUA_TSTRING &&
-					     !Q_stricmp( lua_tostring( L, -1 ), "base_anim" ) )
-						pszType = "anim";
-				}
-				lua_pop( L, 2 );
-			}
-		}
-
-		if ( pszType != NULL && !Q_stricmp( pszType, "anim" ) )
-		{
-			if ( GetSolid() == SOLID_NONE )
-				SetSolid( SOLID_VPHYSICS );
-
-			if ( GetMoveType() == MOVETYPE_NONE )
-				SetMoveType( MOVETYPE_VPHYSICS );
-		}
-	}
-#endif
 
 	// HL2SB GMod compat: Initialize dispatches at SPAWN, not at create.  GMod's
 	// ents.Create does not run ENT:Initialize -- scripts configure the entity

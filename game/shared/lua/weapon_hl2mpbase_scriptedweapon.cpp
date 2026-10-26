@@ -160,7 +160,7 @@ void ResetWeaponFactoryDatabase( void )
 
 // HL2SB (2026-10-01): guarded SWEP-field push. The raw three-line
 // getref/getfield/remove pattern was an unprotected "attempt to index a nil
-// value" whenever m_nTableReference was -2 (never bound) or -1 (weapon.get
+// value" whenever m_nTableReference was -2 (never bound) or -1 (weapons.Get
 // returned nil) -- which the client hits the moment binding is deferred to the
 // networked scripted classname instead of the (possibly wrong) netclass name.
 // Always leaves exactly one value on the stack: the field, or nil.
@@ -385,10 +385,10 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	SetClassname( className );
 
 	const int iTopBeforeWeapon = lua_gettop( L );
-	lua_getglobal( L, "weapon" );
+	lua_getglobal( L, "weapons" );
 	if ( lua_istable( L, -1 ) )
 	{
-		lua_getfield( L, -1, "get" );
+		lua_getfield( L, -1, "Get" );
 		if ( lua_isfunction( L, -1 ) )
 		{
 			lua_remove( L, -2 );
@@ -406,7 +406,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 
 	// HL2SB (2026-10-01): every path above must leave exactly one value (the
-	// weapon.get result, which is nil when the SWEP is not in this realm's
+	// weapons.Get result, which is nil when the SWEP is not in this realm's
 	// module). The old code then ran luaL_ref() directly over that stack: a
 	// nil result became LUA_REFNIL (-1) and every later raw field read threw
 	// unprotected from C++, and the "module missing" branches left nothing to
@@ -418,29 +418,20 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	if ( !lua_istable( L, -1 ) )
 	{
 		lua_pop( L, 1 );
-		luasrc_LuaInfoMsgF( "[HL2SB wp] InitScriptedWeapon NO TABLE from weapon.get('%s') ent=%d\n",
+		luasrc_LuaInfoMsgF( "[HL2SB wp] InitScriptedWeapon NO TABLE from weapons.Get('%s') ent=%d\n",
 			className, entindex() );
 		return;
 	}
 
-	// HL2SB GMod SWEP compat: GMod's engine calls SWEP:SetupDataTables() while it
-	// sets a weapon up, and that is where SWEP:NetworkVar() declares the
-	// per-instance accessors the script uses (weapon_medkit declares
-	// LastAmmoRegen, for one).  Skipping the call left every such method nil, so
-	// the weapon's Think() threw "attempt to call a nil value (method
-	// 'GetLastAmmoRegen')" once per frame, forever.
-	if ( lua_istable( L, -1 ) )
+	// Legacy self aliases belong to the instance before its setup callbacks.
+	lua_pushweapon( L, this );
+	lua_setfield( L, -2, "Weapon" );
+	lua_pushweapon( L, this );
+	lua_setfield( L, -2, "Entity" );
+	if ( GetOwner() )
 	{
-		lua_getfield( L, -1, "SetupDataTables" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_pushvalue( L, -2 );		// self: the weapon's Lua table
-			luasrc_pcall( L, 1, 0, 0 );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
+		CBaseEntity::PushLuaInstanceSafe( L, GetOwner() );
+		lua_setfield( L, -2, "Owner" );
 	}
 
 	m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
@@ -928,7 +919,7 @@ void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 	// scripted class name (the base netclass index can resolve to a DIFFERENT
 	// scripted weapon on the client -- see the InitScriptedWeapon guard). If
 	// the string has not arrived by CREATED, retry on the next update.
-	// ref semantics: -2 never bound, -1 weapon.get returned nil, >=0 bound.
+	// ref semantics: -2 never bound, -1 weapons.Get returned nil, >=0 bound.
 	if ( !m_pLuaWeaponInfo->bParsedScript
 	  && m_iScriptedClassname.Get() && m_iScriptedClassname.Get()[0] )
 	{
@@ -939,7 +930,7 @@ void CHL2MPScriptedWeapon::OnDataChanged( DataUpdateType_t updateType )
 		InitScriptedWeapon();
 
 		// HL2SB: only mark the info parsed when the bind actually took -- if
-		// weapon.get had no entry for this realm yet, retry on the next update
+		// weapons.Get had no entry for this realm yet, retry on the next update
 		// (bParsedScript is what keeps this block from running again).
 		if ( m_nTableReference >= 0 )
 		{

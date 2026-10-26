@@ -31,6 +31,7 @@
 #else
 #include "lbaseanimating.h"
 #include "physconstraint_lua.h"
+#include "world.h"
 #include "hl2sb_motioncontroller.h"
 #include "rope.h"
 #include "player.h"					// HL2SB: Entity:GetViewEntity (CBasePlayer::m_hViewEntity)
@@ -1424,7 +1425,17 @@ static int CBaseEntity_GetRangeTo (lua_State *L) {
 }
 
 static int CBaseEntity_GetRefTable (lua_State *L) {
-  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  if (lua_isnoneornil(L, 1)) return 0;
+  bool isEntity = false;
+  if (lua_type(L, 1) == LUA_TUSERDATA && lua_getmetatable(L, 1)) {
+    lua_pushliteral(L, "MetaID");
+    lua_rawget(L, -2);
+    isEntity = lua_isnumber(L, -1) && lua_tointeger(L, -1) == 9;
+    lua_pop(L, 2);
+  }
+  if (!isEntity) return luaL_argerror(L, 1, "Entity expected");
+  CBaseEntity *pEntity = lua_toentity(L, 1);
+  if (!pEntity) return 0;
   // HL2SB: < 0 catches LUA_REFNIL(-1) as well as LUA_NOREF(-2).  GMod's
   // Entity:GetTable() always answers a table, so create the per-entity table
   // here the same way the engine __newindex does - callers that only ever READ
@@ -2570,7 +2581,11 @@ static int CBaseEntity_RegisterThinkContext (lua_State *L) {
 
 static int CBaseEntity_Remove (lua_State *L) {
   CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifdef CLIENT_DLL
   if (entity->entindex() == 0 || entity->IsPlayer())
+#else
+  if (entity == GetWorldEntity() || entity->IsPlayer())
+#endif
     return 0;
   static const char *const protectedClasses[] = {
     "worldspawn", "player", "gm_bot", "gmod_gamerules", "soundent",
@@ -4330,37 +4345,6 @@ bool HL2SB_EntityPushVarsTable( lua_State *L, CBaseEntity *pEntity, bool bCreate
   return true;
 }
 
-static int CBaseEntity_SetVar (lua_State *L) {
-  CBaseEntity *pEntity = lua_toentity( L, 1 );
-  const char *pszName = luaL_checkstring( L, 2 );
-  if ( pEntity == NULL || pszName[0] == '\0' || !HL2SB_EntityPushVarsTable( L, pEntity, true ) )
-    return 0;
-  // [.., vartab]
-  lua_pushstring( L, pszName );
-  lua_pushvalue( L, 3 );
-  lua_rawset( L, -3 );
-  lua_pop( L, 1 );
-  return 0;
-}
-
-static int CBaseEntity_GetVar (lua_State *L) {
-  CBaseEntity *pEntity = lua_toentity( L, 1 );
-  const char *pszName = luaL_checkstring( L, 2 );
-  if ( pEntity != NULL && pszName[0] != '\0' && HL2SB_EntityPushVarsTable( L, pEntity, false ) )
-  {
-    lua_pushstring( L, pszName );
-    lua_rawget( L, -2 );
-    if ( !lua_isnil( L, -1 ) )
-    {
-      lua_remove( L, -2 );
-      return 1;
-    }
-    lua_pop( L, 2 );   // nil + vartab
-  }
-  lua_pushvalue( L, 3 );   // GMod: GetVar's default is nil when not given
-  return 1;
-}
-
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: Entity:SetOverlayText( text ) / Entity:GetOverlayText().
 // GMod shows this text over the entity while a player aims at it (the
@@ -4783,7 +4767,11 @@ static int CBaseEntity___tostring (lua_State *L) {
 //-----------------------------------------------------------------------------
 static int CBaseEntity_IsValid (lua_State *L) {
   CBaseEntity *entity = lua_toentity(L, 1);
+#ifdef CLIENT_DLL
   lua_pushboolean(L, entity != NULL && entity->entindex() != 0);
+#else
+  lua_pushboolean(L, entity != NULL && entity != GetWorldEntity());
+#endif
   return 1;
 }
 
@@ -6588,8 +6576,6 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetNW2Angle", CBaseEntity_SetNW2Angle},
   {"GetNW2Angle", CBaseEntity_GetNW2Angle},
   // HL2SB GMod compat: per-entity Lua variables + overlay text.
-  {"SetVar", CBaseEntity_SetVar},
-  {"GetVar", CBaseEntity_GetVar},
   {"SetOverlayText", CBaseEntity_SetOverlayText},
   {"GetOverlayText", CBaseEntity_GetOverlayText},
   /* HL2SB: GMod's Entity:SetEyeTarget( pos ), accepted but inert - see the long note

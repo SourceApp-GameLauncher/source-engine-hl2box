@@ -30,6 +30,37 @@
 #include "ltm.h"
 #include "lvm.h"
 
+/* Only native next loops use the positional traversal. Public next keeps its
+** ordinary key validation, and custom iterators retain their call protocol. */
+extern int luaB_next (lua_State *L);
+
+static int isnativeiter (const TValue *function) {
+  return ttislcf(function) && fvalue(function) == luaB_next;
+}
+
+static lua_Integer nextiterslot (lua_State *L, Table *table,
+                                lua_Integer cursor, StkId result, int count) {
+  unsigned int asize = luaH_realasize(table);
+  unsigned int index = cast_uint(cursor);
+  for (; index < asize; ++index) {
+    if (!isempty(&table->array[index])) {
+      setivalue(s2v(result), index + 1);
+      if (count > 1) setobj2s(L, result + 1, &table->array[index]);
+      return cast(lua_Integer, index) + 1;
+    }
+  }
+  for (index -= asize; index < cast_uint(sizenode(table)); ++index) {
+    Node *node = gnode(table, index);
+    if (!isempty(gval(node))) {
+      getnodekey(L, s2v(result), node);
+      if (count > 1) setobj2s(L, result + 1, gval(node));
+      return cast(lua_Integer, asize) + index + 1;
+    }
+  }
+  return 0;
+}
+
+
 
 /*
 ** By default, use jump tables in the main interpreter loop on gcc
@@ -1813,6 +1844,14 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         StkId ra = RA(i);
         /* create to-be-closed upvalue (if needed) */
         halfProtect(luaF_newtbcupval(L, ra + 3));
+        if (GETARG_C(*(pc + GETARG_Bx(i))) <= 2 &&
+            isnativeiter(s2v(ra)) && ttistable(s2v(ra + 1)) &&
+            ttisnil(s2v(ra + 2)) && ttisnil(s2v(ra + 3))) {
+          /* GMod tracks native table loops by position, independently of a
+          ** callback deleting its current key. This slot was not registered
+          ** for closing, so it can retain the private traversal cursor. */
+          setivalue(s2v(ra + 3), 0);
+        }
         pc += GETARG_Bx(i);
         i = *(pc++);  /* go to next instruction */
         lua_assert(GET_OPCODE(i) == OP_TFORCALL && ra == RA(i));
@@ -1826,10 +1865,23 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
             to-be-closed variable. The call will use the stack after
             these values (starting at 'ra + 4')
         */
-        /* push function, state, and control variable */
-        memcpy(ra + 4, ra, 3 * sizeof(*ra));
-        L->top.p = ra + 4 + 3;
-        ProtectNT(luaD_call(L, ra + 4, GETARG_C(i)));  /* do the call */
+        if (ttisinteger(s2v(ra + 3)) && ivalue(s2v(ra + 3)) >= 0 &&
+            isnativeiter(s2v(ra)) && ttistable(s2v(ra + 1))) {
+          int n;
+          int count = GETARG_C(i);
+          lua_Integer cursor;
+          for (n = 0; n < count; ++n) setnilvalue(s2v(ra + 4 + n));
+          cursor = nextiterslot(L, hvalue(s2v(ra + 1)),
+                               ivalue(s2v(ra + 3)), ra + 4, count);
+          setivalue(s2v(ra + 3), cursor);
+          L->top.p = ra + 4 + count;
+        }
+        else {
+          /* push function, state, and control variable */
+          memcpy(ra + 4, ra, 3 * sizeof(*ra));
+          L->top.p = ra + 4 + 3;
+          ProtectNT(luaD_call(L, ra + 4, GETARG_C(i)));  /* do the call */
+        }
         updatestack(ci);  /* stack may have changed */
         i = *(pc++);  /* go to next instruction */
         lua_assert(GET_OPCODE(i) == OP_TFORLOOP && ra == RA(i));

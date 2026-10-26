@@ -656,6 +656,35 @@ void luasrc_register_metatable_globals (lua_State *L) {
 }
 
 /* Publish registry[gmodName] = the native metatable, so `_R.Entity` resolves. */
+// Original entity-family accessors read native methods from their metatable before
+// consulting Entity and instance fields. Publish inherited animation methods
+// here so it does not need a second native field-lookup path.
+static void luasrc_install_animation_methods (lua_State *L, const char *metatable) {
+  luaL_getmetatable(L, "CBaseAnimating");
+  luaL_getmetatable(L, metatable);
+  if (lua_istable(L, -2) && lua_istable(L, -1)) {
+    const int source = lua_gettop(L) - 1;
+    const int target = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, source) != 0) {
+      const char *name = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : NULL;
+      if (name && !(name[0] == '_' && name[1] == '_') && lua_iscfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_rawget(L, target);
+        const bool missing = lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (missing) {
+          lua_pushvalue(L, -2);
+          lua_pushvalue(L, -2);
+          lua_rawset(L, target);
+        }
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 2);
+}
+
 static void luasrc_install_metatable_aliases (lua_State *L) {
   for (int i = 0; s_LuaMetatableAliases[i].pszGModName; ++i) {
     const char *pszGModName = s_LuaMetatableAliases[i].pszGModName;
@@ -3428,6 +3457,15 @@ static int HL2SB_KeyValuesToTablePreserveOrder(lua_State *L)
   return HL2SB_ReadUtilityKV(L, true);
 }
 
+static int lua_ProtectedCall(lua_State *L)
+{
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  const int arguments = lua_gettop(L) - 1;
+  const int status = luasrc_pcall(L, arguments, 0, 0);
+  lua_pushboolean(L, status == LUA_OK);
+  return 1;
+}
+
 static int HL2SB_TimerCycle(lua_State *L)
 {
   static CCycleCount previous;
@@ -3728,6 +3766,8 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
 /* Every lib is open now, so the metatables exist and can be aliased. */
   luasrc_install_metatable_aliases(L);
   luasrc_install_type_names(L);
+  luasrc_install_animation_methods(L, LUA_BASEPLAYERLIBNAME);
+  luasrc_install_animation_methods(L, LUA_BASECOMBATWEAPONLIBNAME);
 
   /* ...and the library tables themselves can be reachable under GMod's names. */
   luasrc_install_lib_aliases(L);
@@ -3743,6 +3783,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_pushcfunction(L, HL2SB_UIKeyValuesToTable); lua_setfield(L, -2, "KeyValuesToTable");
   lua_pushcfunction(L, HL2SB_KeyValuesToTablePreserveOrder); lua_setfield(L, -2, "KeyValuesToTablePreserveOrder");
   lua_pushcfunction(L, HL2SB_TimerCycle); lua_setfield(L, -2, "TimerCycle");
+  lua_pushcfunction(L, lua_ProtectedCall); lua_setglobal(L, "ProtectedCall");
   lua_pop(L, 1);
 
   /* HL2SB: re-assert the realm globals LAST.

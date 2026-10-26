@@ -3680,23 +3680,27 @@ void luasrc_LoadEntities (const char *path)
 //-----------------------------------------------------------------------------
 void luasrc_RunEntsOnLoaded ( void )
 {
-	lua_getglobal( L, "scripted_ents" );
-	if ( lua_istable( L, -1 ) )
+	const char *modules[] = { "scripted_ents", "weapons" };
+	for ( int i = 0; i < ARRAYSIZE( modules ); ++i )
 	{
-		lua_getfield( L, -1, "OnLoaded" );
-		if ( lua_isfunction( L, -1 ) )
+		lua_getglobal( L, modules[i] );
+		if ( lua_istable( L, -1 ) )
 		{
-			lua_remove( L, -2 );
-			luasrc_pcall( L, 0, 0, 0 );
+			lua_getfield( L, -1, "OnLoaded" );
+			if ( lua_isfunction( L, -1 ) )
+			{
+				lua_remove( L, -2 );
+				luasrc_pcall( L, 0, 0, 0 );
+			}
+			else
+			{
+				lua_pop( L, 2 );
+			}
 		}
 		else
 		{
-			lua_pop( L, 2 );
+			lua_pop( L, 1 );
 		}
-	}
-	else
-	{
-		lua_pop( L, 1 );
 	}
 }
 
@@ -3705,8 +3709,8 @@ void luasrc_RunEntsOnLoaded ( void )
 **
 ** GMod treats "lua/weapons/<name>.lua" and "lua/weapons/<name>/shared.lua" as the
 ** same weapon, so both paths funnel through here and a flat file behaves exactly
-** like <name>/shared.lua -- same seed, same __folder/__base, same
-** weapon.register() call, same log line.
+** like <name>/shared.lua -- same initial tables and folder, same
+** weapons.Register() call, same log line.
 */
 static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 {
@@ -3736,46 +3740,16 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	// lua/) a scripted class came from -- see luasrc_NoteClassScript.
 	luasrc_NoteClassScript( className, filename, fullpath );
 
-	// GMod semantics: the engine seeds every SWEP with a deep copy of the base
-	// weapon table before running the script, so stock scripts can assign fields
-	// into SWEP.Primary/SWEP.Secondary at the top level (`SWEP.Primary.Sound = ...`)
-	// without creating those tables themselves.
-	//
-	// The table key is the weapons/ DIRECTORY name, which for the GMod-style base
-	// is "weapon_base"; fall back to the engine's own scripted base for older
-	// layouts. Primary/Secondary are guaranteed to be tables regardless of what
-	// the seed resolved, because a base whose data lives in flat keys
-	// (clip_size, ...) has no Primary table of its own.
-	luasrc_dostring( L,
-		"local __b = weapon.get( \"weapon_base\" )"
-		" or weapon.get( \"" LUA_BASE_WEAPON "\" ) or {};"
-		"SWEP = table.copy( __b );"
-		"if type( SWEP ) ~= \"table\" then SWEP = {} end;"
-		"if type( SWEP.Primary ) ~= \"table\" then SWEP.Primary = {} end;"
-		"if type( SWEP.Secondary ) ~= \"table\" then SWEP.Secondary = {} end" );
-	lua_getglobal( L, "SWEP" );
-	if ( !lua_istable( L, -1 ) )
-	{
-		// Paranoia: the seed should always leave a table here.
-		lua_pop( L, 1 );
-		lua_newtable( L );
-		lua_newtable( L );
-		lua_setfield( L, -2, "Primary" );
-		lua_newtable( L );
-		lua_setfield( L, -2, "Secondary" );
-	}
+	// Keep the class definition independent of its base. The original weapons
+	// registry resolves Base after all class files have been registered.
+	lua_newtable( L );
+	lua_newtable( L );
+	lua_setfield( L, -2, "Primary" );
+	lua_newtable( L );
+	lua_setfield( L, -2, "Secondary" );
 
 	char entDir[ MAX_PATH ];
 	Q_snprintf( entDir, sizeof( entDir ), "weapons/%s", className );
-	// Old base tables use an empty category; let the registry supply its default.
-	lua_getfield( L, -1, "Category" );
-	const bool emptyCategory = lua_type( L, -1 ) == LUA_TSTRING && lua_rawlen( L, -1 ) == 0;
-	lua_pop( L, 1 );
-	if ( emptyCategory )
-	{
-		lua_pushnil( L );
-		lua_setfield( L, -2, "Category" );
-	}
 	lua_pushstring( L, entDir );
 	lua_setfield( L, -2, "__folder" );
 	// HL2SB: GMod stamps SWEP.Folder on every scripted weapon -- the original
@@ -3783,8 +3757,6 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	// Folder takes every stool down with it.  Same string as __folder.
 	lua_pushstring( L, entDir );
 	lua_setfield( L, -2, "Folder" );
-	lua_pushstring( L, LUA_BASE_WEAPON );
-	lua_setfield( L, -2, "__base" );
 	// HL2SB GMod compat (2026-09-24): SWEP.ClassName -- GMod stamps the class
 	// name onto every SWEP table; a grenade SWEP strips itself with
 	// owner:StripWeapon( self.ClassName ) and reads nil without it.
@@ -3793,17 +3765,41 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	lua_setglobal( L, "SWEP" );
 	if ( luasrc_dofile( L, fullpath ) == 0 )
 	{
-		lua_getglobal( L, "weapon" );
+		lua_getglobal( L, "SWEP" );
+		const int definition = lua_gettop( L );
+		lua_getglobal( L, "weapons" );
 		if ( lua_istable( L, -1 ) )
 		{
-			lua_getfield( L, -1, "register" );
+			lua_getfield( L, -1, "Register" );
 			if ( lua_isfunction( L, -1 ) )
 			{
 				lua_remove( L, -2 );
-				lua_getglobal( L, "SWEP" );
+				lua_pushvalue( L, definition );
 				lua_pushstring( L, className );
 				luasrc_pcall( L, 2, 0, 0 );
-				RegisterScriptedWeapon( className );
+
+				// Register may veto or change the class name. Only create a native
+				// factory when this exact definition is in the original registry.
+				lua_getfield( L, definition, "ClassName" );
+				char registeredName[ MAX_WEAPON_STRING ] = "";
+				if ( lua_type( L, -1 ) == LUA_TSTRING )
+					Q_strncpy( registeredName, lua_tostring( L, -1 ), sizeof( registeredName ) );
+				lua_pop( L, 1 );
+				lua_getglobal( L, "weapons" );
+				lua_getfield( L, -1, "GetStored" );
+				lua_remove( L, -2 );
+				if ( lua_isfunction( L, -1 ) && registeredName[0] )
+				{
+					lua_pushstring( L, registeredName );
+					luasrc_pcall( L, 1, 1, 0 );
+					const bool registered = lua_rawequal( L, definition, -1 ) != 0;
+					lua_pop( L, 1 );
+					if ( registered ) RegisterScriptedWeapon( registeredName );
+				}
+				else
+				{
+					lua_pop( L, 1 );
+				}
 			}
 			else
 			{
@@ -3814,6 +3810,7 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 		{
 			lua_pop( L, 1 );
 		}
+		lua_pop( L, 1 );
 	}
 	lua_pushnil( L );
 	lua_setglobal( L, "SWEP" );
