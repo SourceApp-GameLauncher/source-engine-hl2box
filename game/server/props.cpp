@@ -445,12 +445,9 @@ void CBreakableProp::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize,
 	if( IsOnFire() )
 		return;
 
-	if( !HasInteraction( PROPINTER_FIRE_FLAMMABLE ) )
-		return;
-
 	BaseClass::Ignite( flFlameLifetime, bNPCOnly, flSize, bCalledByLevelDesigner );
 
-	if ( g_pGameRules->ShouldBurningPropsEmitLight() )
+	if ( g_pGameRules->ShouldBurningPropsEmitLight() && GetEffectEntity() )
 	{
 		GetEffectEntity()->AddEffects( EF_DIMLIGHT );
 	}
@@ -1142,7 +1139,7 @@ int CBreakableProp::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	}
 	else if( !bDeadly && (info.GetDamageType() & DMG_BURN) )
 	{
-		// Ignite if burned, and flammable (the Ignite() function takes care of all of this).
+		// Ignite from fire damage.
 		Ignite( random->RandomFloat( 10, 15 ), false );
 	}
 	else if( !bDeadly && (info.GetDamageType() & DMG_BULLET) )

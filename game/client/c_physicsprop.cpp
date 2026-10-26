@@ -38,6 +38,10 @@ END_RECV_TABLE()
 //-----------------------------------------------------------------------------
 C_PhysicsProp::C_PhysicsProp( void )
 {
+#ifdef LUA_SDK
+	// Native physics props need their map class independently of prediction data.
+	SetClassname( "prop_physics" );
+#endif
 	m_pPhysicsObject = NULL;
 	m_takedamage = DAMAGE_YES;
 
