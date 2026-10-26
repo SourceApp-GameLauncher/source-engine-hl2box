@@ -25,6 +25,8 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "lua/hl2sb_flexmanipulator.h"
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 // ===== HL2SB GMod compat (2026-09-24): Entity callbacks =====================
@@ -2030,6 +2032,7 @@ static int CBaseAnimating___newindex (lua_State *L) {
           // heal merges the class table over it (SCP173_Coroutine on every
           // entity is its render-group loop running before the hands bind).
           // Info line, not an error - GMod has no pre-bind window at all.
+          if ( hl2sb_dev_msgs.GetBool() )
           Msg( "[HL2SB] pre-bind field write '%s' on scripted entity ent=%d (class '%s') - kept in an auto-table, healed at OnDataChanged\n",
                field, pEntity->entindex(), pScripted->GetScriptedClassname() );
         }

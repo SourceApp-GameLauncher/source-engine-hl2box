@@ -11,6 +11,8 @@
 #include "tier0/icommandline.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 //-----------------------------------------------------------------------------
@@ -49,6 +51,7 @@ static void HL2SB_LoadDisabledAddons( void )
 
 	if ( s_bDisabledAddonsLoaded )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[HL2SB] addons: addons_disabled.txt changed on disk - reloading the disabled list\n" );
 		s_DisabledAddons.RemoveAll();
 	}
@@ -69,10 +72,12 @@ static void HL2SB_LoadDisabledAddons( void )
 		FILE *fp = ( szFull[0] != '\0' ) ? fopen( szFull, "r" ) : NULL;
 		if ( fp == NULL )
 		{
+			if ( hl2sb_dev_msgs.GetBool() )
 			Msg( "[HL2SB] addons: no addons_disabled.txt found (nothing disabled)\n" );
 			return;
 		}
 
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[HL2SB] addons: reading disabled list from %s (fallback fopen)\n", szFull );
 
 		char szLine[ 256 ];
@@ -93,6 +98,7 @@ static void HL2SB_LoadDisabledAddons( void )
 			{
 				CUtlString &entry = s_DisabledAddons[ s_DisabledAddons.AddToTail() ];
 				entry = p;
+				if ( hl2sb_dev_msgs.GetBool() )
 				Msg( "[HL2SB] addons: '%s' disabled by addons_disabled.txt - not mounted\n", p );
 			}
 		}
@@ -101,6 +107,7 @@ static void HL2SB_LoadDisabledAddons( void )
 		return;
 	}
 
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[HL2SB] addons: reading disabled list from addons_disabled.txt (MOD)\n" );
 
 	char szLine[ 256 ];
@@ -121,6 +128,7 @@ static void HL2SB_LoadDisabledAddons( void )
 		{
 			CUtlString &entry = s_DisabledAddons[ s_DisabledAddons.AddToTail() ];
 			entry = p;
+			if ( hl2sb_dev_msgs.GetBool() )
 			Msg( "[HL2SB] addons: '%s' disabled by addons_disabled.txt - not mounted\n", p );
 		}
 	}
@@ -306,10 +314,12 @@ void MountAddons()
 	// so honouring it is a logged no-op.
 	if ( CommandLine()->FindParm( "-noaddons" ) != 0 )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[HL2SB] addons: -noaddons on the command line - not mounting any addon\n" );
 		return;
 	}
 	if ( CommandLine()->FindParm( "-noworkshop" ) != 0 )
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[HL2SB] addons: -noworkshop on the command line (no workshop layer in this fork; nothing to skip)\n" );
 
 	// Andrew; mount the Lua cache directory first. We consider this a temporary
@@ -347,12 +357,14 @@ void MountAddons()
 				// a disabled one is not mounted (see HL2SB_IsAddonDisabled).
 				if ( HL2SB_IsAddonDisabled( addonName ) )
 				{
+					if ( hl2sb_dev_msgs.GetBool() )
 					Msg( "[HL2SB] addons: '%s' is disabled - not mounted this session\n", addonName );
 					fn = g_pFullFileSystem->FindNext( fh );
 					continue;
 				}
 
 #ifdef GAME_DLL
+				if ( hl2sb_dev_msgs.GetBool() )
 				Msg( "Mounting addon \"%s\"...\n", addonName );
 #endif
 

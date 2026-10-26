@@ -100,6 +100,9 @@ static void HL2SB_DispatchLuaErrorHooks( lua_State *L, const char *pszError, con
 #include <vgui/ISystem.h>
 
 // memdbgon must be the last include file in a .cpp file!!!
+ConVar hl2sb_dev_msgs( "hl2sb_dev_msgs", "0", FCVAR_ARCHIVE,
+	"Print HL2SB diagnostics (script binds, REGISTER, addon mounting, [vtx], panel gc)" );
+
 #include "tier0/memdbgon.h"
 
 ConVar gamemode( "gamemode", "sandbox", FCVAR_ARCHIVE | FCVAR_REPLICATED );
@@ -2358,6 +2361,7 @@ static int HL2SB_LoadLuaFile (lua_State *L, const char *filename, bool execute) 
 		filesystem->RelativePathToFullPath( filename, "MOD", fullPath, sizeof( fullPath ) );
 	if ( luasrc_PathInDisabledAddon( filename ) || luasrc_PathInDisabledAddon( fullPath ) )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua] %s: addon is DISABLED - skipped\n", filename );
 		if ( !execute )
 			luaL_loadstring( L, "" );
@@ -2600,6 +2604,7 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 		char loadname[ 512 ];
 		filesystem->RelativePathToFullPath( relative, "MOD", loadname, sizeof( loadname ) );
 
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua]   %s  (prerequisite)\n", relative );
 		if ( ( moduleFolder ? HL2SB_LoadBootstrapModule( L, loadname, s_pHL2SBFirst[k] )
 		                    : luasrc_dofile( L, loadname ) ) != 0 )
@@ -2640,6 +2645,7 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 				Q_snprintf( relative, sizeof( relative ), "%s/%s", path, fn );
 				filesystem->RelativePathToFullPath( relative, "MOD", loadname, sizeof( loadname ) );
 				// HL2SB: load diagnostics - "which Lua files actually ran".
+				if ( hl2sb_dev_msgs.GetBool() )
 				luasrc_LuaInfoMsgF( "[Lua]   %s\n", relative );
 				if ( ( moduleFolder ? HL2SB_LoadBootstrapModule( L, loadname, fn )
 				                    : luasrc_dofile( L, loadname ) ) != 0 )
@@ -2659,8 +2665,10 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 		HL2SB_InstallNativeUserMessages( L );
 #endif
 	if ( nFailed > 0 )
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaWarnMsgF( "[Lua] %s -> %d file(s), %d FAILED\n", path, nLoaded, nFailed );
 	else
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[Lua] %s -> %d file(s)\n", path, nLoaded );
 }
 
@@ -2756,6 +2764,7 @@ LUA_API int luasrc_dofile_includes (lua_State *L, const char *pszName)
 	char fullpath[ MAX_PATH ];
 	filesystem->RelativePathToFullPath( relative, "MOD", fullpath, sizeof( fullpath ) );
 
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[Lua]   %s\n", relative );
 	return luasrc_dofile( L, fullpath );
 }
@@ -2781,10 +2790,12 @@ LUA_API void luasrc_dofolder_sorted (lua_State *L, const char *path, bool bRecur
 		// mounts it (see luasrc_PathInDisabledAddon)
 		if ( luasrc_PathInDisabledAddon( loadname ) )
 		{
+			if ( hl2sb_dev_msgs.GetBool() )
 			Msg( "[Lua]   %s: addon is DISABLED - skipped\n", files[i].Get() );
 			continue;
 		}
 
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[Lua]   %s\n", files[i].Get() );
 		if ( luasrc_dofile( L, loadname ) != 0 )
 			++nFailed;
@@ -2794,8 +2805,10 @@ LUA_API void luasrc_dofolder_sorted (lua_State *L, const char *path, bool bRecur
 	}
 
 	if ( nFailed > 0 )
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaWarnMsgF( "[Lua] %s -> %d file(s), %d FAILED%s\n", path, files.Count(), nFailed, bRecurse ? " (recursive, A-Z)" : " (A-Z)" );
 	else
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[Lua] %s -> %d file(s)%s\n", path, files.Count(), bRecurse ? " (recursive, A-Z)" : " (A-Z)" );
 }
 
@@ -3330,10 +3343,12 @@ static void luasrc_LoadOneEntity (const char *filename, const char *className)
 
 	if ( luasrc_PathInDisabledAddon( fullpath ) )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua] entity '%s' <- %s: addon is DISABLED - skipped\n", className, fullpath );
 		return;
 	}
 
+	if ( hl2sb_dev_msgs.GetBool() )
 	luasrc_LuaInfoMsgF( "[Lua] entity '%s' <- %s\n", className, fullpath );
 
 	// HL2SB: this is the one place that knows which addon (or the tree's own
@@ -3704,6 +3719,7 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 
 	if ( luasrc_PathInDisabledAddon( fullpath ) )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua] weapon '%s' <- %s: addon is DISABLED - skipped\n", className, fullpath );
 		return;
 	}
@@ -3713,6 +3729,7 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	// get picked up?" could only be answered by walking the file system by hand --
 	// and GMod compatibility regressions are exactly the kind of thing that has
 	// to be checkable from the log.
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[Lua] weapon '%s' <- %s\n", className, fullpath );
 
 	// HL2SB: this is the one place that knows which addon (or the tree's own
@@ -3761,6 +3778,11 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	}
 	lua_pushstring( L, entDir );
 	lua_setfield( L, -2, "__folder" );
+	// HL2SB: GMod stamps SWEP.Folder on every scripted weapon -- the original
+	// tool framework globs SWEP.Folder .. "/stools/*.lua" (stool.lua), so a nil
+	// Folder takes every stool down with it.  Same string as __folder.
+	lua_pushstring( L, entDir );
+	lua_setfield( L, -2, "Folder" );
 	lua_pushstring( L, LUA_BASE_WEAPON );
 	lua_setfield( L, -2, "__base" );
 	// HL2SB GMod compat (2026-09-24): SWEP.ClassName -- GMod stamps the class
@@ -3920,6 +3942,7 @@ void luasrc_LoadEffects (const char *path)
 
 				if ( luasrc_PathInDisabledAddon( fullpath ) )
 				{
+					if ( hl2sb_dev_msgs.GetBool() )
 					luasrc_LuaInfoMsgF( "[Lua] effect '%s' <- %s: addon is DISABLED - skipped\n", fn, fullpath );
 				}
 				else
@@ -3978,6 +4001,7 @@ void luasrc_LoadEffects (const char *path)
 
 				if ( luasrc_PathInDisabledAddon( fullpath ) )
 				{
+					if ( hl2sb_dev_msgs.GetBool() )
 					luasrc_LuaInfoMsgF( "[Lua] effect '%s' <- %s: addon is DISABLED - skipped\n", className, fullpath );
 					continue;
 				}

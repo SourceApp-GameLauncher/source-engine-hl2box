@@ -14,6 +14,8 @@
 #include "scripted_controls/lPropertyPage.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 using namespace vgui;
@@ -378,6 +380,7 @@ static int PropertyPage___gc (lua_State *L) {
       static int s_nParentedGc = 0;
       if (s_nParentedGc < 12) {
         ++s_nParentedGc;
+        if ( hl2sb_dev_msgs.GetBool() )
         Msg("[HL2SB] panel gc: '%s' (%p) was still parented (handles left=%d) - kept alive\n",
           plPage->GetName(), (void *)plPage, plPage->m_nRefCount);
       }

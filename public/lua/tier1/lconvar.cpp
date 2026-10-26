@@ -453,7 +453,10 @@ static int luasrc_AddConsoleCommand( lua_State *state )
     const bool blocked = lua_toboolean( state, -1 ) != 0;
     lua_settop( state, top );
     if ( blocked && Q_stricmp( name, "lua_cookieclear" ) )
-      return luaL_error( state, "AddConsoleCommand: Command name is blocked! (%s)", name );
+    {
+      Warning( "AddConsoleCommand: Command name is blocked! (%s)\n", name );
+      return 0;
+    }
   }
   else
     lua_settop( state, top );

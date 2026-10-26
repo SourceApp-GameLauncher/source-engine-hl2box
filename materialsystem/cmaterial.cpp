@@ -382,6 +382,7 @@ protected:
 
 // NOTE: This must be the last file included
 // Has to exist *after* fixed size allocator declaration
+#include "tier1/convar.h"
 #include "tier0/memdbgon.h"
 
 // Forward decls of helper functions for dealing with patch vmts.
@@ -438,6 +439,12 @@ struct StandardRenderStateList_t
 };
 
 #include "tier0/memdbgon.h"
+
+static bool HL2SB_DevMsgsEnabled( void )
+{
+	static ConVarRef s_HL2SBDevMsgs( "hl2sb_dev_msgs" );
+	return s_HL2SBDevMsgs.IsValid() && s_HL2SBDevMsgs.GetBool();
+}
 
 #ifndef _CONSOLE
 DEFINE_FIXEDSIZE_ALLOCATOR( EditorRenderStateList_t, 256, true );
@@ -897,6 +904,7 @@ void CMaterial::RetryUnresolvedProxies( void )
 	if ( !m_bLoggedFirstUnresolvedRetry )
 	{
 		m_bLoggedFirstUnresolvedRetry = true;
+		if ( HL2SB_DevMsgsEnabled() )
 		Msg( "[HL2SB] material \"%s\": retrying %d deferred proxy(ies)\n", GetName(), m_UnresolvedProxyNames.Count() );
 	}
 
@@ -925,6 +933,7 @@ void CMaterial::RetryUnresolvedProxies( void )
 #ifdef PROXY_TRACK_NAMES
 		m_ProxyInfoNames.AddToTail( pszName );
 #endif
+		if ( HL2SB_DevMsgsEnabled() )
 		Msg( "[HL2SB] material \"%s\": deferred proxy \"%s\" resolved\n", GetName(), pszName );
 		pProxyKey->deleteThis();
 		m_UnresolvedProxyNames.Remove( i );

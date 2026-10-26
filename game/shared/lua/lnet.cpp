@@ -686,7 +686,13 @@ static int net_SendToServer( lua_State *L )
 		luasrc_LuaWarnMsgF( "Trying to send an overflowed net message!\n" );
 	}
 
-	engine->SendLuaNetMessage( g_cnetWrite.GetData(), g_cnetWrite.GetNumBitsWritten(), g_cnetReliable );
+	// A refused send used to be silently dropped; every property action rides
+	// this path, so report it instead of leaving a dead click with no trace.
+	if ( !engine->SendLuaNetMessage( g_cnetWrite.GetData(), g_cnetWrite.GetNumBitsWritten(), g_cnetReliable ) )
+	{
+		luasrc_LuaWarnMsgF( "net.SendToServer: engine refused message '%s' (%d bits)\n",
+			g_cnetName.Get(), g_cnetWrite.GetNumBitsWritten() );
+	}
 	return 0;
 }
 
@@ -1287,6 +1293,14 @@ void HL2SB_LuaNetMessageReceived( edict_t *pEdict, bf_read &msg )
 		else
 		{
 			lua_pop( L, 1 );
+			// A dropped dispatch used to be silent; report it once so a dead
+			// client->server action leaves a trace instead of nothing.
+			static bool s_bReportedNoIncoming = false;
+			if ( !s_bReportedNoIncoming )
+			{
+				s_bReportedNoIncoming = true;
+				luasrc_LuaWarnMsgF( "LuaNetMessage: net.Incoming is not a function -- every Lua net message from clients is being dropped\n" );
+			}
 		}
 	}
 	lua_pop( L, 1 );
