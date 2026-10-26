@@ -1838,16 +1838,15 @@ static int CBaseEntity_GetMaterialType (lua_State *L) {
 }
 
 #ifndef CLIENT_DLL
-// HL2SB GMod compat (2026-09-25): Entity:Ignite( duration, bNPCOnly? ) -- see
-// the methods-table note above.  Forwards onto the entity's CBaseAnimating,
-// which spawns the engine's EntityFlame child (same as the animating binding).
+// Entity:Ignite( duration, radius ) uses the entity's virtual fire behavior.
 static int CBaseEntity_Ignite (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   CBaseAnimating *pAnim = pEntity->GetBaseAnimating();
   if ( pAnim == NULL )
     return 0;
-  const float flDuration = (float)luaL_optnumber( L, 2, 10.0f );
-  pAnim->Ignite( flDuration, pAnim->IsNPC(), 0.0f, false );
+  const float flDuration = (float)luaL_checknumber( L, 2 );
+  const float flRadius = lua_type( L, 3 ) == LUA_TNUMBER ? (float)lua_tonumber( L, 3 ) : 0.0f;
+  pAnim->Ignite( flDuration, false, flRadius, false );
   return 0;
 }
 #endif

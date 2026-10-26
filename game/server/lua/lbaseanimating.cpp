@@ -1091,15 +1091,14 @@ static int CBaseAnimating_RestartGesture (lua_State *L) {
   return 0;
 }
 
-// HL2SB GMod compat: Entity:Ignite( duration ) -- catch fire.  npc_scp_049-2
-// lights its victims on fire (scp0492base.lua:798).  CBaseAnimating::Ignite
-// spawns the engine's EntityFlame child, same as GMod's engine side.
+// Entity:Ignite( duration, radius ) shares the Entity binding's argument contract.
 static int CBaseAnimating_Ignite (lua_State *L) {
   CBaseAnimating *pAnim = luaL_checkanimating( L, 1 );
   if ( pAnim == NULL )
     return 0;
-  const float flDuration = (float)luaL_optnumber( L, 2, 10.0f );
-  pAnim->Ignite( flDuration, pAnim->IsNPC(), 0.0f, false );
+  const float flDuration = (float)luaL_checknumber( L, 2 );
+  const float flRadius = lua_type( L, 3 ) == LUA_TNUMBER ? (float)lua_tonumber( L, 3 ) : 0.0f;
+  pAnim->Ignite( flDuration, false, flRadius, false );
   return 0;
 }
 
