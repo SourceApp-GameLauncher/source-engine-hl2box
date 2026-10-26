@@ -419,6 +419,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
 */
 extern "C" void VGUI_SetOnMousePressAllowed( bool ( *fn )( int mouseCode ) );
 
+bool HL2SB_GetScreenClickDirection( Vector &direction, int x, int y, const CViewSetup *setup );
+
 static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
 {
 	if ( L == NULL )
@@ -439,6 +441,23 @@ static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
 			lua_pushinteger(L, mouseCode);
 		END_LUA_CALL_HOOK(2, 0);
 		lua_settop(L, iTop);
+	}
+
+	// HL2SB: GMod's GUIMousePressed -- the properties module opens the entity
+	// context menu from this hook (its PropertiesClick handler).  The
+	// reference fires it with the mouse code and the world picking ray under
+	// the cursor and lets the Lua side gate world-clickers itself; without it
+	// the stock right-click menu can never appear.
+	{
+		int x = 0, y = 0;
+		vgui::input()->GetCursorPos( x, y );
+		Vector vecDir( 0, 0, 1 );
+		HL2SB_GetScreenClickDirection( vecDir, x, y, NULL );
+		BEGIN_LUA_CALL_HOOK( "GUIMousePressed" );
+			lua_pushinteger( L, mouseCode );
+			lua_pushvector( L, vecDir );
+		END_LUA_CALL_HOOK( 2, 0 );
+		lua_settop( L, iTop );
 	}
 	return bBlocked;
 }
