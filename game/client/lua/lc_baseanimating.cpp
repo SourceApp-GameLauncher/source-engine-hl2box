@@ -926,6 +926,90 @@ static int CBaseAnimating_GetBodygroupName (lua_State *L) {
   return 1;
 }
 
+// HL2SB: the bodygroup list the reference publishes as Entity:GetBodyGroups --
+// an array of { name, id (0-based part index), num (model count),
+// submodels = { model names } }, one entry per studio bodypart.  A self with
+// no studio model (or dormant) answers an EMPTY table.  The bodygroups
+// property Filter runs this on the CLIENT, so without it that context-menu
+// entry errored and vanished.
+static int CBaseAnimating_GetBodyGroups (lua_State *L) {
+  C_BaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+
+  lua_newtable( L );
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 1;
+
+  int nParts = pStudioHdr->numbodyparts();
+  for ( int i = 0; i < nParts; ++i ) {
+    mstudiobodyparts_t *pPart = pStudioHdr->pBodypart( i );
+    if ( pPart == NULL )
+      continue;
+
+    lua_newtable( L );
+      lua_pushstring( L, pPart->pszName() );   lua_setfield( L, -2, "name" );
+      lua_pushinteger( L, i );                 lua_setfield( L, -2, "id" );
+      lua_pushinteger( L, pPart->nummodels );  lua_setfield( L, -2, "num" );
+      lua_newtable( L );
+      for ( int j = 0; j < pPart->nummodels; ++j ) {
+        lua_pushstring( L, pPart->pModel( j )->pszName() );
+        lua_rawseti( L, -2, j + 1 );
+      }
+      lua_setfield( L, -2, "submodels" );
+    lua_rawseti( L, -2, i + 1 );
+  }
+  return 1;
+}
+
+// HL2SB: Entity:SkinCount -- no studio model means NO return values (nil),
+// matching the reference; the skin property Filter compares with > directly.
+static int CBaseAnimating_SkinCount (lua_State *L) {
+  C_BaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 0;
+  lua_pushinteger( L, pStudioHdr->numskinfamilies() );
+  return 1;
+}
+
+// HL2SB: Entity:GetBoneParent -- parent bone index, or -1 for an out-of-range
+// bone / no model (the reference pushes -1 in those cases, never errors).
+static int CBaseAnimating_GetBoneParent (lua_State *L) {
+  CStudioHdr *pStudioHdr = luaL_checkanimating( L, 1 )->GetModelPtr();
+  if ( pStudioHdr == NULL ) {
+    lua_pushnumber( L, -1 );
+    return 1;
+  }
+  int iBone = luaL_checkint( L, 2 );
+  if ( iBone < 0 || iBone >= pStudioHdr->numbones() ) {
+    lua_pushnumber( L, -1 );
+    return 1;
+  }
+  lua_pushinteger( L, pStudioHdr->pBone( iBone )->parent );
+  return 1;
+}
+
+// HL2SB: Entity:BoneHasFlag( bone, flag ) -- the studio bone-flag reader the
+// bone tool's Setup uses to skip non-deform bones (the reference carries this
+// natively on both realms, server.dll 0x18018a200).  No model / dormant /
+// out-of-range answers false.
+static int CBaseAnimating_BoneHasFlag (lua_State *L) {
+  C_BaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 0;
+
+  const int iBone = (int)luaL_checknumber( L, 2 );
+  const int iFlag = (int)luaL_checknumber( L, 3 );
+  if ( iBone < 0 || iBone >= pStudioHdr->numbones() )
+  {
+    lua_pushboolean( L, 0 );
+    return 1;
+  }
+  lua_pushboolean( L, ( pStudioHdr->pBone( iBone )->flags & iFlag ) != 0 );
+  return 1;
+}
+
 static int CBaseAnimating_GetBoneControllers (lua_State *L) {
   float controllers[MAXSTUDIOBONECTRLS];
   luaL_checkanimating(L, 1)->GetBoneControllers(controllers);
@@ -2147,6 +2231,10 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetBodygroups", CBaseAnimating_GetBodygroups},
   {"GetBodygroupCount", CBaseAnimating_GetBodygroupCount},
   {"GetBodygroupName", CBaseAnimating_GetBodygroupName},
+  {"GetBodyGroups", CBaseAnimating_GetBodyGroups},
+  {"SkinCount", CBaseAnimating_SkinCount},
+  {"GetBoneParent", CBaseAnimating_GetBoneParent},
+  {"BoneHasFlag", CBaseAnimating_BoneHasFlag},
   {"GetBoneControllers", CBaseAnimating_GetBoneControllers},
   {"GetBonePosition", CBaseAnimating_GetBonePosition},
   {"GetClientSideFade", CBaseAnimating_GetClientSideFade},

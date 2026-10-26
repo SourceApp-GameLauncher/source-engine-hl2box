@@ -14,6 +14,9 @@
 #include "model_types.h"	// HL2SB: STUDIO_RENDER, the default of Entity:DrawModel()
 #include "c_baseanimating.h"
 #include "basescripted.h"
+#include "c_fire_smoke.h"	// HL2SB: Entity:IsOnFire (C_EntityFlame = the networked flame)
+#include "view.h"			// HL2SB: MainViewOrigin/MainViewAngles (GUIMousePressed ray)
+#include "view_scene.h"		// HL2SB: CViewSetup (the picking ray uses the live FOV)
 #include "particles_new.h"	// HL2SB: Entity:CreateParticleEffect (CNewParticleEffect)
 #include "particle_parse.h"	// HL2SB: ParticleAttachment_t
 #include "lnewparticle.h"	// HL2SB: HL2SB_PushNewParticleEffect
@@ -323,6 +326,39 @@ static int CBaseEntity_PrintMessage (lua_State *L) {
   return 0;
 }
 
+// HL2SB: GMod's shared spawnflag readers, client half.  The reference reads
+// the networked copy and answers a plain boolean bit test for HasSpawnFlags;
+// the argument is lenient there (any number), which checkinteger covers for
+// the integer constants every script passes.
+static int CBaseEntity_GetSpawnFlags (lua_State *L) {
+  lua_pushinteger( L, luaL_checkentity( L, 1 )->m_spawnflags );
+  return 1;
+}
+
+static int CBaseEntity_HasSpawnFlags (lua_State *L) {
+  lua_pushboolean( L, ( luaL_checkentity( L, 1 )->m_spawnflags & (unsigned)luaL_checkinteger( L, 2 ) ) != 0 );
+  return 1;
+}
+
+// HL2SB: GMod's shared Entity:IsOnFire, client half.  The reference reads its
+// own per-entity fire-state members; the engine-native source of truth here is
+// the networked effect-entity handle (CBaseAnimating::Ignite points it at the
+// entityflame, the flame's StopEffect clears it) plus the FL_ONFIRE flag.
+// The stock properties panel runs the ignite/extinguish Filter on the CLIENT
+// and one erroring Filter kills the whole DEntityProperties build, so without
+// this the entire context-menu property list went dead, not just ignite.
+// Extinguish stays server-only -- the reference publishes no client copy.
+static int CBaseEntity_IsOnFire (lua_State *L) {
+  C_BaseEntity *pEntity = luaL_checkentity( L, 1 );
+  bool bOnFire = ( pEntity->GetFlags() & FL_ONFIRE ) != 0;
+  if ( !bOnFire )
+  {
+    bOnFire = ( dynamic_cast< C_EntityFlame * >( pEntity->GetEffectEntity() ) != NULL );
+  }
+  lua_pushboolean( L, bOnFire );
+  return 1;
+}
+
 static const luaL_Reg CBaseEntitymeta[] = {
   {"SpawnClientEntity", CBaseEntity_SpawnClientEntity},
   {"Interp_HierarchyUpdateInterpolationAmounts", CBaseEntity_Interp_HierarchyUpdateInterpolationAmounts},
@@ -359,6 +395,15 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // into the same table.
   {"CreateParticleEffect", CBaseEntity_CreateParticleEffect},
   {"StopParticlesInvolving", CBaseEntity_StopParticlesInvolving},
+  // HL2SB: GMod publishes these two on the CLIENT entity metatable too --
+  // Entity:HasSpawnFlags/GetSpawnFlags are shared.  lua_run.lua's Initialize
+  // calls self:HasSpawnFlags on the client copy of the entity and died with
+  // "attempt to call a nil value" before this.  The value is the networked
+  // m_spawnflags copy (DT_BaseEntity carries it; Add/RemoveSpawnFlags stay
+  // server-only, matching the reference surface).
+  {"GetSpawnFlags", CBaseEntity_GetSpawnFlags},
+  {"HasSpawnFlags", CBaseEntity_HasSpawnFlags},
+  {"IsOnFire", CBaseEntity_IsOnFire},
   {NULL, NULL}
 };
 
