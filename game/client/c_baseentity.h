@@ -1381,6 +1381,11 @@ public:
 	// Team Handling
 	int								m_iTeamNum;
 
+	// HL2SB: clientside copy of the map spawnflags (networked via DT_BaseEntity
+	// -- GMod publishes it this way and its shared Entity:HasSpawnFlags /
+	// GetSpawnFlags read it on the client).
+	int								m_spawnflags;
+
 #if !defined( NO_ENTITY_PREDICTION )
 	// Certain entities (projectiles) can be created on the client
 	CPredictableId					m_PredictableID;

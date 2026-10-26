@@ -234,7 +234,8 @@ static int luasrc_SharedRandomAngle (lua_State *L) {
 class CLuaTraceFilter : public ITraceFilter
 {
 public:
-	CLuaTraceFilter( void ) { m_L = NULL; m_nRef = LUA_NOREF; m_nType = LUA_TNIL; m_pPassEnt = NULL; m_nCollisionGroup = COLLISION_GROUP_NONE; m_bIgnoreWorld = false; }
+	CLuaTraceFilter( void ) { m_L = NULL; m_nRef = LUA_NOREF; m_nType = LUA_TNIL; m_pPassEnt = NULL; m_nCollisionGroup = COLLISION_GROUP_NONE; m_bIgnoreWorld = false; m_bWhitelist = false; }
+	~CLuaTraceFilter() { Release(); }
 
 	void Setup( lua_State *pL, int nIndex, IHandleEntity *pPassEnt, int nCollisionGroup )
 	{
@@ -291,6 +292,15 @@ public:
 	// util.TraceLineEx sets it after the first world hit so later passes reach
 	// entities the world would shadow).
 	void SetIgnoreWorld( bool bIgnoreWorld ) { m_bIgnoreWorld = bIgnoreWorld; }
+	void SetWhitelist( bool whitelist )
+	{
+		m_bWhitelist = whitelist;
+		if ( whitelist && m_pPassEnt )
+		{
+			m_ignoreList.AddToTail( EntityFromEntityHandle( m_pPassEnt ) );
+			m_pPassEnt = NULL;
+		}
+	}
 
 	void Release( void )
 	{
@@ -302,9 +312,10 @@ public:
 		m_nType = LUA_TNIL;
 		m_ignoreList.RemoveAll();
 		m_bIgnoreWorld = false;
+		m_bWhitelist = false;
 	}
 
-	virtual TraceType_t GetTraceType( void ) const { return TRACE_EVERYTHING; }
+	virtual TraceType_t GetTraceType( void ) const { return m_bIgnoreWorld ? TRACE_ENTITIES_ONLY : TRACE_EVERYTHING; }
 
 	virtual bool ShouldHitEntity( IHandleEntity *pHandleEntity, int contentsMask )
 	{
@@ -331,17 +342,25 @@ public:
 		if ( !pEntity->ShouldCollide( m_nCollisionGroup, contentsMask ) )
 			return false;
 
-		if ( !g_pGameRules->ShouldCollide( m_nCollisionGroup, pEntity->GetCollisionGroup() ) )
+		if ( g_pGameRules && !g_pGameRules->ShouldCollide( m_nCollisionGroup, pEntity->GetCollisionGroup() ) )
 			return false;
 
+		bool listed = false;
 		if ( m_ignoreList.Count() > 0 )
 		{
 			for ( int i = 0; i < m_ignoreList.Count(); ++i )
 			{
 				if ( m_ignoreList[ i ] == pEntity )
-					return false;
+				{
+					listed = true;
+					break;
+				}
 			}
 		}
+		if ( m_bWhitelist )
+			return listed;
+		if ( listed )
+			return false;
 
 		if ( m_nType != LUA_TFUNCTION )
 			return true;
@@ -368,13 +387,9 @@ private:
 	IHandleEntity			*m_pPassEnt;
 	int						 m_nCollisionGroup;
 	bool					 m_bIgnoreWorld;
-	CUtlVector< CBaseEntity * > m_ignoreList;
+	bool                     m_bWhitelist;
+	CUtlVector< EHANDLE > m_ignoreList;
 };
-
-// The parser hands the filter to the trace callers through these two; a trace is
-// built and used inside a single binding call, so one instance is enough.
-static CLuaTraceFilter s_LuaTraceFilter;
-static bool s_bLuaTraceFilterActive = false;
 
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: GMod's util.TraceLine / util.TraceHull take a *table*
@@ -395,7 +410,7 @@ static bool s_bLuaTraceFilterActive = false;
 // CLuaTraceFilter above).
 //-----------------------------------------------------------------------------
 static bool luasrc_TraceArgsFromTable (lua_State *L, Vector *pStart, Vector *pEnd, Vector *pMins, Vector *pMaxs,
-                                        int *pMask, CBaseEntity **ppFilter, int *pCollisionGroup)
+                                        int *pMask, CBaseEntity **ppFilter, int *pCollisionGroup, CLuaTraceFilter &luaFilter)
 {
   *pStart = vec3_origin;
   *pEnd = vec3_origin;
@@ -447,28 +462,59 @@ static bool luasrc_TraceArgsFromTable (lua_State *L, Vector *pStart, Vector *pEn
   lua_pop( L, 1 );
 
   // `filter` is read LAST: the Lua filter below wants the collision group.
-  s_bLuaTraceFilterActive = false;
-  s_LuaTraceFilter.Release();
+  lua_getfield( L, 1, "whitelist" );
+  const bool whitelist = lua_toboolean( L, -1 ) != 0;
+  lua_pop( L, 1 );
 
   lua_getfield( L, 1, "filter" );
 
-  if ( lua_isfunction( L, -1 ) || lua_istable( L, -1 ) || bIgnoreWorld )
+  if ( lua_isfunction( L, -1 ) || lua_istable( L, -1 ) || bIgnoreWorld || whitelist )
   {
     // Routing through the Lua filter either because the filter IS a Lua value
     // or because ignoreworld needs a ShouldHitEntity hook.  Entity and nil
     // filters are captured inside Setup.
-    s_LuaTraceFilter.Setup( L, -1, NULL, *pCollisionGroup );
-    s_LuaTraceFilter.SetIgnoreWorld( bIgnoreWorld );
-    s_bLuaTraceFilterActive = true;
+    luaFilter.Setup( L, -1, NULL, *pCollisionGroup );
+    luaFilter.SetIgnoreWorld( bIgnoreWorld );
+    luaFilter.SetWhitelist( whitelist );
   }
   else
   {
-    *ppFilter = lua_toentity( L, -1 );      // NULL for nil, GMod's NULL sentinel or a table
+    *ppFilter = lua_toentity( L, -1 );
+    lua_pop( L, 1 );
+    return false;
   }
 
   lua_pop( L, 1 );
 
   return true;
+}
+
+// Fill a caller-owned result table, preserving its identity and unrelated keys.
+static void luasrc_PushTraceOutput( lua_State *L, CGameTrace &trace )
+{
+  lua_getfield( L, 1, "output" );
+  if ( !lua_istable( L, -1 ) )
+  {
+    lua_pop( L, 1 );
+    lua_pushtrace( L, trace );
+    return;
+  }
+  const int output = lua_gettop( L );
+  lua_pushtrace( L, trace );
+  const int value = lua_gettop( L );
+  static const char *const fields[] = {
+    "StartPos", "HitPos", "HitNormal", "Normal", "Fraction", "FractionLeftSolid",
+    "Hit", "HitWorld", "HitNonWorld", "Entity", "StartSolid", "AllSolid",
+    "HitBox", "HitBoxBone", "HitGroup", "PhysicsBone", "MatType", "SurfaceProps",
+    "HitSky", "HitTexture", "SurfaceFlags", "DispFlags", "Contents", "HitNoDraw"
+  };
+  for ( unsigned i = 0; i < ARRAYSIZE( fields ); ++i )
+  {
+    lua_pushstring( L, fields[i] );
+    lua_getfield( L, value, fields[i] );
+    lua_rawset( L, output );
+  }
+  lua_pop( L, 1 );
 }
 
 static int luasrc_UTIL_TraceLine (lua_State *L) {
@@ -479,17 +525,17 @@ static int luasrc_UTIL_TraceLine (lua_State *L) {
     int nMask = MASK_SHOT, nCollisionGroup = COLLISION_GROUP_NONE;
     CGameTrace trace;
 
-    luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup );
+    CLuaTraceFilter luaFilter;
+    const bool useLuaFilter = luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup, luaFilter );
 
-    if ( s_bLuaTraceFilterActive )
-      UTIL_TraceLine( vecStart, vecEnd, nMask, &s_LuaTraceFilter, &trace );
+    if ( useLuaFilter )
+      UTIL_TraceLine( vecStart, vecEnd, nMask, &luaFilter, &trace );
     else
       UTIL_TraceLine( vecStart, vecEnd, nMask, pFilter, nCollisionGroup, &trace );
 
-    s_LuaTraceFilter.Release();
-    s_bLuaTraceFilterActive = false;
+    luaFilter.Release();
 
-    lua_pushtrace( L, trace );
+    luasrc_PushTraceOutput( L, trace );
     return 1;
   }
 
@@ -504,17 +550,17 @@ static int luasrc_UTIL_TraceHull (lua_State *L) {
     int nMask = MASK_SHOT, nCollisionGroup = COLLISION_GROUP_NONE;
     CGameTrace trace;
 
-    luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup );
+    CLuaTraceFilter luaFilter;
+    const bool useLuaFilter = luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup, luaFilter );
 
-    if ( s_bLuaTraceFilterActive )
-      UTIL_TraceHull( vecStart, vecEnd, vecMins, vecMaxs, nMask, &s_LuaTraceFilter, &trace );
+    if ( useLuaFilter )
+      UTIL_TraceHull( vecStart, vecEnd, vecMins, vecMaxs, nMask, &luaFilter, &trace );
     else
       UTIL_TraceHull( vecStart, vecEnd, vecMins, vecMaxs, nMask, pFilter, nCollisionGroup, &trace );
 
-    s_LuaTraceFilter.Release();
-    s_bLuaTraceFilterActive = false;
+    luaFilter.Release();
 
-    lua_pushtrace( L, trace );
+    luasrc_PushTraceOutput( L, trace );
     return 1;
   }
 
@@ -547,20 +593,20 @@ static int luasrc_UTIL_TraceEntity (lua_State *L) {
     int nMask = MASK_SHOT, nCollisionGroup = COLLISION_GROUP_NONE;
     CGameTrace trace;
 
-    luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup );
+    CLuaTraceFilter luaFilter;
+    const bool useLuaFilter = luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup, luaFilter );
 
     Vector vecHullMin = pEntity->CollisionProp()->OBBMins();
     Vector vecHullMax = pEntity->CollisionProp()->OBBMaxs();
 
-    if ( s_bLuaTraceFilterActive )
-      UTIL_TraceHull( vecStart, vecEnd, vecHullMin, vecHullMax, nMask, &s_LuaTraceFilter, &trace );
+    if ( useLuaFilter )
+      UTIL_TraceHull( vecStart, vecEnd, vecHullMin, vecHullMax, nMask, &luaFilter, &trace );
     else
       UTIL_TraceHull( vecStart, vecEnd, vecHullMin, vecHullMax, nMask, pFilter, nCollisionGroup, &trace );
 
-    s_LuaTraceFilter.Release();
-    s_bLuaTraceFilterActive = false;
+    luaFilter.Release();
 
-    lua_pushtrace( L, trace );
+    luasrc_PushTraceOutput( L, trace );
     return 1;
   }
 
@@ -2632,7 +2678,8 @@ static int luasrc_UTIL_TraceEntityHull (lua_State *L) {
     int nMask = MASK_SHOT, nCollisionGroup = COLLISION_GROUP_NONE;
     CGameTrace trace;
 
-    luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup );
+    CLuaTraceFilter luaFilter;
+    const bool useLuaFilter = luasrc_TraceArgsFromTable( L, &vecStart, &vecEnd, &vecMins, &vecMaxs, &nMask, &pFilter, &nCollisionGroup, luaFilter );
 
     CBaseEntity *pEnt = lua_toentity( L, 2 );
     if ( !pEnt ) {
@@ -2644,14 +2691,13 @@ static int luasrc_UTIL_TraceEntityHull (lua_State *L) {
     vecMins = vecHalf * -1.0f;
     vecMaxs = vecHalf;
 
-    if ( s_bLuaTraceFilterActive )
-      UTIL_TraceHull( vecStart, vecEnd, vecMins, vecMaxs, nMask, &s_LuaTraceFilter, &trace );
+    if ( useLuaFilter )
+      UTIL_TraceHull( vecStart, vecEnd, vecMins, vecMaxs, nMask, &luaFilter, &trace );
     else
       UTIL_TraceHull( vecStart, vecEnd, vecMins, vecMaxs, nMask, pEnt, nCollisionGroup, &trace );
 
-    s_LuaTraceFilter.Release();
-    s_bLuaTraceFilterActive = false;
-    lua_pushtrace( L, trace );
+    luaFilter.Release();
+    luasrc_PushTraceOutput( L, trace );
     return 1;
   }
 

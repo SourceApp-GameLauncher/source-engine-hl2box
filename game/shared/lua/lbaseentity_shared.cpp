@@ -2570,7 +2570,18 @@ static int CBaseEntity_RegisterThinkContext (lua_State *L) {
 }
 
 static int CBaseEntity_Remove (lua_State *L) {
-  luaL_checkentity(L, 1)->Remove();
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  if (entity->entindex() == 0 || entity->IsPlayer())
+    return 0;
+  static const char *const protectedClasses[] = {
+    "worldspawn", "player", "gm_bot", "gmod_gamerules", "soundent",
+    "ai_ally_speech_manager", "ai_network_build_helper", "scene_manager",
+    "ai_network", "player_manager", "instanced_scripted_scene", "npc_barnacle_tongue_tip"
+  };
+  for (int i = 0; i < ARRAYSIZE(protectedClasses); ++i)
+    if (Q_strcmp(entity->GetClassname(), protectedClasses[i]) == 0)
+      return 0;
+  entity->Remove();
   return 0;
 }
 
@@ -2643,11 +2654,21 @@ static int CBaseEntity_GetNetworkOrigin (lua_State *L) {
   return 1;
 }
 
+// HL2SB: the reference publishes Entity:SetNetworkOrigin as a TWO-step write on
+// the client -- the networked origin field AND the absolute position (which
+// runs CalcAbsolutePosition, clears the dirty-transform flag, updates the
+// coordinate frame and transforms into the parent's local space).  Writing
+// only the network field leaves the networked coordinate and the actually
+// DRAWN position out of sync, which shows as an entity that is visible one
+// frame and not the next while it is being moved.  Kept inside this binding on
+// purpose: the engine's own SetNetworkOrigin is reached from the network
+// receive path, where the second write does not belong.
 static int CBaseEntity_SetNetworkOrigin (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   const Vector &vecOrigin = luaL_checkvector(L, 2);
 #ifdef CLIENT_DLL
   pEntity->SetNetworkOrigin(vecOrigin);
+  pEntity->SetAbsOrigin(vecOrigin);
 #else
   pEntity->SetAbsOrigin(vecOrigin);
 #endif
@@ -3032,6 +3053,61 @@ static int CBaseEntity_SetParent (lua_State *L) {
     iAttachment = (int)lua_tointeger( L, 3 );
 
   luaL_checkentity(L, 1)->SetParent(pParent, iAttachment);
+  return 0;
+}
+
+// Bone length is measured between the current bone and its studio parent.
+static int CBaseEntity_BoneLength (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseAnimating *animating = entity->GetBaseAnimating();
+  if ( animating == NULL )
+    return 0;
+  const int bone = luaL_checkint( L, 2 );
+  CStudioHdr *hdr = animating->GetModelPtr();
+  if ( hdr == NULL || bone < 0 || bone >= hdr->numbones() )
+    return 0;
+  const int parent = hdr->pBone( bone )->parent;
+  if ( parent < 1 )
+  {
+    lua_pushnumber( L, 0 );
+    return 1;
+  }
+  Vector position, parentPosition;
+  QAngle angles;
+  animating->GetBonePosition( bone, position, angles );
+  animating->GetBonePosition( parent, parentPosition, angles );
+  lua_pushnumber( L, position.DistTo( parentPosition ) );
+  return 1;
+}
+
+static int CBaseEntity_EnableCustomCollisions (lua_State *L) {
+  luaL_checkentity( L, 1 )->AddSolidFlags( FSOLID_CUSTOMRAYTEST | FSOLID_CUSTOMBOXTEST );
+  return 0;
+}
+
+static int CBaseEntity_FollowBone (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+
+  CBaseEntity *pParent = lua_toplayer(L, 2);
+  if (pParent == NULL)
+    pParent = lua_toentity(L, 2);
+
+  if (pParent == NULL)
+  {
+    pEntity->RemoveEffects( EF_FOLLOWBONE );
+    pEntity->SetParent( NULL, -1 );
+    return 0;
+  }
+
+  int iBone = (int)luaL_optnumber( L, 3, 0 );
+  if ( iBone < 0 || iBone > 255 )
+  {
+    luasrc_LuaWarnMsgF( "FollowBone: bone index %d out of range (0-255)\n", iBone );
+    iBone = 0;
+  }
+
+  pEntity->AddEffects( EF_FOLLOWBONE );
+  pEntity->SetParent( pParent, iBone );
   return 0;
 }
 
@@ -4707,7 +4783,8 @@ static int CBaseEntity___tostring (lua_State *L) {
 // field lookup now yields nil instead (see CBaseEntity___index).
 //-----------------------------------------------------------------------------
 static int CBaseEntity_IsValid (lua_State *L) {
-  lua_pushboolean(L, lua_toentity(L, 1) != NULL);
+  CBaseEntity *entity = lua_toentity(L, 1);
+  lua_pushboolean(L, entity != NULL && entity->entindex() != 0);
   return 1;
 }
 
@@ -6099,6 +6176,11 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"EndGroundContact", CBaseEntity_EndGroundContact},
   {"EndTouch", CBaseEntity_EndTouch},
   {"entindex", CBaseEntity_entindex},
+  // HL2SB: the reference publishes this under EntIndex (capitalized) -- every
+  // original GMod script spells it that way (lua_run.lua's chunk name, the
+  // properties/persistence system, undo).  Both spellings answer the same
+  // binding now.
+  {"EntIndex", CBaseEntity_entindex},
   {"EntityToWorldSpace", CBaseEntity_EntityToWorldSpace},
   {"EyeAngles", CBaseEntity_EyeAngles},
   {"EyePosition", CBaseEntity_EyePosition},
@@ -6413,6 +6495,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetOwnerEntity", CBaseEntity_SetOwnerEntity},
   {"SetOwner", CBaseEntity_SetOwner},
   {"SetParent", CBaseEntity_SetParent},
+  {"FollowBone", CBaseEntity_FollowBone},
+  {"BoneLength", CBaseEntity_BoneLength},
+  {"EnableCustomCollisions", CBaseEntity_EnableCustomCollisions},
   {"SetPlayerSimulated", CBaseEntity_SetPlayerSimulated},
   {"SetPredictionEligible", CBaseEntity_SetPredictionEligible},
   {"SetPredictionPlayer", CBaseEntity_SetPredictionPlayer},

@@ -18,6 +18,7 @@
 #include "ltakedamageinfo.h"	// HL2SB (2026-09-29): lua_pushdamageinfo for the OnTakeDamage dispatch
 #include "lvphysics_interface.h"
 #include "mathlib/lvector.h"
+#include "collisionutils.h"
 #include "utlstring.h"	// HL2SB: CUtlString for the client draw-probe classnames
 #ifdef CLIENT_DLL
 #include "clientleafsystem.h"	// HL2SB (2026-10-02): re-report the render group after the script class binds
@@ -30,6 +31,8 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 IMPLEMENT_NETWORKCLASS_ALIASED( BaseScripted, DT_BaseScripted )
@@ -304,6 +307,7 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 			if ( s_nBindReports < 40 )
 			{
 				++s_nBindReports;
+				if ( hl2sb_dev_msgs.GetBool() )
 				luasrc_LuaWarnMsgF( "[HL2SB] bind '%s': table=%d funcs=%d\n",
 					className, bGotTable ? 1 : 0, nFuncs );
 			}
@@ -638,6 +642,55 @@ RenderGroup_t CBaseScripted::GetRenderGroup( void )
 	return BaseClass::GetRenderGroup();
 }
 
+// HL2SB: the stock C_BaseEntity::ShouldDraw requires a model ((model != 0)).
+// GMod's widget classes spawn model-less and render entirely through their
+// script (ENT:Draw -> widgets.RenderMe -> OverlayRender), so a scripted entity
+// whose Lua table draws itself must pass this renderable filter -- otherwise
+// the bone tool's handles never appear even with every material present.
+// Entities WITH a model keep the stock logic untouched.
+bool CBaseScripted::ShouldDraw( void )
+{
+	const model_t *pModel = GetModel();
+	if ( pModel != NULL )
+		return BaseClass::ShouldDraw();
+
+#ifdef CLIENT_DLL
+	if ( L == NULL || m_nTableReference < 0 )
+		return false;
+
+	bool bDraws = false;
+
+	lua_getref( L, m_nTableReference );
+	if ( lua_istable( L, -1 ) )
+	{
+		// Same protected lookup contract as the DrawModel dispatcher above --
+		// the script table can answer through an __index metamethod.
+		bDraws = luasrc_PushScriptField( L, -1, "Draw" ) != 0;
+		lua_pop( L, 1 );
+
+		if ( !bDraws )
+		{
+			bDraws = luasrc_PushScriptField( L, -1, "DrawTranslucent" ) != 0;
+			lua_pop( L, 1 );
+		}
+
+		if ( !bDraws )
+		{
+			bDraws = luasrc_PushScriptField( L, -1, "RenderOverride" ) != 0;
+			lua_pop( L, 1 );
+		}
+	}
+	lua_pop( L, 1 );
+
+	if ( !bDraws )
+		return false;
+
+	return !IsEffectActive( EF_NODRAW ) && ( index != 0 );
+#else
+	return false;
+#endif
+}
+
 int CBaseScripted::DrawModel( int flags )
 {
 #if defined( LUA_SDK ) && defined( CLIENT_DLL )
@@ -813,6 +866,7 @@ void CBaseScripted::OnDataChanged( DataUpdateType_t updateType )
 				// not the entity's identity.  The networked script class is
 				// the real one.  Cap lowered: this fired per scripted entity
 				// and users read the collapsed constant as addon pollution.
+				if ( hl2sb_dev_msgs.GetBool() )
 				luasrc_LuaWarnMsgF( "[HL2SB] CLIENT scripted entity created (classmap name='%s', real class='%s')",
 					GetClassname(),
 					( m_iScriptedClassname.Get() != NULL ) ? m_iScriptedClassname.Get() : "(syncing)" );
@@ -864,6 +918,8 @@ void CBaseScripted::OnDataChanged( DataUpdateType_t updateType )
 			m_bLuaRenderGroupRead = false;
 
 			InitScriptedEntity();
+			InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
+			UpdateVisibility();
 
 			// HL2SB (2026-10-02): the render group may have been cached from the
 			// pre-bind fallback answer - AddToLeafSystem runs before the Lua
@@ -1502,3 +1558,182 @@ void CBaseScripted::UpdateOnRemove( void )
 	BaseClass::UpdateOnRemove();
 }
 
+#ifdef LUA_SDK
+static int ReadScriptCollisionResult( lua_State *state )
+{
+	trace_t &trace = *static_cast<trace_t *>( lua_touserdata( state, 2 ) );
+	lua_getfield( state, 1, "Fraction" );
+	if ( lua_type( state, -1 ) == LUA_TNUMBER )
+		trace.fraction = lua_tonumber( state, -1 );
+	lua_pop( state, 1 );
+	lua_getfield( state, 1, "HitPos" );
+	if ( luaL_testudata( state, -1, "Vector" ) )
+		trace.endpos = lua_tovector( state, -1 );
+	lua_pop( state, 1 );
+	lua_getfield( state, 1, "Normal" );
+	if ( luaL_testudata( state, -1, "Vector" ) )
+		trace.plane.normal = lua_tovector( state, -1 );
+	return 0;
+}
+#endif
+
+bool CBaseScripted::TestCollision( const Ray_t &ray, unsigned int mask, trace_t &trace )
+{
+	bool useDefault = true;
+#ifdef LUA_SDK
+	if ( L != NULL && m_nTableReference >= 0 && lua_checkstack( L, 16 ) )
+	{
+		const int top = lua_gettop( L );
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) && luasrc_PushScriptField( L, -1, "TestCollision" ) )
+		{
+			PushLuaInstanceSafe( L, this );
+			lua_pushvector( L, ray.m_Start + ray.m_StartOffset );
+			lua_pushvector( L, ray.m_Delta );
+			lua_pushboolean( L, !ray.m_IsRay );
+			lua_pushvector( L, ray.m_Extents );
+			lua_pushnumber( L, mask );
+			useDefault = false;
+			if ( luasrc_pcall( L, 6, 1, 0 ) == 0 )
+			{
+				if ( lua_istable( L, -1 ) )
+				{
+					lua_pushcfunction( L, ReadScriptCollisionResult );
+					lua_pushvalue( L, -2 );
+					lua_pushlightuserdata( L, &trace );
+					if ( luasrc_pcall( L, 2, 0, 0 ) != 0 )
+					{
+						lua_settop( L, top );
+						return false;
+					}
+					trace.m_pEnt = this;
+					trace.hitbox = 0;
+					trace.hitgroup = 0;
+					trace.startsolid = false;
+					trace.allsolid = false;
+					trace.contents = CONTENTS_SOLID;
+					lua_settop( L, top );
+					return true;
+				}
+				useDefault = lua_isboolean( L, -1 ) && lua_toboolean( L, -1 );
+			}
+		}
+		lua_settop( L, top );
+	}
+#endif
+	if ( !useDefault )
+		return false;
+	if ( GetSolid() == SOLID_BBOX )
+	{
+		if ( !IntersectRayWithBox( ray, GetAbsOrigin() + CollisionProp()->OBBMins(),
+			GetAbsOrigin() + CollisionProp()->OBBMaxs(), 0.0f, &trace ) )
+			return false;
+		trace.m_pEnt = this;
+		trace.contents = CONTENTS_SOLID;
+		return true;
+	}
+	return BaseClass::TestCollision( ray, mask, trace );
+}
+
+
+//-----------------------------------------------------------------------------
+// HL2SB: GMod dispatches ENTITY:CalcAbsolutePosition on scripted entities
+// whose script defines it (the widget classes -- widget_bone answers the
+// parent's bone position, widget_axis computes its own seat).  The reference
+// calls this from CBaseEntity::CalcAbsolutePosition through a dedicated
+// vtable slot; here the contract is answered with a guarded helper both
+// realms call from CalcAbsolutePosition: only scripted entities, only when
+// the script table actually carries the method, pcall-protected, with a
+// re-entrancy guard (a callback that reads its own abs position falls back
+// to the stale values instead of recursing) and a one-shot failure report.
+// A Vector return becomes the absolute origin, an Angle return the absolute
+// angles; anything else leaves the engine's own math in place.
+//-----------------------------------------------------------------------------
+bool HL2SB_ScriptedCalcAbsolutePosition( CBaseEntity *pEntity, Vector &outOrigin, QAngle &outAngles )
+{
+	static CUtlVector< CBaseEntity * > activeEntities;
+	// Cheap pre-filter first: only scripted entities ever answer this hook,
+	// and every scripted entity carries a live Lua table reference while it
+	// does.  This keeps the dynamic_cast off the hot path for world/brush
+	// entities whose abs transform recomputes constantly.
+	// The re-entry guard is PER ENTITY: a callback legitimately reads its
+	// PARENT's abs position (widget_bone does), which recomputes the parent
+	// transform through this same function -- only a self-recursion (a
+	// callback reading its own abs) is the cycle the guard exists for.
+	if ( !ThreadInMainThread() || L == NULL || pEntity->m_nTableReference < 0 )
+		return false;
+	if ( activeEntities.Find( pEntity ) != activeEntities.InvalidIndex() )
+		return false;
+
+	CBaseScripted *pScripted = dynamic_cast< CBaseScripted * >( pEntity );
+	if ( pScripted == NULL )
+		return false;
+
+	bool bAnswered = false;
+	bool bFailed = false;
+
+	// Anchor the entry top and restore it on EVERY path: luasrc_PushScriptField
+	// always leaves a slot (nil when absent), so the absent-method branch used
+	// to leak the entity table and every callback path leaked its arguments --
+	// the observed "Lua stack nonempty" HUD warnings.
+	const int iEntryTop = lua_gettop( L );
+	if ( !lua_checkstack( L, 16 ) )
+		return false;
+	activeEntities.AddToTail( pEntity );
+
+	lua_getref( L, pScripted->m_nTableReference );
+	if ( lua_istable( L, -1 ) )
+	{
+		if ( luasrc_PushScriptField( L, -1, "CalcAbsolutePosition" ) && lua_isfunction( L, -1 ) )
+		{
+			CBaseEntity::PushLuaInstanceSafe( L, pEntity );
+			// Contract: ( self, currentOrigin, currentAngles ) -- the callback
+			// may build on where the engine would have placed the entity.
+			lua_pushvector( L, outOrigin );
+			lua_pushangle( L, outAngles );
+			if ( luasrc_pcall( L, 3, 2, 0 ) != 0 )
+			{
+				bFailed = true;
+			}
+			else
+			{
+				// [pos][ang] -- each output is INDEPENDENT: a nil means "keep
+				// what the engine computed" for that component only, so a
+				// position-only callback must not clobber the angles.
+				if ( lua_isuserdata( L, -2 ) && luaL_testudata( L, -2, "Vector" ) != NULL )
+				{
+					const Vector value = lua_tovector( L, -2 );
+					if ( value.IsValid() )
+					{
+						outOrigin = value;
+						bAnswered = true;
+					}
+				}
+				if ( lua_isuserdata( L, -1 ) && luaL_testudata( L, -1, "Angle" ) != NULL )
+				{
+					const QAngle value = lua_toangle( L, -1 );
+					if ( value.IsValid() )
+					{
+						outAngles = value;
+						bAnswered = true;
+					}
+				}
+			}
+		}
+	}
+
+	lua_settop( L, iEntryTop );
+	activeEntities.Remove( activeEntities.Count() - 1 );
+
+	if ( bFailed )
+	{
+		static bool s_bReported = false;
+		if ( !s_bReported )
+		{
+			s_bReported = true;
+			luasrc_LuaWarnMsgF( "ENTITY:CalcAbsolutePosition raised -- further failures silenced (see the Lua error above)\n" );
+		}
+	}
+
+	return bAnswered;
+}

@@ -6,6 +6,7 @@
 //===========================================================================//
 #include "cbase.h"
 #include "c_baseentity.h"
+#include "c_baseanimating.h"	// HL2SB: EF_FOLLOWBONE parent transform (GetBoneTransform)
 #include "prediction.h"
 #include "model_types.h"
 #include "gamestringpool.h"
@@ -50,6 +51,8 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "lua/hl2sb_flexmanipulator.h"
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 
@@ -475,6 +478,9 @@ BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
 	RecvPropInt(RECVINFO(m_nRenderFX)),
 	RecvPropInt(RECVINFO(m_clrRender)),
 	RecvPropInt(RECVINFO(m_iTeamNum)),
+	// HL2SB: matches the m_spawnflags send prop in DT_BaseEntity (inserted at
+	// the same position -- table order must stay aligned).
+	RecvPropInt(RECVINFO(m_spawnflags)),
 	RecvPropInt(RECVINFO(m_CollisionGroup)),
 	RecvPropFloat(RECVINFO(m_flElasticity)),
 	RecvPropFloat(RECVINFO(m_flShadowCastDistance)),
@@ -2378,9 +2384,16 @@ void C_BaseEntity::MarkAimEntsDirty()
 	{
 		C_BaseEntity *pEnt = g_AimEntsList[ i ];
 		Assert( pEnt && pEnt->GetMoveParent() );
-		if ( pEnt->IsEffectActive(EF_BONEMERGE | EF_PARENT_ANIMATES) )
+		// HL2SB: EF_FOLLOWBONE children ride the parent's BONE animation --
+		// an NPC animating in place moves its bones without any entity
+		// origin change, so the follow-bone child must be dirtied every
+		// frame exactly like the bonemerge family.
+		if ( pEnt->IsEffectActive(EF_BONEMERGE | EF_PARENT_ANIMATES | EF_FOLLOWBONE) )
 		{
-			pEnt->AddEFlags( EFL_DIRTY_ABSTRANSFORM );
+			if ( pEnt->IsEffectActive( EF_FOLLOWBONE ) )
+				pEnt->InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
+			else
+				pEnt->AddEFlags( EFL_DIRTY_ABSTRANSFORM );
 		}
 	}
 }
@@ -2396,7 +2409,7 @@ void C_BaseEntity::CalcAimEntPositions()
 		C_BaseEntity *pEnt = g_AimEntsList[ i ];
 		Assert( pEnt );
 		Assert( pEnt->GetMoveParent() );
-		if ( pEnt->IsEffectActive(EF_BONEMERGE) )
+		if ( pEnt->IsEffectActive(EF_BONEMERGE | EF_FOLLOWBONE) )
 		{
 			pEnt->CalcAbsolutePosition( );
 		}
@@ -2648,6 +2661,7 @@ void C_BaseEntity::PostDataUpdate( DataUpdateType_t updateType )
 		if ( updateType == DATA_UPDATE_CREATED && ( s_nPostDataReports < 8 || bInteresting ) )
 		{
 			++s_nPostDataReports;
+			if ( hl2sb_dev_msgs.GetBool() )
 			luasrc_LuaWarnMsgF( "[HL2SB] CLIENT entity class='%s' updateType=%d entindex=%d",
 				( pszClass != NULL ) ? pszClass : "(null)", (int)updateType, entindex() );
 		}
@@ -4446,7 +4460,32 @@ matrix3x4_t& C_BaseEntity::GetParentToWorldTransform( matrix3x4_t &tempMatrix )
 		return tempMatrix;
 	}
 
-	if ( m_iParentAttachment != 0 )
+	// HL2SB: EF_FOLLOWBONE makes the attachment byte a BONE index -- the
+	// reference Entity:FollowBone parents through the parent's bone matrix
+	// instead of an attachment (archived contract).  Bone indices are
+	// ZERO-based (bone 0 is valid, unlike attachment 0 = "no attachment"),
+	// so the flag is tested BEFORE the != 0 gate and the index is validated
+	// against the model's real bone count.
+	if ( IsEffectActive( EF_FOLLOWBONE ) )
+	{
+		C_BaseAnimating *pAnimating = pMoveParent->GetBaseAnimating();
+		CStudioHdr *pStudioHdr = pAnimating ? pAnimating->GetModelPtr() : NULL;
+		if ( pStudioHdr != NULL &&
+			m_iParentAttachment >= 0 && m_iParentAttachment < pStudioHdr->numbones() )
+		{
+			// The parent cache includes vertex bones while it has bone followers.
+			if ( !pAnimating->IsEFlagSet( EFL_SETTING_UP_BONES ) )
+			{
+				pAnimating->GetBoneTransform( m_iParentAttachment, tempMatrix );
+				return tempMatrix;
+			}
+			if ( !pAnimating->IsBoneMatrixAvailable( m_iParentAttachment, false ) )
+				return pMoveParent->EntityToWorldTransform();
+			MatrixCopy( pAnimating->GetBone( m_iParentAttachment ), tempMatrix );
+			return tempMatrix;
+		}
+	}
+	else if ( m_iParentAttachment != 0 )
 	{
 		Vector vOrigin;
 		QAngle vAngles;
@@ -4456,7 +4495,7 @@ matrix3x4_t& C_BaseEntity::GetParentToWorldTransform( matrix3x4_t &tempMatrix )
 			return tempMatrix;
 		}
 	}
-	
+
 	// If we fall through to here, then just use the move parent's abs origin and angles.
 	return pMoveParent->EntityToWorldTransform();
 }
@@ -4475,6 +4514,7 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	if (!s_bAbsRecomputationEnabled)
 		return;
 
+
 	// FIXME: Recompute absbox!!!
 	if ((m_iEFlags & EFL_DIRTY_ABSTRANSFORM) == 0)
 	{
@@ -4491,6 +4531,23 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	}
 
 	RemoveEFlags( EFL_DIRTY_ABSTRANSFORM );
+
+#if defined( LUA_SDK )
+	const auto applyScriptPosition = [this]()
+	{
+		extern bool HL2SB_ScriptedCalcAbsolutePosition( CBaseEntity *, Vector &, QAngle & );
+		Vector origin = m_vecAbsOrigin;
+		QAngle angles = m_angAbsRotation;
+		if ( HL2SB_ScriptedCalcAbsolutePosition( this, origin, angles ) )
+		{
+			m_vecAbsOrigin = origin;
+			m_angAbsRotation = angles;
+			AngleMatrix( angles, origin, m_rgflCoordinateFrame );
+			MarkRenderHandleDirty();
+		}
+	};
+#endif
+
 
 	// HL2SB (2026-09-21, the "spawned entities have no model" sessions): the
 	// leaf system's contract is "call this when the renderable moves"
@@ -4515,12 +4572,18 @@ void C_BaseEntity::CalcAbsolutePosition( )
 		m_vecAbsOrigin = GetLocalOrigin();
 		m_angAbsRotation = GetLocalAngles();
 		NormalizeAngles( m_angAbsRotation );
+#if defined( LUA_SDK )
+		applyScriptPosition();
+#endif
 		return;
 	}
 	
 	if ( IsEffectActive(EF_BONEMERGE) )
 	{
 		MoveToAimEnt();
+#if defined( LUA_SDK )
+		applyScriptPosition();
+#endif
 		return;
 	}
 
@@ -4538,7 +4601,7 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	MatrixGetColumn( m_rgflCoordinateFrame, 3, m_vecAbsOrigin );
 
 	// if we have any angles, we have to extract our absolute angles from our matrix
-	if ( m_angRotation == vec3_angle && m_iParentAttachment == 0 )
+	if ( m_angRotation == vec3_angle && m_iParentAttachment == 0 && !IsEffectActive( EF_FOLLOWBONE ) )
 	{
 		// just copy our parent's absolute angles
 		VectorCopy( m_pMoveParent->GetAbsAngles(), m_angAbsRotation );
@@ -4554,10 +4617,14 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	//
 	// So here, we keep our absorigin invalidated. It means we're returning an origin that is a frame old to CalculateIKLocks,
 	// but we'll still render with the right origin.
-	if ( m_iParentAttachment != 0 && (m_pMoveParent->GetEFlags() & EFL_SETTING_UP_BONES) )
+	if ( (m_iParentAttachment != 0 || IsEffectActive( EF_FOLLOWBONE )) && (m_pMoveParent->GetEFlags() & EFL_SETTING_UP_BONES) )
 	{
 		m_iEFlags |= EFL_DIRTY_ABSTRANSFORM;
 	}
+#if defined( LUA_SDK )
+	applyScriptPosition();
+#endif
+
 }
 
 void C_BaseEntity::CalcAbsoluteVelocity()

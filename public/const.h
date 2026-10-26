@@ -294,7 +294,12 @@ enum
 										// the parent is not in the PVS.
 	EF_ITEM_BLINK			= 0x100,	// blink an item so that the user notices it.
 	EF_PARENT_ANIMATES		= 0x200,	// always assume that the parent entity is animating
-	EF_MAX_BITS = 10
+	// FollowBone interprets the parent attachment byte as a zero-based bone.
+	EF_FOLLOWBONE			= 0x400,
+	// HL2SB: the networked m_fEffects send width must cover every EF bit the
+	// game defines -- 10 bits truncated bit10 (0x400) on the wire, so the
+	// follow-bone state never reached the client.
+	EF_MAX_BITS = 11
 };
 
 #define EF_PARITY_BITS	3

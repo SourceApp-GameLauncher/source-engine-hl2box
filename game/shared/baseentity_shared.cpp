@@ -223,7 +223,10 @@ void CBaseEntity::SetEffects( int nEffects )
 #endif // HL2_EPISODIC
 #endif // !CLIENT_DLL
 
+		const bool followBoneChanged = ((m_fEffects ^ nEffects) & EF_FOLLOWBONE) != 0;
 		m_fEffects = nEffects;
+		if ( followBoneChanged )
+			InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
 
 #ifndef CLIENT_DLL
 		DispatchUpdateTransmitState();
@@ -248,7 +251,10 @@ void CBaseEntity::AddEffects( int nEffects )
 #endif // HL2_EPISODIC
 #endif // !CLIENT_DLL
 
-	m_fEffects |= nEffects; 
+	const bool followBoneChanged = (nEffects & EF_FOLLOWBONE) && !(m_fEffects & EF_FOLLOWBONE);
+	m_fEffects |= nEffects;
+	if ( followBoneChanged )
+		InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
 
 	if ( nEffects & EF_NODRAW)
 	{
@@ -1543,10 +1549,10 @@ void CBaseEntity::InvalidatePhysicsRecursive( int nChangeFlags )
 		if ( bOnlyDueToAttachment )
 		{
 #ifdef CLIENT_DLL
-			if ( (pChild->GetParentAttachment() == 0) && !pChild->IsFollowingEntity() )
+			if ( (pChild->GetParentAttachment() == 0) && !pChild->IsFollowingEntity() && !pChild->IsEffectActive( EF_FOLLOWBONE ) )
 				continue;
 #else
-			if ( pChild->GetParentAttachment() == 0 )
+			if ( pChild->GetParentAttachment() == 0 && !pChild->IsEffectActive( EF_FOLLOWBONE ) )
 				continue;
 #endif
 		}

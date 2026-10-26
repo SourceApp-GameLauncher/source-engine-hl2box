@@ -75,6 +75,7 @@
 
 #if defined( HL2SB )
 #include "hl2sb_undo.h"
+#include "basescripted.h"	// HL2SB: ENTITY:CalcAbsolutePosition dispatch (widgets)
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -302,6 +303,11 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 #endif
 	SendPropInt		(SENDINFO(m_clrRender),	32, SPROP_UNSIGNED),
 	SendPropInt		(SENDINFO(m_iTeamNum),		TEAMNUM_NUM_BITS, 0),
+	// HL2SB: GMod networks the spawnflags on every entity -- its shared
+	// Entity:HasSpawnFlags/GetSpawnFlags read a clientside copy.  The map
+	// keyvalue lands server-side only (DEFINE_KEYFIELD above), so without
+	// this prop the client copy would always answer 0.
+	SendPropInt		(SENDINFO(m_spawnflags),	32, SPROP_UNSIGNED),
 	SendPropInt		(SENDINFO(m_CollisionGroup), 5, SPROP_UNSIGNED),
 	SendPropFloat	(SENDINFO(m_flElasticity), 0, SPROP_COORD),
 	SendPropFloat	(SENDINFO(m_flShadowCastDistance), 12, SPROP_UNSIGNED ),
@@ -2176,6 +2182,8 @@ void CBaseEntity::UpdateOnRemove( void )
 #ifdef LUA_SDK
 	extern void HL2SB_StopMotionController(CBaseEntity *entity);
 	HL2SB_StopMotionController(this);
+	extern void HL2SB_DriveEntityRemoved(CBaseEntity *entity);
+	HL2SB_DriveEntityRemoved(this);
 #endif
 #ifdef LUA_SDK
 	HL2SB_ClearSpawnEffect(this);
@@ -5934,6 +5942,23 @@ void CBaseEntity::CalcAbsolutePosition( void )
 
 	RemoveEFlags( EFL_DIRTY_ABSTRANSFORM );
 
+#if defined( LUA_SDK )
+	const auto applyScriptPosition = [this]()
+	{
+		extern bool HL2SB_ScriptedCalcAbsolutePosition( CBaseEntity *, Vector &, QAngle & );
+		Vector origin = m_vecAbsOrigin;
+		QAngle angles = m_angAbsRotation;
+		if ( HL2SB_ScriptedCalcAbsolutePosition( this, origin, angles ) )
+		{
+			m_vecAbsOrigin = origin;
+			m_angAbsRotation = angles;
+			AngleMatrix( angles, origin, m_rgflCoordinateFrame );
+		}
+	};
+#endif
+
+
+
 	// Plop the entity->parent matrix into m_rgflCoordinateFrame
 	AngleMatrix( m_angRotation, m_vecOrigin, m_rgflCoordinateFrame );
 
@@ -5943,6 +5968,9 @@ void CBaseEntity::CalcAbsolutePosition( void )
 		// no move parent, so just copy existing values
 		m_vecAbsOrigin = m_vecOrigin;
 		m_angAbsRotation = m_angRotation;
+		#if defined( LUA_SDK )
+		applyScriptPosition();
+		#endif
 		if ( HasDataObjectType( POSITIONWATCHER ) )
 		{
 			ReportPositionChanged( this );
@@ -5959,7 +5987,7 @@ void CBaseEntity::CalcAbsolutePosition( void )
 	MatrixGetColumn( m_rgflCoordinateFrame, 3, m_vecAbsOrigin ); 
 
 	// if we have any angles, we have to extract our absolute angles from our matrix
-	if (( m_angRotation == vec3_angle ) && ( m_iParentAttachment == 0 ))
+	if (( m_angRotation == vec3_angle ) && ( m_iParentAttachment == 0 ) && !IsEffectActive( EF_FOLLOWBONE ))
 	{
 		// just copy our parent's absolute angles
 		VectorCopy( pMoveParent->GetAbsAngles(), m_angAbsRotation );
@@ -5968,6 +5996,10 @@ void CBaseEntity::CalcAbsolutePosition( void )
 	{
 		MatrixAngles( m_rgflCoordinateFrame, m_angAbsRotation );
 	}
+#if defined( LUA_SDK )
+	applyScriptPosition();
+#endif
+
 	if ( HasDataObjectType( POSITIONWATCHER ) )
 	{
 		ReportPositionChanged( this );
@@ -6064,17 +6096,38 @@ matrix3x4_t& CBaseEntity::GetParentToWorldTransform( matrix3x4_t &tempMatrix )
 		return tempMatrix;
 	}
 
-	if ( m_iParentAttachment != 0 )
+	if ( IsEffectActive( EF_FOLLOWBONE ) || m_iParentAttachment != 0 )
 	{
 		MDLCACHE_CRITICAL_SECTION();
 
 		CBaseAnimating *pAnimating = pMoveParent->GetBaseAnimating();
-		if ( pAnimating && pAnimating->GetAttachment( m_iParentAttachment, tempMatrix ) )
+		if ( pAnimating )
 		{
-			return tempMatrix;
+			// HL2SB: EF_FOLLOWBONE makes the attachment byte a BONE index --
+			// the reference Entity:FollowBone parents through the parent's
+			// bone matrix instead of an attachment (archived contract).
+			// Bone indices are ZERO-based (bone 0 is valid, unlike attachment
+			// 0 = "no attachment"), so the flag is tested BEFORE the
+			// != 0 gate and the index is validated against the model's real
+			// bone count before the matrix write.
+			if ( IsEffectActive( EF_FOLLOWBONE ) )
+			{
+				CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+				if ( pStudioHdr != NULL &&
+					m_iParentAttachment >= 0 && m_iParentAttachment < pStudioHdr->numbones() )
+				{
+					// The parent cache includes vertex bones while it has bone followers.
+					pAnimating->GetBoneTransform( m_iParentAttachment, tempMatrix );
+					return tempMatrix;
+				}
+			}
+			else if ( pAnimating->GetAttachment( m_iParentAttachment, tempMatrix ) )
+			{
+				return tempMatrix;
+			}
 		}
 	}
-	
+
 	// If we fall through to here, then just use the move parent's abs origin and angles.
 	return pMoveParent->EntityToWorldTransform();
 }
