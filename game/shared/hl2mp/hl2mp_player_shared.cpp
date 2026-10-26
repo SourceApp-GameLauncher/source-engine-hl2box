@@ -744,6 +744,18 @@ void CPlayerAnimState::Update()
     if ( !pHdr || !pHdr->SequencesAvailable() || !pPlayer->IsAlive() )
         return;
 
+    extern CBaseEntity *HL2SB_GetPlayerDrivingEntity( CBasePlayer * );
+    if (HL2SB_GetPlayerDrivingEntity(pPlayer) != NULL)
+    {
+        const int stackTop = L ? lua_gettop(L) : 0;
+        if (HL2SB_PushPlayerAnimationHook("PlayerDriveAnimate", pPlayer))
+        {
+            luasrc_pcall(L, 2, 0, 0);
+            lua_settop(L, stackTop);
+        }
+        return;
+    }
+
     Vector velocity;
     GetOuterAbsVelocity( velocity );
     Activity ideal = ACT_MP_STAND_IDLE;

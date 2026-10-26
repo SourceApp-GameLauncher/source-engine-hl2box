@@ -1144,22 +1144,6 @@ void CGameMovement::ProcessMovement( CBasePlayer *pPlayer, CMoveData *pMove )
 
 	float flStoreFrametime = gpGlobals->frametime;
 
-	// HL2SB GMod compat (2026-10-03): GM:Move( ply, mv ) - the reference engine
-	// fires this as ProcessMovement's very FIRST statement, before any
-	// initialisation, and a true return abandons the whole tick (the hook moved
-	// the player itself via mv:SetOrigin/SetVelocity).  Same predicted-realm
-	// behaviour as the SetupMove dispatch further down: server always, client
-	// during prediction.  Local extern on purpose: waf has no header
-	// dependency propagation.
-	{
-		extern bool HL2SB_LuaMoveHookReplace( CBasePlayer *pPlayer, CMoveData *pMove );
-		if ( HL2SB_LuaMoveHookReplace( pPlayer, pMove ) )
-		{
-			gpGlobals->frametime = flStoreFrametime;
-			return;
-		}
-	}
-
 	//!!HACK HACK: Adrian - slow down all player movement by this factor.
 	//!!Blame Yahn for this one.
 	gpGlobals->frametime *= pPlayer->GetLaggedMovementValue();
@@ -1170,7 +1154,7 @@ void CGameMovement::ProcessMovement( CBasePlayer *pPlayer, CMoveData *pMove )
 	// Once we crop, we don't want to recursively crop again, so we set the crop
 	//  flag globally here once per usercmd cycle.
 	m_iSpeedCropped = SPEED_CROPPED_RESET;
-	
+
 	// StartTrackPredictionErrors should have set this
 	Assert( player == pPlayer );
 	player = pPlayer;
@@ -1182,38 +1166,32 @@ void CGameMovement::ProcessMovement( CBasePlayer *pPlayer, CMoveData *pMove )
 
 	DiffPrint( "start %f %f %f", mv->GetAbsOrigin().x, mv->GetAbsOrigin().y, mv->GetAbsOrigin().z );
 
+	bool bMoveHooked = false;
 #if defined( LUA_SDK )
-	// HL2SB GMod compat (2026-09-24): GM:SetupMove( ply, mv, cmd ) right
-	// before the engine processes the movement (GMod contract; the First
-	// Person Body addon times jump/duck here via mv:GetButtons()).  Runs in
-	// whichever realm is moving the player - server always, client during
-	// prediction, which matches GMod's predicted-hook behaviour.  Local
-	// extern on purpose: waf has no header dependency propagation.
+	// HL2SB: GM:PlayerTick fires "moments before GM:Move" (wiki), inside the
+	// movement step; GM:Move then lets the script perform the move itself --
+	// a true return suppresses ONLY the native movement below, NOT the outer
+	// SetupMove/FinishMove stages (wiki Game_Movement; the drive system needs
+	// its FinishMove write-back to run even while Move is hooked).  Runs in
+	// whichever realm is moving the player: server always, client during
+	// prediction.  The SetupMove/FinishMove dispatches live in the OUTER
+	// CPlayerMove functions (player_command.cpp), matching the archived
+	// reference CGMODPlayerMove.SetupMove / GM.FinishMove.dispatch.  Local
+	// externs on purpose: waf has no header dependency propagation.
 	{
-		extern void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
-		HL2SB_LuaMoveHooks( pPlayer, pMove, "SetupMove" );
-	}
-
-	// HL2SB GMod compat (2026-10-08): GM:PlayerTick( ply, mv ) - GMod raises
-	// it from the top of ProcessMovement, after SetupMove and before the
-	// movement itself runs.  Same helper, same realms.
-	{
-		extern void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
+		extern int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
 		HL2SB_LuaMoveHooks( pPlayer, pMove, "PlayerTick" );
+		bMoveHooked = HL2SB_LuaMoveHooks( pPlayer, pMove, "Move" ) != 0;
 	}
 #endif
 
 	// Run the command.
-	PlayerMove();
+	if ( !bMoveHooked )
+	{
+		PlayerMove();
+	}
 
 	FinishMove();
-
-#if defined( LUA_SDK )
-	{
-		extern void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
-		HL2SB_LuaMoveHooks( pPlayer, pMove, "FinishMove" );
-	}
-#endif
 
 	DiffPrint( "end %f %f %f", mv->GetAbsOrigin().x, mv->GetAbsOrigin().y, mv->GetAbsOrigin().z );
 

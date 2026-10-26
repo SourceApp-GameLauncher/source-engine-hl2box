@@ -288,16 +288,25 @@ void CBasePlayer::ItemPostFrame()
 		return;
 	}
 
+#ifdef LUA_SDK
+	extern bool HL2SB_PlayerCanAttack( CBasePlayer *player );
+	const bool canAttack = HL2SB_PlayerCanAttack( this );
+#else
+	const bool canAttack = true;
+#endif
+
     if ( gpGlobals->curtime < m_flNextAttack )
 	{
-		if ( GetActiveWeapon() )
+		if ( canAttack && GetActiveWeapon() )
 		{
 			GetActiveWeapon()->ItemBusyFrame();
 		}
 	}
 	else
 	{
-		if ( GetActiveWeapon() && (!IsInAVehicle() || UsingStandardWeaponsInVehicle()) )
+		// Scripted weapons retain their frame callbacks and gate attack input themselves.
+		if ( GetActiveWeapon() && (canAttack || GetActiveWeapon()->IsScripted()) &&
+			(!IsInAVehicle() || UsingStandardWeaponsInVehicle()) )
 		{
 #if defined( CLIENT_DLL )
 			// Not predicting this weapon

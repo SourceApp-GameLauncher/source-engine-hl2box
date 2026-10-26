@@ -1052,6 +1052,12 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN, false );
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN_SERVER, true );
 
+	// HL2SB: lua/drive/*.lua -- GMod's drive types, registered on BOTH realms;
+	// the sandbox "drive" property runs drive.PlayerStartDriving on the SERVER,
+	// so the mode tables must exist here too or the action dies on
+	// "Unknown drive type".
+	luasrc_dofolder_sorted( L, LUA_ROOT "/drive", false );
+
 	// GMod's loading order (wiki: Lua Loading Order): weapons, entities and
 	// effects are loaded AFTER the gamemode files, so a gamemode can register its
 	// own bases first and the folders override them.  They run further down,

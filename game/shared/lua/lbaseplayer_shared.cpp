@@ -707,27 +707,28 @@ static int CBasePlayer_GetObserverMode (lua_State *L) {
 
 // HL2SB (2026-10-16) GMod compat: Player:SetObserverMode( mode ).
 //
-// Reference behavior (GMod win64): the binding clamps
-// the argument to the engine's OBS_MODE range (negative / >= 7 is dropped,
-// the write happens behind the clamp) and stores it on the player.  The drive
-// system saves the pre-drive observer mode and restores it afterwards
-// (lua/includes/modules/drive.lua:190/294, driven from GM:StartEntityDriving /
-// GM:EndEntityDriving), and lua/drive/drive_sandbox.lua sets OBS_MODE_CHASE
-// while its move hooks run; the fork's player meta only carried the getter, so
-// every drive entry died on the missing method.
-//
-// The fork routes through the engine's own SetObserverMode (server:
-// player.cpp:2448, client: c_baseplayer.cpp:609).  Documented deviation: the
-// SERVER version additionally applies the mp_forcecamera game-rules
-// restriction for modes past OBS_MODE_FIXED on a team, whereas the reference
-// writes the raw member -- kept because the fork must not write a protected
-// engine member (and the restricted mode is still a valid spectator mode).
+// Reference behavior (current GMod server build, archived locally): the
+// binding is a PURE networked int write -- player-gated, lenient numeric arg,
+// modes outside [0, 7) silently dropped, m_iObserverMode written only on
+// change.  It does NOT run this engine's CBasePlayer::SetObserverMode cascade
+// (no SetFOV/SetViewOffset/SetMoveType(MOVETYPE_OBSERVER)/SetObserverTarget).
+// That matters for the drive system: lua/drive/drive_sandbox.lua sets
+// OBS_MODE_CHASE EVERY StartMove while driving -- routed through the cascade
+// the player becomes MOVETYPE_OBSERVER and the movement code runs down the
+// observer path, which wedges the drive exit (the E-key KeyReleased(IN_USE)
+// check in StartMove stops seeing usable commands; death and re-drive cannot
+// restore either).  Through the reference contract the mode int just rides
+// the network to the client view code while the player keeps moving normally.
 static int CBasePlayer_SetObserverMode (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-  const int nMode = luaL_checkint(L, 2);
+  const int nMode = (int)luaL_checknumber(L, 2);
 
   if (nMode >= OBS_MODE_NONE && nMode < NUM_OBSERVER_MODES) {
+#ifndef CLIENT_DLL
+    pPlayer->HL2SB_SetObserverModeRaw(nMode);
+#else
     pPlayer->SetObserverMode(nMode);
+#endif
   }
   return 0;
 }
@@ -1688,15 +1689,23 @@ static int CBasePlayer_GetAllowWeaponsInVehicle (lua_State *L) {
   return 1;
 }
 
+#endif
+
 static int CBasePlayer_GetRenderAngles (lua_State *L) {
-  lua_pushangle(L, lua_toplayer(L, 1)->GetRenderAngles());
+  CHL2MP_Player *player = dynamic_cast<CHL2MP_Player *>(luaL_checkplayer(L, 1));
+  if (player) lua_pushangle(L, player->GetRenderAngles());
+  else lua_pushangle(L, vec3_angle);
   return 1;
 }
 
 static int CBasePlayer_SetRenderAngles (lua_State *L) {
-  C_HL2MP_Player *pPlayer = dynamic_cast<C_HL2MP_Player *>(luaL_checkplayer(L, 1));
+  CHL2MP_Player *pPlayer = dynamic_cast<CHL2MP_Player *>(luaL_checkplayer(L, 1));
   const QAngle &angles = luaL_checkangle(L, 2);
-  if (pPlayer != NULL && !pPlayer->IsRagdoll())
+  if (pPlayer != NULL
+#ifdef CLIENT_DLL
+      && !pPlayer->IsRagdoll()
+#endif
+      )
   {
     // The mutable animation state owns this reference. Entity transforms
     // must not change when a render callback temporarily changes the pose.
@@ -1704,7 +1713,6 @@ static int CBasePlayer_SetRenderAngles (lua_State *L) {
   }
   return 0;
 }
-#endif
 
 static int CBasePlayer___index (lua_State *L) {
   CBasePlayer *pPlayer = lua_toplayer(L, 1);
@@ -2832,11 +2840,14 @@ public:
 #else
     void OnDataChanged(DataUpdateType_t type);
     CHandle<CBaseEntity> m_lastDriven;
+    CHandle<CBaseEntity> m_predictionEntity;
 #endif
     CPlayerDriveState();
     ~CPlayerDriveState();
     CNetworkHandle(CBasePlayer, m_hPlayer);
     CNetworkHandle(CBaseEntity, m_hDriven);
+    CNetworkHandle(CBaseEntity, m_hHoveredWidget);
+    CNetworkHandle(CBaseEntity, m_hPressedWidget);
     CNetworkVar(int, m_iMode);
 };
 
@@ -2845,10 +2856,14 @@ BEGIN_NETWORK_TABLE(CPlayerDriveState, DT_PlayerDriveState)
 #ifdef CLIENT_DLL
     RecvPropEHandle(RECVINFO(m_hPlayer)),
     RecvPropEHandle(RECVINFO(m_hDriven)),
+    RecvPropEHandle(RECVINFO(m_hHoveredWidget)),
+    RecvPropEHandle(RECVINFO(m_hPressedWidget)),
     RecvPropInt(RECVINFO(m_iMode)),
 #else
     SendPropEHandle(SENDINFO(m_hPlayer)),
     SendPropEHandle(SENDINFO(m_hDriven)),
+    SendPropEHandle(SENDINFO(m_hHoveredWidget)),
+    SendPropEHandle(SENDINFO(m_hPressedWidget)),
     SendPropInt(SENDINFO(m_iMode), 15),
 #endif
 END_NETWORK_TABLE()
@@ -2857,6 +2872,8 @@ LINK_ENTITY_TO_CLASS(hl2sb_player_drive_state, CPlayerDriveState);
 BEGIN_DATADESC(CPlayerDriveState)
     DEFINE_FIELD(m_hPlayer, FIELD_EHANDLE),
     DEFINE_FIELD(m_hDriven, FIELD_EHANDLE),
+    DEFINE_FIELD(m_hHoveredWidget, FIELD_EHANDLE),
+    DEFINE_FIELD(m_hPressedWidget, FIELD_EHANDLE),
     DEFINE_FIELD(m_iMode, FIELD_INTEGER),
 END_DATADESC()
 #endif
@@ -2867,12 +2884,18 @@ CPlayerDriveState::CPlayerDriveState()
 {
     m_hPlayer = NULL;
     m_hDriven = NULL;
+    m_hHoveredWidget = NULL;
+    m_hPressedWidget = NULL;
     m_iMode = 0;
     s_PlayerDriveStates.AddToTail(this);
 }
 
 CPlayerDriveState::~CPlayerDriveState()
 {
+#ifdef CLIENT_DLL
+    if (m_predictionEntity && m_predictionEntity->GetPredictable())
+        m_predictionEntity->ShutdownPredictable();
+#endif
     s_PlayerDriveStates.FindAndRemove(this);
 }
 
@@ -2887,11 +2910,25 @@ static void PlayerDriveCallback(const char *name, CBaseEntity *entity, CBasePlay
 }
 
 #ifdef CLIENT_DLL
+static void UpdatePlayerWidgetState( CBasePlayer *, CBaseEntity *, CBaseEntity * );
 void CPlayerDriveState::OnDataChanged(DataUpdateType_t type)
 {
     BaseClass::OnDataChanged(type);
+    UpdatePlayerWidgetState( m_hPlayer.Get(), m_hHoveredWidget.Get(), m_hPressedWidget.Get() );
     CBaseEntity *oldEntity = m_lastDriven.Get();
     CBaseEntity *newEntity = m_hDriven.Get();
+    CBaseEntity *localEntity = m_hPlayer.Get() == C_BasePlayer::GetLocalPlayer() ? newEntity : NULL;
+    if (m_predictionEntity.Get() != localEntity)
+    {
+        if (m_predictionEntity && m_predictionEntity->GetPredictable())
+            m_predictionEntity->ShutdownPredictable();
+        m_predictionEntity = NULL;
+        if (localEntity && !localEntity->GetPredictable())
+        {
+            localEntity->InitPredictable();
+            m_predictionEntity = localEntity;
+        }
+    }
     if (oldEntity == newEntity)
         return;
     m_lastDriven = newEntity;
@@ -2923,6 +2960,55 @@ static CPlayerDriveState *PlayerDriveState(CBasePlayer *player, bool create = fa
     return NULL;
 }
 
+// HL2SB: force-stop a player's drive session server-side -- the same store
+// the binding performs for (nil), fired from the player lifecycle events
+// (death/respawn) and wherever the driven entity goes away.  Firing the
+// EndEntityDriving callback matters: it is what reaches
+// GM:EndEntityDriving -> drive.End, which restores the saved eye angles,
+// observer mode, view entity and world model -- without it a dead or
+// respawned player keeps the wedged drive view.  The Lua-side
+// m_CurrentDriverMethod clears itself on the next IsDrivingEntity check.
+void HL2SB_DriveStopPlayer( CBasePlayer *player )
+{
+#ifdef CLIENT_DLL
+    (void)player;
+#else
+    if ( player == NULL )
+        return;
+
+    CPlayerDriveState *state = PlayerDriveState( player, false );
+    if ( state == NULL )
+        return;
+
+    CBaseEntity *oldEntity = state->m_hDriven.Get();
+    if ( oldEntity != NULL )
+    {
+        PlayerDriveCallback( "EndEntityDriving", oldEntity, player );
+        state->m_hDriven = NULL;
+    }
+    state->m_iMode = 0;
+#endif
+}
+
+void HL2SB_DriveEntityRemoved(CBaseEntity *entity)
+{
+#ifndef CLIENT_DLL
+    CUtlVector<CHandle<CBasePlayer> > players;
+    for (int i = 0; i < s_PlayerDriveStates.Count(); ++i)
+    {
+        CPlayerDriveState *state = s_PlayerDriveStates[i];
+        if (state->m_hDriven.Get() == entity || state->m_hPlayer.Get() == entity)
+        {
+            CHandle<CBasePlayer> player;
+            player = state->m_hPlayer.Get();
+            players.AddToTail(player);
+        }
+    }
+    for (int i = 0; i < players.Count(); ++i)
+        HL2SB_DriveStopPlayer(players[i].Get());
+#endif
+}
+
 static int CBasePlayer_SetDrivingEntity(lua_State *L)
 {
 #ifndef CLIENT_DLL
@@ -2944,10 +3030,15 @@ static int CBasePlayer_SetDrivingEntity(lua_State *L)
     return 0;
 }
 
+CBaseEntity *HL2SB_GetPlayerDrivingEntity(CBasePlayer *player)
+{
+    CPlayerDriveState *state = PlayerDriveState(player);
+    return state ? state->m_hDriven.Get() : NULL;
+}
+
 static int CBasePlayer_GetDrivingEntity(lua_State *L)
 {
-    CPlayerDriveState *state = PlayerDriveState(luaL_checkplayer(L, 1));
-    CBaseEntity::PushLuaInstanceSafe(L, state ? state->m_hDriven.Get() : NULL);
+    CBaseEntity::PushLuaInstanceSafe(L, HL2SB_GetPlayerDrivingEntity(luaL_checkplayer(L, 1)));
     return 1;
 }
 
@@ -2989,7 +3080,91 @@ static int CBasePlayer_DrawWorldModel(lua_State *L)
     return 0;
 }
 
+struct PlayerWidgetState
+{
+  EHANDLE owner;
+  EHANDLE hovered;
+  EHANDLE pressed;
+};
+
+static PlayerWidgetState *GetPlayerWidgetState( CBasePlayer *player, bool create )
+{
+  static CUtlVector<PlayerWidgetState> states;
+  for ( int i = states.Count() - 1; i >= 0; --i )
+  {
+    if ( states[i].owner.Get() == player )
+      return &states[i];
+    if ( states[i].owner.Get() == NULL )
+      states.FastRemove( i );
+  }
+  if ( !create )
+    return NULL;
+  const int index = states.AddToTail();
+  states[index].owner = player;
+  states[index].hovered = NULL;
+  states[index].pressed = NULL;
+  return &states[index];
+}
+
+static int CBasePlayer_SetHoveredWidget( lua_State *L )
+{
+  CBasePlayer *player = luaL_checkplayer( L, 1 );
+  CBaseEntity *widget = lua_toentity( L, 2 );
+  GetPlayerWidgetState( player, true )->hovered = widget;
+#ifndef CLIENT_DLL
+  CPlayerDriveState *state = PlayerDriveState( player, widget != NULL );
+  if ( state ) state->m_hHoveredWidget = widget;
+#endif
+  return 0;
+}
+
+static int CBasePlayer_GetHoveredWidget( lua_State *L )
+{
+  PlayerWidgetState *state = GetPlayerWidgetState( luaL_checkplayer( L, 1 ), false );
+  CBaseEntity::PushLuaInstanceSafe( L, state ? state->hovered.Get() : NULL );
+  return 1;
+}
+
+static int CBasePlayer_SetPressedWidget( lua_State *L )
+{
+  CBasePlayer *player = luaL_checkplayer( L, 1 );
+  CBaseEntity *widget = lua_toentity( L, 2 );
+  GetPlayerWidgetState( player, true )->pressed = widget;
+#ifndef CLIENT_DLL
+  CPlayerDriveState *state = PlayerDriveState( player, widget != NULL );
+  if ( state ) state->m_hPressedWidget = widget;
+#endif
+  return 0;
+}
+
+static int CBasePlayer_GetPressedWidget( lua_State *L )
+{
+  PlayerWidgetState *state = GetPlayerWidgetState( luaL_checkplayer( L, 1 ), false );
+  CBaseEntity::PushLuaInstanceSafe( L, state ? state->pressed.Get() : NULL );
+  return 1;
+}
+
+bool HL2SB_PlayerCanAttack( CBasePlayer *player )
+{
+  PlayerWidgetState *state = GetPlayerWidgetState( player, false );
+  return state == NULL || state->pressed.Get() == NULL;
+}
+
+#ifdef CLIENT_DLL
+static void UpdatePlayerWidgetState( CBasePlayer *player, CBaseEntity *hovered, CBaseEntity *pressed )
+{
+  if ( player == NULL ) return;
+  PlayerWidgetState *state = GetPlayerWidgetState( player, true );
+  state->hovered = hovered;
+  state->pressed = pressed;
+}
+#endif
+
 static const luaL_Reg CBasePlayermeta[] = {
+  {"SetHoveredWidget", CBasePlayer_SetHoveredWidget},
+  {"GetHoveredWidget", CBasePlayer_GetHoveredWidget},
+  {"SetPressedWidget", CBasePlayer_SetPressedWidget},
+  {"GetPressedWidget", CBasePlayer_GetPressedWidget},
 #ifndef CLIENT_DLL
   {"EnterVehicle", CBasePlayer_EnterVehicle},
 #endif
@@ -3231,9 +3406,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"GetCurrentViewOffset", CBasePlayer_GetCurrentViewOffset},
   {"GetViewOffset", CBasePlayer_GetViewOffset},
   {"SetEyeAngles", CBasePlayer_SetEyeAngles},
-#ifdef CLIENT_DLL
   {"GetRenderAngles", CBasePlayer_GetRenderAngles},
   {"SetRenderAngles", CBasePlayer_SetRenderAngles},
+#ifdef CLIENT_DLL
   {"GetAllowWeaponsInVehicle", CBasePlayer_GetAllowWeaponsInVehicle},
   {"ShouldDrawLocalPlayer", CBasePlayer_ShouldDrawLocalPlayer},
   // HL2SB GMod compat: the scoreboard's mute button reads and toggles these.
@@ -3381,11 +3556,16 @@ static int MoveData_GetUpSpeed (lua_State *L) {
   return 1;
 }
 static int MoveData_GetMoveAngles (lua_State *L) {
-  lua_pushangle(L, HL2SB_CheckMoveData(L, 1)->m_vecAngles);
+  lua_pushangle(L, HL2SB_CheckMoveData(L, 1)->m_vecViewAngles);
   return 1;
 }
 static int MoveData_KeyDown (lua_State *L) {
   lua_pushboolean(L, (HL2SB_CheckMoveData(L, 1)->m_nButtons & luaL_checkint(L, 2)) != 0);
+  return 1;
+}
+
+static int MoveData_KeyWasDown (lua_State *L) {
+  lua_pushboolean(L, (HL2SB_CheckMoveData(L, 1)->m_nOldButtons & luaL_checkint(L, 2)) != 0);
   return 1;
 }
 
@@ -3416,7 +3596,7 @@ static int MoveData_KeyReleased (lua_State *L) {
   return 1;
 }
 static int MoveData_SetMoveAngles (lua_State *L) {
-  HL2SB_CheckMoveData(L, 1)->m_vecAngles = luaL_checkangle(L, 2);
+  HL2SB_CheckMoveData(L, 1)->m_vecViewAngles = luaL_checkangle(L, 2);
   return 0;
 }
 static int MoveData_SetUpSpeed (lua_State *L) {
@@ -3461,6 +3641,7 @@ static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"SetMoveAngles",       MoveData_SetMoveAngles},
   {"SetUpSpeed",          MoveData_SetUpSpeed},
   {"KeyDown",             MoveData_KeyDown},
+  {"KeyWasDown",          MoveData_KeyWasDown},
   {"AddKey",              MoveData_AddKey},
   {"KeyPressed",          MoveData_KeyPressed},
   {"KeyReleased",         MoveData_KeyReleased},
@@ -3507,10 +3688,26 @@ void HL2SB_LuaVehicleMove( CBasePlayer *player, CBaseEntity *vehicle, CMoveData 
     END_LUA_CALL_HOOK( 3, 0 );
 }
 
-void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook )
+// HL2SB: fires one GMod movement hook and answers whether the hook TAKES
+// OVER that movement stage (wiki Game_Movement: each of SetupMove/Move/
+// FinishMove returns true to suppress only its own default engine step --
+// drive.Move returning true must still let GM:SetupMove/GM:FinishMove run,
+// which the old early-return dispatch got wrong and wedged the drive exit).
+int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook )
 {
 	if ( L == NULL || pPlayer == NULL || pMove == NULL )
-		return;
+		return 0;
+
+	if (Q_strcmp(pszHook, "SetupMove") != 0)
+	{
+		BEGIN_LUA_CALL_HOOK( pszHook );
+			lua_pushplayer( L, pPlayer );
+			HL2SB_PushMoveData_Internal( L, pMove );
+		END_LUA_CALL_HOOK( 2, 1 );
+		const int handled = lua_toboolean( L, -1 ) != 0 ? 1 : 0;
+		lua_pop( L, 1 );
+		return handled;
+	}
 
 	const CUserCmd *pCmd = pPlayer->GetCurrentUserCommand();
 	CUserCmd fallbackCmd;
@@ -3528,6 +3725,7 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 	}
 
 	int iTableRef = LUA_NOREF;
+	int iTakesOver = 0;
 
 	BEGIN_LUA_CALL_HOOK( pszHook );
 		lua_pushplayer( L, pPlayer );
@@ -3536,6 +3734,7 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 		lua_pushvalue( L, -1 );
 		iTableRef = luaL_ref( L, LUA_REGISTRYINDEX );
 	END_LUA_CALL_HOOK( 3, 1 );
+	iTakesOver = lua_toboolean( L, -1 ) != 0 ? 1 : 0;
 	lua_pop( L, 1 );
 
 	if ( iTableRef != LUA_NOREF )
@@ -3555,7 +3754,6 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 					pMutCmd->viewangles[1] = ang[1];
 					// Preserve roll (viewangles[2]) in the command buffer so predicted command replays keep their encoded state
 				}
-				pMove->m_vecViewAngles = ang;
 			}
 			lua_pop( L, 1 );
 
@@ -3565,7 +3763,6 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 				const int btns = (int)lua_tointeger( L, -1 );
 				if ( pMutCmd != NULL )
 					pMutCmd->buttons = btns;
-				pMove->m_nButtons = btns;
 			}
 			lua_pop( L, 1 );
 
@@ -3575,7 +3772,6 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 				const float fmove = (float)lua_tonumber( L, -1 );
 				if ( pMutCmd != NULL )
 					pMutCmd->forwardmove = fmove;
-				pMove->m_flForwardMove = fmove;
 			}
 			lua_pop( L, 1 );
 
@@ -3585,7 +3781,6 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 				const float smove = (float)lua_tonumber( L, -1 );
 				if ( pMutCmd != NULL )
 					pMutCmd->sidemove = smove;
-				pMove->m_flSideMove = smove;
 			}
 			lua_pop( L, 1 );
 
@@ -3595,13 +3790,14 @@ void HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *psz
 				const float umove = (float)lua_tonumber( L, -1 );
 				if ( pMutCmd != NULL )
 					pMutCmd->upmove = umove;
-				pMove->m_flUpMove = umove;
 			}
 			lua_pop( L, 1 );
 		}
 		lua_pop( L, 1 );
 		luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
 	}
+
+	return iTakesOver;
 }
 
 // HL2SB (2026-10-19): GM:StartCommand( ply, cmd ) shared hook helper with
@@ -3694,19 +3890,9 @@ void HL2SB_LuaPlayerJump( CBasePlayer *pPlayer, float flJumpSpeed )
 // dispatch sits before any init, takes the player and the CMoveData and -
 // per the binary - NO third CUserCmd argument despite what the wiki
 // documents).  Returns true when a hook or the gamemode method returned
-// true: the hook moved the player itself (mv:SetOrigin/SetVelocity) and the
-// engine's movement code is skipped entirely for this tick.  The portalgun's
-// in-portal locomotion lives entirely in this hook.
-bool HL2SB_LuaMoveHookReplace( CBasePlayer *pPlayer, CMoveData *pMove )
-{
-	if ( L == NULL || pPlayer == NULL || pMove == NULL )
-		return false;
-
-	BEGIN_LUA_CALL_HOOK( "Move" );
-		lua_pushplayer( L, pPlayer );
-		HL2SB_PushMoveData_Internal( L, pMove );
-	END_LUA_CALL_HOOK( 2, 1 );
-	bool bReplace = lua_toboolean( L, -1 ) != 0;
-	lua_pop( L, 1 );
-	return bReplace;
-}
+// (the GM:Move dispatch moved into HL2SB_LuaMoveHooks/ProcessMovement's
+// unified staged sequence -- the old standalone early-return helper answered
+// Move's takeover BEFORE SetupMove ever ran, which skipped drive's StartMove
+// and FinishMove entirely and wedged the drive exit; reference order is
+// PlayerTick -> SetupMove -> Move -> FinishMove, each true suppressing only
+// its own default engine step)

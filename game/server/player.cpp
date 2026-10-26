@@ -1833,6 +1833,16 @@ void CBasePlayer::Event_Killed( const CTakeDamageInfo &info )
 {
 	CSound *pSound;
 
+	// HL2SB: end any Lua drive session -- the drive view state (view entity,
+	// observer mode, world model) has to restore through GM:EndEntityDriving
+	// before the deathcam takes over.  The drive system itself only documents
+	// the explicit stop paths (PlayerStopDriving / self:Stop), so a player who
+	// dies mid-drive otherwise keeps the wedged view into the respawn.
+	{
+		extern void HL2SB_DriveStopPlayer( CBasePlayer *pPlayer );
+		HL2SB_DriveStopPlayer( this );
+	}
+
 	if ( Hints() )
 	{
 		Hints()->ResetHintTimers();
@@ -5265,6 +5275,14 @@ void CBasePlayer::Spawn( void )
 	if ( Hints() )
 	{
 		Hints()->ResetHints();
+	}
+
+	// HL2SB: belt-and-braces drive clear on respawn -- Event_Killed already
+	// stops the session, this guards any path that dies without Event_Killed
+	// (kill console command, map teleport).
+	{
+		extern void HL2SB_DriveStopPlayer( CBasePlayer *pPlayer );
+		HL2SB_DriveStopPlayer( this );
 	}
 
 	SetClassname( "player" );

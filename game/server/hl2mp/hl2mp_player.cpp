@@ -783,6 +783,11 @@ void CHL2MP_Player::PreThink( void )
 #endif
 }
 
+const QAngle &CHL2MP_Player::GetRenderAngles()
+{
+	return m_PlayerAnimState.GetRenderAngles();
+}
+
 void CHL2MP_Player::PostThink( void )
 {
 	BaseClass::PostThink();

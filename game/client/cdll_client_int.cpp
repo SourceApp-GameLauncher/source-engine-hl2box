@@ -1887,6 +1887,13 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN, false );
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN_CLIENT, true );
 
+	// HL2SB: lua/drive/*.lua -- GMod's drive types (drive_base / drive_sandbox /
+	// drive_noclip).  They register through drive.Register on BOTH realms; the
+	// sandbox "drive" property resolves the mode table by name at
+	// PlayerStartDriving time, so without this folder pass that call dies on
+	// "Unknown drive type" and the context-menu Drive action does nothing.
+	luasrc_dofolder_sorted( L, LUA_ROOT "/drive", false );
+
 	// HL2SB (2026-10-08) GMod compat: lua/matproxy/*.lua -- GMod loads this
 	// folder on both realms; the files register material proxies through
 	// matproxy.Add (GMod's own sky_paint.lua drives the painted skybox).  The

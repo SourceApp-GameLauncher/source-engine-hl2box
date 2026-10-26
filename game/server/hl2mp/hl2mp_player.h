@@ -58,6 +58,7 @@ public:
 	virtual void Precache( void );
 	virtual void Spawn( void );
 	virtual void PostThink( void );
+	const QAngle &GetRenderAngles();
 	virtual void PreThink( void );
 	virtual void PlayerDeathThink( void );
 	virtual void SetAnimation( PLAYER_ANIM playerAnim );
