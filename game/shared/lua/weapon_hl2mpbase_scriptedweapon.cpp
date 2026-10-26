@@ -32,6 +32,8 @@
 #include "datacache/imdlcache.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 IMPLEMENT_NETWORKCLASS_ALIASED( HL2MPScriptedWeapon, DT_HL2MPScriptedWeapon )
@@ -86,6 +88,7 @@ void RegisterScriptedWeapon( const char *className )
 
 	{
 		static int s_nClientRegistered = 0;
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[HL2SB wp] REGISTER client #%d '%s'\n", ++s_nClientRegistered, className );
 	}
 
@@ -99,6 +102,7 @@ void RegisterScriptedWeapon( const char *className )
 
 	{
 		static int s_nServerRegistered = 0;
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[HL2SB wp] REGISTER server #%d '%s'\n", ++s_nServerRegistered, className );
 	}
 
@@ -2283,6 +2287,10 @@ void CHL2MPScriptedWeapon::ItemPostFrame( void )
 
 	if ( pOwner != NULL && m_nTableReference >= 0 )
 	{
+		extern bool HL2SB_PlayerCanAttack( CBasePlayer *player );
+		if ( !HL2SB_PlayerCanAttack( pOwner ) )
+			return;
+
 		const float flTime = gpGlobals->curtime;
 		const int nButtons = pOwner->m_nButtons;
 		const int nPressed = pOwner->m_afButtonPressed;
