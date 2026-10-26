@@ -48,6 +48,8 @@ class CMatCallQueue;
 #define STBI_WRITE_NO_STDIO
 #include "../../../thirdparty/stb/stb_image_write.h"
 #include "tier1/utlbuffer.h"
+#include "tier2/renderutils.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -512,6 +514,41 @@ LUA_BINDING_END()
 // (this render context has no GetBoundMaterial).  Defined here so the
 // DrawScreenQuad binding below sees it; SetMaterial (further down) writes it.
 static IMaterial *s_pRendersLastSetMaterial = NULL;
+
+LUA_BINDING_BEGIN( Renders, DrawBox, "library", "Draws an oriented box with the current material.", "client" )
+{
+    const Vector origin = luaL_checkvector( L, 1 );
+    const QAngle angles = luaL_checkangle( L, 2 );
+    const Vector mins = luaL_checkvector( L, 3 );
+    const Vector maxs = luaL_checkvector( L, 4 );
+    const lua_Color color = luaL_checkcolor( L, 5 );
+    if ( s_pRendersLastSetMaterial )
+        RenderBox( origin, angles, mins, maxs,
+            Color( color.r(), color.g(), color.b(), color.a() ), s_pRendersLastSetMaterial, false );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SupportsPixelShaders_2_0, "library", "Queries pixel shader 2.0 support.", "client" )
+{
+    lua_pushboolean( L, g_pMaterialSystemHardwareConfig &&
+        g_pMaterialSystemHardwareConfig->SupportsPixelShaders_2_0() );
+    return 1;
+}
+LUA_BINDING_END()
+
+static int luasrc_GetRenderTarget( lua_State *L )
+{
+    const char *name = luaL_checkstring( L, 1 );
+    const int width = (int)luaL_checknumber( L, 2 );
+    const int height = (int)luaL_checknumber( L, 3 );
+    ITexture *texture = materials->CreateNamedRenderTargetTextureEx(
+        name, width, height, RT_SIZE_NO_CHANGE, materials->GetBackBufferFormat(),
+        MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_TRILINEAR | TEXTUREFLAGS_NOMIP, 0 );
+    if ( !texture || texture->IsError() ) return 0;
+    lua_pushitexture( L, texture );
+    return 1;
+}
 
 //-----------------------------------------------------------------------------
 // HL2SB (2026-09-22): the primitives GMod's halo.lua and the client render.lua
@@ -3065,6 +3102,8 @@ LUALIB_API int luaopen_render( lua_State *L )
 #ifdef CLIENT_DLL
     lua_getfield(L, -1, "GetViewEntity");
     lua_setglobal(L, "GetViewEntity");
+    lua_pushcfunction( L, luasrc_GetRenderTarget );
+    lua_setglobal( L, "GetRenderTarget" );
 
     // HL2SB: the cam library -- cam.Start( {type="3D"/"2D", ...} ) / cam.End() /
     // cam.IgnoreZ().  The content render.lua shim builds cam.Start3D/Start2D on

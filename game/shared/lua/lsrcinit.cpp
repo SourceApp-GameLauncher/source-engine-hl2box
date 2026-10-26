@@ -19,6 +19,8 @@
 #include "particles/particles.h"
 #include "filesystem.h"
 #include "tier1/CommandBuffer.h"
+#include "tier0/fasttimer.h"
+#include "tier1/utlstring.h"
 // HL2SB: luaL_checkentity (SuppressHostEvents), the GMod global helpers
 // registered at the end, the NetworkVar shim (which hands a 0..1 Vector back for
 // a Vector-declared variable, a 0..255 Color otherwise) and the vector/color
@@ -3204,25 +3206,236 @@ static void HL2SB_UIBuildKV(lua_State *L, int table, KeyValues *pKV, int depth =
   }
 }
 
+// Validate before allocating native trees so Lua errors cannot leak them.
+static bool HL2SB_ValidateKVTable(lua_State *L, int table, CUtlVector<const void *> &ancestors)
+{
+  table = lua_absindex(L, table);
+  const void *identity = lua_topointer(L, table);
+  if (ancestors.Find(identity) != ancestors.InvalidIndex() || ancestors.Count() >= 256)
+    return false;
+  ancestors.AddToTail(identity);
+  lua_pushnil(L);
+  while (lua_next(L, table))
+  {
+    if (lua_istable(L, -2)) { lua_pop(L, 2); ancestors.Remove(ancestors.Count() - 1); return false; }
+    if (lua_istable(L, -1) && !HL2SB_ValidateKVTable(L, -1, ancestors))
+    { lua_pop(L, 2); ancestors.Remove(ancestors.Count() - 1); return false; }
+    lua_pop(L, 1);
+  }
+  ancestors.Remove(ancestors.Count() - 1);
+  return true;
+}
+
+static void HL2SB_BuildUtilityKV(lua_State *L, int table, KeyValues *kv)
+{
+  table = lua_absindex(L, table);
+  lua_pushnil(L);
+  while (lua_next(L, table))
+  {
+    const char *key = luaL_tolstring(L, -2, NULL);
+    if (key)
+    {
+      // New children preserve separately named entries during serialization.
+      KeyValues *child = new KeyValues(key);
+      child->UsesEscapeSequences(true);
+      kv->AddSubKey(child);
+      if (lua_istable(L, -2)) HL2SB_BuildUtilityKV(L, -2, child);
+      else
+      {
+        const char *value = luaL_tolstring(L, -2, NULL);
+        child->SetString(NULL, value);
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 2);
+  }
+}
+
+static int HL2SB_BuildUtilityKVProtected(lua_State *L)
+{
+  HL2SB_BuildUtilityKV(L, 1, static_cast<KeyValues *>(lua_touserdata(L, lua_upvalueindex(1))));
+  return 0;
+}
+
 static int HL2SB_UITableToKeyValues(lua_State *L)
 {
   luaL_checktype(L, 1, LUA_TTABLE);
-  KeyValues *pKV = new KeyValues("TableToKeyValues");
-  HL2SB_UIBuildKV(L, 1, pKV);
+  const char *root = lua_type(L, 2) == LUA_TSTRING ? lua_tostring(L, 2) : "TableToKeyValues";
+  bool valid;
+  {
+    CUtlVector<const void *> ancestors;
+    valid = HL2SB_ValidateKVTable(L, 1, ancestors);
+  }
+  if (!valid)
+    return luaL_error(L, "Cannot convert recursive or invalid table to KeyValues");
+  KeyValues *kv = new KeyValues(root);
+  kv->UsesEscapeSequences(true);
+  lua_pushlightuserdata(L, kv);
+  lua_pushcclosure(L, HL2SB_BuildUtilityKVProtected, 1);
+  lua_pushvalue(L, 1);
+  if (lua_pcall(L, 1, 0, 0) != LUA_OK)
+  {
+    kv->deleteThis();
+    return lua_error(L);
+  }
   CUtlBuffer buffer(0, 0, CUtlBuffer::TEXT_BUFFER);
-  pKV->RecursiveSaveToFile(buffer, 0, false, true);
+  kv->RecursiveSaveToFile(buffer, 0);
   lua_pushlstring(L, (const char *)buffer.Base(), buffer.TellPut());
-  pKV->deleteThis();
+  kv->deleteThis();
+  return 1;
+}
+
+// Keep original key spelling locally; the engine symbol pool folds key case.
+static bool HL2SB_KVToken(const char *&text, CUtlString &token, bool escapes, bool &brace)
+{
+  token = "";
+  brace = false;
+  for (;;)
+  {
+    while (*text && (unsigned char)*text <= ' ') ++text;
+    if (text[0] != '/' || text[1] != '/') break;
+    while (*text && *text != '\n') ++text;
+  }
+  if (!*text) return false;
+  if (*text == '{' || *text == '}')
+  {
+    char value[2] = {*text++, 0}; token = value; brace = true; return true;
+  }
+  const bool quoted = *text == '"';
+  if (quoted) ++text;
+  while (*text)
+  {
+    char c = *text;
+    if (quoted ? c == '"' : ((unsigned char)c <= ' ' || c == '{' || c == '}')) break;
+    ++text;
+    if (quoted && escapes && c == '\\' && *text)
+    {
+      c = *text++;
+      if (c == 'n') c = '\n';
+      else if (c == 't') c = '\t';
+      else if (c != '"' && c != '\\') break;
+    }
+    char value[2] = {c, 0}; token += value;
+  }
+  if (quoted && *text == '"') ++text;
+  return true;
+}
+
+static bool HL2SB_KVOriginalNames(const char *&text, KeyValues *kv,
+    CUtlVector<CUtlString> &names, bool escapes, int depth = 0)
+{
+  if (depth >= 256) return false;
+  for (KeyValues *child = kv->GetFirstSubKey(); child; child = child->GetNextKey())
+  {
+    CUtlString key, value;
+    bool brace;
+    if (!HL2SB_KVToken(text, key, escapes, brace) || brace || Q_stricmp(key.Get(), child->GetName()))
+      return false;
+    names.AddToTail(key);
+    if (!HL2SB_KVToken(text, value, escapes, brace)) return false;
+    if (brace && !Q_strcmp(value.Get(), "{"))
+    {
+      if (!HL2SB_KVOriginalNames(text, child, names, escapes, depth + 1)) return false;
+    }
+    else if (brace || child->GetDataType() == KeyValues::TYPE_NONE) return false;
+  }
+  CUtlString end;
+  bool brace;
+  return HL2SB_KVToken(text, end, escapes, brace) && brace && !Q_strcmp(end.Get(), "}");
+}
+
+static void HL2SB_PushUtilityKV(lua_State *L, KeyValues *kv, bool ordered, bool preserveCase,
+    const CUtlVector<CUtlString> &names, int &nameIndex)
+{
+  lua_newtable(L);
+  bool zeroNames = true;
+  int count = 0;
+  for (KeyValues *child = kv->GetFirstSubKey(); child; child = child->GetNextKey())
+  {
+    ++count;
+    if (Q_strcmp(child->GetName(), "0")) zeroNames = false;
+  }
+  zeroNames = zeroNames && count != 1;
+  int index = 1;
+  for (KeyValues *child = kv->GetFirstSubKey(); child; child = child->GetNextKey(), ++index)
+  {
+    char key[512];
+    Q_strncpy(key, nameIndex < names.Count() ? names[nameIndex].Get() : child->GetName(),
+        ordered ? 256 : sizeof(key));
+    ++nameIndex;
+    if (!preserveCase) Q_strlower(key);
+    if (ordered)
+    {
+      lua_newtable(L);
+      if (zeroNames) Q_snprintf(key, sizeof(key), "%d", index);
+      lua_pushstring(L, key);
+      lua_setfield(L, -2, "Key");
+    }
+    if (child->GetDataType() == KeyValues::TYPE_NONE)
+      HL2SB_PushUtilityKV(L, child, ordered, preserveCase, names, nameIndex);
+    else if (child->GetDataType() == KeyValues::TYPE_INT)
+      lua_pushnumber(L, ordered ? child->GetFloat() : child->GetInt());
+    else if (child->GetDataType() == KeyValues::TYPE_FLOAT)
+    {
+      const float value = child->GetFloat();
+      lua_pushnumber(L, ordered ? value : floorf(value * 10000.0f) * 0.0001f);
+    }
+    else
+      lua_pushstring(L, child->GetString());
+    if (ordered)
+    {
+      lua_setfield(L, -2, "Value");
+      lua_rawseti(L, -2, index);
+    }
+    else
+    {
+      lua_pushstring(L, key);
+      lua_insert(L, -2);
+      lua_rawset(L, -3);
+    }
+  }
+}
+
+static int HL2SB_ReadUtilityKV(lua_State *L, bool ordered)
+{
+  const char *text = luaL_checkstring(L, 1);
+  const bool escapes = lua_toboolean(L, 2) != 0;
+  const bool preserveCase = lua_toboolean(L, 3) != 0;
+  KeyValues *kv = new KeyValues(ordered ? "KeyValuesToTablePreserveOrder" : "KeyValuesToTable");
+  kv->UsesEscapeSequences(escapes);
+  kv->LoadFromBuffer("lua", text);
+  CUtlVector<CUtlString> names;
+  const char *cursor = text;
+  CUtlString token;
+  bool brace;
+  if (!HL2SB_KVToken(cursor, token, escapes, brace) || brace ||
+      !HL2SB_KVToken(cursor, token, escapes, brace) || !brace || Q_strcmp(token.Get(), "{") ||
+      !HL2SB_KVOriginalNames(cursor, kv, names, escapes))
+    names.Purge();
+  int nameIndex = 0;
+  HL2SB_PushUtilityKV(L, kv, ordered, preserveCase, names, nameIndex);
+  kv->deleteThis();
   return 1;
 }
 
 static int HL2SB_UIKeyValuesToTable(lua_State *L)
 {
-  const char *text = luaL_checkstring(L, 1);
-  KeyValues *pKV = new KeyValues("TableToKeyValues");
-  if (pKV->LoadFromBuffer("lua", text)) HL2SB_UIPushKV(L, pKV);
-  else lua_pushnil(L);
-  pKV->deleteThis();
+  return HL2SB_ReadUtilityKV(L, false);
+}
+
+static int HL2SB_KeyValuesToTablePreserveOrder(lua_State *L)
+{
+  return HL2SB_ReadUtilityKV(L, true);
+}
+
+static int HL2SB_TimerCycle(lua_State *L)
+{
+  static CCycleCount previous;
+  CCycleCount now, elapsed;
+  now.Sample();
+  CCycleCount::Sub(now, previous, elapsed);
+  lua_pushnumber(L, elapsed.GetMillisecondsF());
+  previous.Sample();
   return 1;
 }
 
@@ -3528,6 +3741,8 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_getglobal(L, "util");
   lua_pushcfunction(L, HL2SB_UITableToKeyValues); lua_setfield(L, -2, "TableToKeyValues");
   lua_pushcfunction(L, HL2SB_UIKeyValuesToTable); lua_setfield(L, -2, "KeyValuesToTable");
+  lua_pushcfunction(L, HL2SB_KeyValuesToTablePreserveOrder); lua_setfield(L, -2, "KeyValuesToTablePreserveOrder");
+  lua_pushcfunction(L, HL2SB_TimerCycle); lua_setfield(L, -2, "TimerCycle");
   lua_pop(L, 1);
 
   /* HL2SB: re-assert the realm globals LAST.
