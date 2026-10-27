@@ -437,6 +437,8 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	lua_setfield( L, -2, "Entity" );
 
 	m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+	// A fresh Lua instance needs its own activity translation table.
+	m_szAppliedHoldType[0] = '\0';
 #ifndef CLIENT_DLL
 	m_pLuaWeaponInfo->bParsedScript = true;
 #endif
@@ -770,77 +772,8 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 
-	// HL2SB GMod SWEP compat: GMod's engine calls SWEP:SetupDataTables() while
-	// it sets a scripted weapon up, and that is where SWEP:NetworkVar()
-	// declares the per-instance accessors the SWEP uses (gmod_camera declares
-	// Zoom/Roll there and calls SetZoom()/GetZoom() from Reload, Tick, Equip,
-	// CalcView and AdjustMouseSensitivity -- without this call every one of
-	// those hooks throws on its first Zoom access).  HL2SB_EntityNetworkVar is
-	// the same accessor factory the scripted-entity path installs
-	// (basescripted.cpp); the accessors store on the weapon's own Lua table.
-	lua_getref( L, m_nTableReference );
-	if ( lua_istable( L, -1 ) )
-	{
-		const int iWeaponTable = lua_gettop( L );
-
-		lua_getglobal( L, "HL2SB_EntityNetworkVar" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVar" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		lua_getfield( L, -1, "SetupDataTables" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_pushvalue( L, -2 );		// self: the weapon's Lua table
-			luasrc_pcall( L, 1, 0, 0 );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		// HL2SB: record the declared NW names (the __hl2sb_nw_* storage fields
-		// the factory above created) as a list on the weapon's table.  The Lua
-		// seed bridge in weapon_base/shared.lua (hl2sb_nwrequest / hl2sb_nwseed)
-		// uses the list to copy the server's initial values to the predicted
-		// client, whose storage otherwise starts empty (gmod_camera's Zoom).
-		lua_newtable( L );
-		const int iNames = lua_gettop( L );
-		int iName = 1;
-
-		lua_pushnil( L );
-		while ( lua_next( L, iWeaponTable ) != 0 )
-		{
-			if ( lua_type( L, -2 ) == LUA_TSTRING )
-			{
-				const char *pszKey = lua_tostring( L, -2 );
-				if ( Q_strnicmp( pszKey, "__hl2sb_nw_", 11 ) == 0 )
-				{
-					lua_pushstring( L, pszKey + 11 );
-					lua_rawseti( L, iNames, iName++ );
-				}
-			}
-			lua_pop( L, 1 );
-		}
-
-		lua_setfield( L, iWeaponTable, "__hl2sb_nw_names" );
-
-#ifdef CLIENT_DLL
-		// Ask the server realm for the initial NW values now that the names
-		// are known (weapon_base's hl2sb_nwrequest handler answers with
-		// hl2sb_nwseed, written back onto this weapon's storage).
-		char szNWRequest[ 64 ];
-		Q_snprintf( szNWRequest, sizeof( szNWRequest ), "hl2sb_nwrequest %d", entindex() );
-		engine->ClientCmd( szNWRequest );
-		luasrc_LuaInfoMsgF( "[HL2SB] nwseed request sent (create): ent=%d\n", entindex() );
-#endif
-	}
-	lua_pop( L, 1 );
+	extern void HL2SB_InstallScriptDataTables(lua_State *, CBaseEntity *);
+	HL2SB_InstallScriptDataTables(L,this);
 
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Initialize" );
 	END_LUA_CALL_WEAPON_METHOD( 0, 0 );
@@ -1622,15 +1555,21 @@ void CHL2MPScriptedWeapon::UpdateHoldType()
 {
 #if defined( LUA_SDK )
 	if ( L == NULL || m_nTableReference < 0 || m_bUpdatingHoldType ||
-		!Q_strcmp( m_szAppliedHoldType, m_szHoldType.Get() ) ) return;
+		!m_szHoldType.Get()[0] || !Q_strcmp( m_szAppliedHoldType, m_szHoldType.Get() ) ) return;
+	const int top = lua_gettop(L);
+	lua_getref(L,m_nTableReference);
+	if (!lua_istable(L,-1)) { lua_settop(L,top); return; }
+	luasrc_PushScriptField(L,-1,"SetWeaponHoldType");
+	lua_remove(L,-2);
+	if (!lua_isfunction(L,-1)) { lua_settop(L,top); return; }
 	m_bUpdatingHoldType = true;
-	if ( m_szHoldType.Get()[0] )
-	{
-		BEGIN_LUA_CALL_WEAPON_METHOD( "SetWeaponHoldType" );
-			lua_pushstring( L, m_szHoldType.Get() );
-		END_LUA_CALL_WEAPON_METHOD( 1, 0 );
-	}
-	Q_strncpy( m_szAppliedHoldType, m_szHoldType.Get(), sizeof( m_szAppliedHoldType ) );
+	char applied[80];
+	Q_strncpy(applied,m_szHoldType.Get(),sizeof(applied));
+	lua_pushweapon(L,this);
+	lua_pushstring(L,applied);
+	const bool succeeded = luasrc_pcall(L,2,0,0) == 0;
+	lua_settop(L,top);
+	if (succeeded) Q_strncpy(m_szAppliedHoldType,applied,sizeof(m_szAppliedHoldType));
 	m_bUpdatingHoldType = false;
 #endif
 }
@@ -2229,43 +2168,7 @@ void CHL2MPScriptedWeapon::ItemPostFrame( void )
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Tick" );
 	END_LUA_CALL_WEAPON_METHOD( 0, 0 );
 
-#ifdef CLIENT_DLL
-	// HL2SB: make sure the NW seed request goes out even if the copy sent from
-	// the OnDataChanged/creation context was dropped.  On the first predicted
-	// frame of a weapon that declared NW vars without a seed yet, ask again and
-	// mark it (weapon_base's hl2sb_nwrequest handler answers).
-	// HL2SB: >= 0, not just "!= LUA_NOREF" -- a -1 (REFNIL) ref pushed nil and
-	// the raw lua_getfield below threw unprotected.
-	if ( m_nTableReference >= 0 )
-	{
-		lua_getref( L, m_nTableReference );
-		lua_getfield( L, -1, "__hl2sb_nw_names" );
-		const bool bHasNames = lua_istable( L, -1 ) != 0;
-		lua_pop( L, 1 );
 
-		bool bRequested = false;
-		if ( bHasNames )
-		{
-			lua_getref( L, m_nTableReference );
-			lua_getfield( L, -1, "__hl2sb_nw_requested" );
-			bRequested = lua_toboolean( L, -1 ) != 0;
-			lua_pop( L, 1 );
-		}
-
-		if ( bHasNames && !bRequested )
-		{
-			lua_getref( L, m_nTableReference );
-			lua_pushboolean( L, true );
-			lua_setfield( L, -2, "__hl2sb_nw_requested" );
-			lua_pop( L, 1 );
-
-			char szNWRequest[ 64 ];
-			Q_snprintf( szNWRequest, sizeof( szNWRequest ), "hl2sb_nwrequest %d", entindex() );
-			engine->ClientCmd( szNWRequest );
-			luasrc_LuaInfoMsgF( "[HL2SB] nwseed request sent (first frame): ent=%d\n", entindex() );
-		}
-	}
-#endif
 
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 

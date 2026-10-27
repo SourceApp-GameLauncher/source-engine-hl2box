@@ -306,8 +306,11 @@ bool HL2SB_SetAddonEnabled( const char *pszAddonName, bool bEnabled )
 	return true;
 }
 
+extern void HL2SB_RefreshGameContentPaths();
+
 void MountAddons()
 {
+	HL2SB_RefreshGameContentPaths();
 	// HL2SB: GMod's launch flags.  -noaddons skips addon mounting entirely
 	// (its engine.dll owns the flag; the game side just honours it), and
 	// -noworkshop skips the workshop layer -- this fork has no workshop layer,

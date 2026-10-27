@@ -290,7 +290,10 @@ static int engine_TickCount( lua_State *L ) {
   return 1;
 }
 
+extern int HL2SB_EngineGetGames( lua_State *L );
+
 static const luaL_Reg enginelib[] = {
+  {"GetGames", HL2SB_EngineGetGames},
   {"TickCount", engine_TickCount},
   {"AllowImmediateEdictReuse",   engine_AllowImmediateEdictReuse},
   {"ChangeLevel",  engine_ChangeLevel},

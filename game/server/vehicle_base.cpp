@@ -896,6 +896,8 @@ void CPropVehicleDriveable::InputUnlock( inputdata_t &inputdata )
 void CPropVehicleDriveable::InputVehicleClass( inputdata_t &inputdata )
 {
 	HL2SB_SetVehicleClass( inputdata.value.String() );
+	Q_memset(m_GMOD_String3.GetForModify(),0,512);
+	Q_strncpy(m_GMOD_String3.GetForModify(),inputdata.value.String(),512);
 }
 
 //-----------------------------------------------------------------------------

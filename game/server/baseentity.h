@@ -847,6 +847,18 @@ public:
 	// Andrew; This is used to determine an entity's reference in Lua's LUA_REGISTRYINDEX.
 	// I'd rather do this than create a struct and pass that to each bounded function, plus it'll save some perf for massive executions, like Think funcs.
 	int				m_nTableReference;
+	// Fixed typed slots used by scripted entity data tables.
+	CNetworkArray( bool, m_GMOD_bool, 32 );
+	CNetworkArray( float, m_GMOD_float, 32 );
+	CNetworkArray( int, m_GMOD_int, 32 );
+	CNetworkArray( Vector, m_GMOD_vector, 32 );
+	CNetworkArray( QAngle, m_GMOD_angle, 32 );
+	CNetworkArray( EHANDLE, m_GMOD_entity, 32 );
+	CNetworkString( m_GMOD_String0, 512 );
+	CNetworkString( m_GMOD_String1, 512 );
+	CNetworkString( m_GMOD_String2, 512 );
+	CNetworkString( m_GMOD_String3, 512 );
+
 	// Henry; There's an IsPlayer and IsWorld and such, why not an IsWeapon?
 	virtual bool	IsWeapon( void ) const { return false; }
 #endif

@@ -386,19 +386,8 @@ static int Vehicle_GetAmmo (lua_State *L) {
 }
 
 int Vehicle_GetCameraDistance (lua_State *L) {
-  // HL2SB (sbrust): GMod semantics -- the distance is per-vehicle NETWORKED
-  // state (their Vehicle:SetCameraDistance is SetDTFloat(3)).  Driveables and
-  // chairs answer from their own fields; anything else gets the DT default.
-  // The server's camera-state writer owns it; this reads the live value in
-  // both realms.
-  CBaseEntity *pEnt = luaL_checkentity(L, 1);
-#ifdef CLIENT_DLL
-  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
-#else
-  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
-#endif
-  lua_pushnumber(L, pDriveable ? pDriveable->HL2SB_GetCameraDistance()
-                               : HL2SB_PodGetCameraDistance(pEnt));
+  CBaseEntity *entity = luaL_checkentity(L,1);
+  lua_pushnumber(L,entity->m_GMOD_float[3]);
   return 1;
 }
 
@@ -569,18 +558,8 @@ static int Vehicle_GetSteeringDegrees (lua_State *L) {
 // metatable (lbaseentity_shared.cpp) so chairs -- which stay plain entities in
 // this fork -- answer them.  Not static anymore; declared in lvehicle_shared.h.
 int Vehicle_GetThirdPersonMode (lua_State *L) {
-  // HL2SB (sbrust): GMod's per-vehicle networked state (their
-  // Vehicle:GetThirdPersonMode is GetDTBool(3)).  Driveables and chairs answer
-  // from their own fields; the server camera-state writer owns the value and
-  // the DT stream carries it, so remote clients agree with the driver.
-  CBaseEntity *pEnt = luaL_checkentity(L, 1);
-#ifdef CLIENT_DLL
-  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
-#else
-  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
-#endif
-  lua_pushboolean(L, pDriveable ? pDriveable->HL2SB_GetThirdPersonMode()
-                                : HL2SB_PodGetThirdPerson(pEnt));
+  CBaseEntity *entity = luaL_checkentity(L,1);
+  lua_pushboolean(L,entity->m_GMOD_bool[3]);
   return 1;
 }
 
@@ -596,24 +575,8 @@ static int Vehicle_GetThrottle (lua_State *L) {
 }
 
 int Vehicle_GetVehicleClass (lua_State *L) {
-  /* HL2SB (sbrust): GMod keeps the Sandbox vehicle TABLE name on the vehicle
-  ** (their Vehicle:GetVehicleClass is GetDTString(3)) and animations.lua's
-  ** HandlePlayerDriving looks the list "Vehicles" entry up with it -- the seat
-  ** pose (Members.HandleAnimation) hinges on this value, which is why chairs
-  ** carry the field too.  The empty string, not nil, keeps
-  ** `veh:GetVehicleClass() == ""` comparisons and concatenation working. */
-  CBaseEntity *pEnt = luaL_checkentity(L, 1);
-#ifdef CLIENT_DLL
-  C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
-#else
-  CPropVehicleDriveable *pDriveable = dynamic_cast<CPropVehicleDriveable *>(pEnt);
-#endif
-  if ( pDriveable ) {
-    lua_pushstring(L, pDriveable->HL2SB_GetVehicleClass());
-    return 1;
-  }
-  const char *pszPodClass = HL2SB_PodGetVehicleClass(pEnt);
-  lua_pushstring(L, pszPodClass ? pszPodClass : "");
+  CBaseEntity *entity = luaL_checkentity(L,1);
+  lua_pushstring(L,entity->m_GMOD_String3.Get());
   return 1;
 }
 
@@ -751,6 +714,7 @@ int Vehicle_SetCameraDistance (lua_State *L) {
   // Client realm (driveable or chair): mirrors locally until the networked
   // state arrives, exactly like a client-side DT write in GMod.
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
+  pEnt->m_GMOD_float.Set(3,flDistance);
 #ifdef CLIENT_DLL
   C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
 #else
@@ -886,6 +850,7 @@ int Vehicle_SetThirdPersonMode (lua_State *L) {
   // addon call here works in both realms like a GMod DT write -- on the client
   // it is a local mirror that the next networked update replaces.
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
+  pEnt->m_GMOD_bool.Set(3,bEnable);
 #ifdef CLIENT_DLL
   C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
 #else
@@ -920,6 +885,8 @@ int Vehicle_SetVehicleClass (lua_State *L) {
   ** gamemodes/sandbox/gamemode/commands.lua:1057).  Driveable or chair; other
   ** entities are a no-op (GMod would raise a DT slot error there). */
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
+  Q_memset(pEnt->m_GMOD_String3.GetForModify(),0,512);
+  Q_strncpy(pEnt->m_GMOD_String3.GetForModify(),pszClass,512);
 #ifdef CLIENT_DLL
   C_PropVehicleDriveable *pDriveable = dynamic_cast<C_PropVehicleDriveable *>(pEnt);
 #else

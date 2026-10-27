@@ -82,8 +82,192 @@ static ConVar cl_drawownshadow("cl_drawownshadow", "0", FCVAR_ARCHIVE, "Render t
 #include "ammodef.h"
 #include <string>
 #include <vector>
+#include <utility>
+#include "tier1/KeyValues.h"
+#if !defined(NO_STEAM) && !defined(DISABLE_STEAM)
+#include "steam/steam_api.h"
+extern CSteamAPIContext *steamapicontext;
+#endif
 
 void HL2SB_AddCustomDecal( const char *name, const char *const *materials, int count );
+
+struct HL2SB_GameDepot {
+  const char *folder;
+  const char *title;
+  int appID;
+  const char *extraFolders;
+};
+
+static const HL2SB_GameDepot s_GameDepots[] = {
+  { "hl2", "Half-Life 2 & Episodes", 220, "episodic;ep2;lostcoast" },
+  { "cstrike", "Counter-Strike: Source", 240, "" },
+  { "tf", "Team Fortress 2", 440, "" },
+  { "dod", "Day of Defeat: Source", 300, "" },
+  { "hl2mp", "Half-Life 2: Deathmatch", 320, "" },
+  { "hl1", "Half-Life: Source", 280, "" },
+  { "hl1mp", "Half-Life Deathmatch: Source", 360, "hl1" },
+  { "zeno_clash", "Zeno Clash (Model Pack)", 22208, "" },
+  { "portal", "Portal", 400, "" },
+  { "diprip", "D.I.P.R.I.P.", 17530, "" },
+  { "zps", "Zombie Panic! Source", 17500, "vpks" },
+  { "pvkii", "Pirates, Vikings and Knights II", 17570, "" },
+  { "dystopia", "Dystopia", 17580, "" },
+  { "insurgency", "Insurgency (Source Mod)", 17700, "" },
+  { "insurgency", "Insurgency (Standalone)", 222880, "" },
+  { "ageofchivalry", "Age of Chivalry", 17510, "" },
+  { "left4dead2", "Left 4 Dead 2", 550, "left4dead2_dlc1;left4dead2_dlc2;left4dead2_dlc3;update" },
+  { "left4dead", "Left 4 Dead", 500, "left4dead_dlc3" },
+  { "portal2", "Portal 2", 620, "portal2_dlc1;portal2_dlc2" },
+  { "swarm", "Alien Swarm", 630, "" },
+  { "nucleardawn", "Nuclear Dawn", 17710, "" },
+  { "dinodday", "Dino D-Day", 70000, "" },
+  { "csgo", "Counter-Strike: GO", 4465480, "" },
+  { "berimbau", "Blade Symphony", 225600, "" },
+  { "infra", "INFRA", 251110, "" },
+  { "fof", "Fistful of Frags", 265630, "" },
+  { "thestanleyparable", "The Stanley Parable", 221910, "" },
+  { "gstringv2", "G String Game", 1224600, "" },
+  { "treason", "Klaus Veen's Treason", 1786950, "" },
+  { "vietnam", "Military Conflict: Vietnam", 1012110, "gmod" },
+  { "bms", "Black Mesa", 362890, "" },
+};
+
+static std::vector<std::string> HL2SB_GameSearchPaths( const char *pathID ) {
+  const int size = filesystem->GetSearchPath( pathID, true, NULL, 0 );
+  std::vector<char> buffer( size > 0 ? size : 1, 0 );
+  filesystem->GetSearchPath( pathID, true, &buffer[0], (int)buffer.size() );
+  V_FixSlashes( &buffer[0], '/' );
+  std::vector<std::string> paths;
+  const char *position = &buffer[0];
+  while ( *position ) {
+    const char *end = strchr( position, ';' );
+    if ( !end ) end = position + strlen( position );
+    std::string path( position, end - position );
+    while ( !path.empty() && path[path.size() - 1] == '/' ) path.resize( path.size() - 1 );
+    if ( !path.empty() ) paths.push_back( path );
+    position = *end ? end + 1 : end;
+  }
+  return paths;
+}
+
+static bool HL2SB_GameFolderMatches( const HL2SB_GameDepot &game, const char *folder ) {
+  if ( !Q_stricmp( folder, game.folder ) ) return true;
+  const char *position = game.extraFolders;
+  while ( *position ) {
+    const char *end = strchr( position, ';' );
+    if ( !end ) end = position + strlen( position );
+    const std::string extra( position, end - position );
+    if ( !Q_stricmp( folder, extra.c_str() ) ) return true;
+    position = *end ? end + 1 : end;
+  }
+  return false;
+}
+
+static bool HL2SB_IsDepotSearchPath( const HL2SB_GameDepot &game, const std::string &path ) {
+  // Addon and download directory names do not identify mounted games.
+  if ( Q_stristr( path.c_str(), "/addons/" ) || Q_stristr( path.c_str(), "/download/" ) ||
+       Q_stristr( path.c_str(), "/workshop/" ) ) return false;
+  const size_t slash = path.find_last_of( '/' );
+  const std::string name = path.substr( slash == std::string::npos ? 0 : slash + 1 );
+  const char *extension = V_GetFileExtension( name.c_str() );
+  const bool packed = extension && !Q_stricmp( extension, "vpk" );
+  const std::string directory = packed ? path.substr( 0, slash ) : path;
+  const size_t parentSlash = directory.find_last_of( '/' );
+  const std::string folder = directory.substr( parentSlash == std::string::npos ? 0 : parentSlash + 1 );
+  if ( packed && !Q_stricmp( folder.c_str(), "sourceengine" ) ) {
+    const std::string pack = std::string( "content_" ) + game.folder;
+    return !Q_stricmp( name.c_str(), (pack + ".vpk").c_str() ) ||
+           !Q_stricmp( name.c_str(), (pack + "_dir.vpk").c_str() );
+  }
+  if ( !HL2SB_GameFolderMatches( game, folder.c_str() ) ) return false;
+  const std::string info = !Q_stricmp(folder.c_str(), game.folder) ?
+    directory + "/gameinfo.txt" : directory.substr(0, parentSlash) + "/" + game.folder + "/gameinfo.txt";
+  if ( !filesystem->FileExists( info.c_str(), NULL ) ) return false;
+  // The two Insurgency releases use the same content folder.
+  if ( !Q_stricmp( game.folder, "insurgency" ) ) {
+    KeyValues *settings = new KeyValues( "GameInfo" );
+    const bool loaded = settings->LoadFromFile( filesystem, info.c_str(), NULL );
+    const int appID = settings->GetInt( "FileSystem/SteamAppId", 0 );
+    settings->deleteThis();
+    if ( !loaded || appID != game.appID ) return false;
+  }
+  return true;
+}
+
+// Register browsing aliases when mounts change, never from a Lua query.
+void HL2SB_RefreshGameContentPaths() {
+  typedef std::pair<std::string, std::string> GamePath;
+  static std::vector<GamePath> aliases;
+  const std::vector<std::string> paths = HL2SB_GameSearchPaths( "GAME" );
+  std::vector<GamePath> next;
+  for ( int i = 0; i < ARRAYSIZE(s_GameDepots); ++i ) {
+    for ( size_t j = 0; j < paths.size(); ++j ) {
+      if ( HL2SB_IsDepotSearchPath( s_GameDepots[i], paths[j] ) ) {
+        const GamePath entry( paths[j], s_GameDepots[i].folder );
+        bool duplicate = false;
+        for ( size_t k = 0; k < next.size(); ++k ) if ( next[k] == entry ) duplicate = true;
+        if ( !duplicate ) next.push_back( entry );
+      }
+    }
+  }
+  if ( next == aliases ) return;
+  for ( size_t i = 0; i < aliases.size(); ++i )
+    filesystem->RemoveSearchPath( aliases[i].first.c_str(), aliases[i].second.c_str() );
+  for ( size_t i = 0; i < next.size(); ++i ) {
+    filesystem->AddSearchPath( next[i].first.c_str(), next[i].second.c_str(), PATH_ADD_TO_TAIL );
+    filesystem->MarkPathIDByRequestOnly( next[i].second.c_str(), true );
+  }
+  aliases.swap( next );
+}
+
+int HL2SB_EngineGetGames( lua_State *L ) {
+  const std::vector<std::string> paths = HL2SB_GameSearchPaths( "GAME" );
+  const std::vector<std::string> bases = HL2SB_GameSearchPaths( "BASE_PATH" );
+  lua_newtable( L );
+  for ( int i = 0; i < ARRAYSIZE(s_GameDepots); ++i ) {
+    const HL2SB_GameDepot &game = s_GameDepots[i];
+    bool mounted = false, installed = false, owned = false;
+    for ( size_t j = 0; j < paths.size(); ++j ) {
+      if ( HL2SB_IsDepotSearchPath( game, paths[j] ) ) mounted = true;
+    }
+    // Local installations can exist without being in the active search paths.
+    for ( size_t j = 0; j < bases.size(); ++j ) {
+      const std::string directory = bases[j] + "/" + game.folder;
+      if ( HL2SB_IsDepotSearchPath( game, directory ) ) installed = true;
+    }
+    for ( size_t j = 0; j < paths.size(); ++j ) {
+      if ( HL2SB_IsDepotSearchPath( game, paths[j] ) ) {
+        const char *extension = V_GetFileExtension( paths[j].c_str() );
+        const std::string directory = extension && !Q_stricmp(extension, "vpk") ?
+          paths[j].substr(0, paths[j].find_last_of('/')) : paths[j];
+        const size_t slash = directory.find_last_of('/');
+        const std::string folder = directory.substr(slash == std::string::npos ? 0 : slash + 1);
+        const std::string info = !Q_stricmp(folder.c_str(), game.folder) ? directory + "/gameinfo.txt" :
+          directory.substr(0, slash) + "/" + game.folder + "/gameinfo.txt";
+        if ( filesystem->FileExists( info.c_str(), NULL ) ) installed = true;
+      }
+    }
+#if !defined(NO_STEAM) && !defined(DISABLE_STEAM)
+    if ( steamapicontext && steamapicontext->SteamApps() ) {
+      ISteamApps *apps = steamapicontext->SteamApps();
+      char directory[MAX_PATH] = { 0 };
+      owned = apps->BIsSubscribedApp( game.appID );
+      installed = owned && apps->BIsAppInstalled( game.appID ) &&
+        apps->GetAppInstallDir( game.appID, directory, sizeof(directory) ) != 0;
+      mounted = mounted && owned && installed;
+    }
+#endif
+    lua_newtable( L );
+    lua_pushstring(L, game.folder); lua_setfield(L, -2, "folder");
+    lua_pushstring(L, game.title); lua_setfield(L, -2, "title");
+    lua_pushinteger(L, game.appID); lua_setfield(L, -2, "depot");
+    lua_pushboolean(L, mounted); lua_setfield(L, -2, "mounted");
+    lua_pushboolean(L, installed); lua_setfield(L, -2, "installed");
+    lua_pushboolean(L, owned); lua_setfield(L, -2, "owned");
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
 
 static int lua_game_GetWorld( lua_State *state )
 {
@@ -3651,6 +3835,7 @@ static int HL2SB_UISavePresets(lua_State *L)
 }
 
 LUALIB_API void luasrc_openlibs (lua_State *L) {
+  HL2SB_RefreshGameContentPaths();
   const luaL_Reg *lib = luasrclibs;
   for (; lib->func; lib++) {
     // HL2SB (2026-09-21): log the module name FIRST so a failure names its
@@ -4352,16 +4537,6 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_setglobal( L, "AddOriginToPVS" );
 #endif
 
-  /* HL2SB: the scripted-entity network variable shim.  CBaseScripted::
-  ** InitScriptedEntity() installs these two onto each entity's Lua table (as
-  ** NetworkVar / NetworkVarNotify) before calling ENT:SetupDataTables(), so a
-  ** stock GMod entity script declares its network variables without knowing this
-  ** engine has no DataTable slots for Lua entities.  Both realms: the client
-  ** needs the accessors too, because that is where ENT:Draw reads them. */
-  lua_pushcfunction( L, HL2SB_Lua_EntityNetworkVar );
-  lua_setglobal( L, "HL2SB_EntityNetworkVar" );
-  lua_pushcfunction( L, HL2SB_Lua_EntityNetworkVarNotify );
-  lua_setglobal( L, "HL2SB_EntityNetworkVarNotify" );
   HL2SB_RegisterConsoleGlobals( L );
 
   /* HL2SB: GMod's `achievements` table, as a STUB.

@@ -431,8 +431,11 @@ static int CBaseCombatWeapon_GetPrimaryAttackActivity (lua_State *L) {
 static int CBaseCombatWeapon_SetHoldType (lua_State *L) {
   CBaseCombatWeapon *weapon = luaL_checkweapon(L, 1);
   const char *name = luaL_checkstring(L, 2);
-  if (weapon->IsScripted())
-    static_cast<CHL2MPScriptedWeapon *>(weapon)->SetNativeHoldType(name);
+  if (weapon->IsScripted()) {
+    CHL2MPScriptedWeapon *scripted = static_cast<CHL2MPScriptedWeapon *>(weapon);
+    scripted->SetNativeHoldType(name);
+    scripted->UpdateHoldType();
+  }
   return 0;
 }
 
@@ -814,10 +817,6 @@ static int CBaseCombatWeapon_Precache (lua_State *L) {
   return 0;
 }
 
-static int CBaseCombatWeapon_PrimaryAttack (lua_State *L) {
-  luaL_checkweapon(L, 1)->PrimaryAttack();
-  return 0;
-}
 
 static int CBaseCombatWeapon_Ready (lua_State *L) {
   lua_pushboolean(L, luaL_checkweapon(L, 1)->Ready());
@@ -844,10 +843,6 @@ static int CBaseCombatWeapon_RescindReloadHudHint (lua_State *L) {
   return 0;
 }
 
-static int CBaseCombatWeapon_SecondaryAttack (lua_State *L) {
-  luaL_checkweapon(L, 1)->SecondaryAttack();
-  return 0;
-}
 
 static int CBaseCombatWeapon_SendViewModelAnim (lua_State *L) {
   luaL_checkweapon(L, 1)->SendViewModelAnim(luaL_checkint(L, 2));
@@ -1322,13 +1317,11 @@ static const luaL_Reg CBaseCombatWeaponmeta[] = {
   {"OnActiveStateChanged", CBaseCombatWeapon_OnActiveStateChanged},
   {"OnRestore", CBaseCombatWeapon_OnRestore},
   {"Precache", CBaseCombatWeapon_Precache},
-  {"PrimaryAttack", CBaseCombatWeapon_PrimaryAttack},
   {"Ready", CBaseCombatWeapon_Ready},
   {"Reload", CBaseCombatWeapon_Reload},
   {"ReloadOrSwitchWeapons", CBaseCombatWeapon_ReloadOrSwitchWeapons},
   {"RescindAltFireHudHint", CBaseCombatWeapon_RescindAltFireHudHint},
   {"RescindReloadHudHint", CBaseCombatWeapon_RescindReloadHudHint},
-  {"SecondaryAttack", CBaseCombatWeapon_SecondaryAttack},
   {"SendViewModelAnim", CBaseCombatWeapon_SendViewModelAnim},
   {"SendWeaponAnim", CBaseCombatWeapon_SendWeaponAnim},
   {"SetActivity", CBaseCombatWeapon_SetActivity},

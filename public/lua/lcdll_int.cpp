@@ -174,46 +174,7 @@ static int engine_GetAddons (lua_State *L) {
   return 1;
 }
 
-static int engine_GetGames(lua_State *L) {
-  struct Game { const char *folder, *title, *match; int depot; };
-  const Game games[] = {
-    { "hl2", "Half-Life 2", "/hl2/", 220 },
-    { "episodic", "Half-Life 2: Episode One", "/episodic/", 380 },
-    { "ep2", "Half-Life 2: Episode Two", "/ep2/", 420 },
-    { "lostcoast", "Half-Life 2: Lost Coast", "/lostcoast/", 340 },
-    { "cstrike", "Counter-Strike: Source", "content_cstrike", 240 },
-    { "portal", "Portal", "/portal/", 400 },
-    { "tf", "Team Fortress 2", "/tf/", 440 },
-    { "dod", "Day of Defeat: Source", "/dod/", 300 }
-  };
-  char paths[32768]; filesystem->GetSearchPath("GAME", true, paths, sizeof(paths));
-  V_FixSlashes(paths, '/');
-  lua_newtable(L);
-  int count = 0;
-  for (int i = 0; i < ARRAYSIZE(games); ++i) {
-    bool mounted = false;
-    std::string folderMatch = std::string("/") + games[i].folder + "/";
-    const char *position = paths;
-    while (*position) {
-      const char *end = strchr(position, ';'); if (!end) end = position + strlen(position);
-      std::string path(position, end - position);
-      if (Q_stristr(path.c_str(), games[i].match) || Q_stristr(path.c_str(), folderMatch.c_str())) {
-        mounted = true;
-        filesystem->AddSearchPath(path.c_str(), games[i].folder, PATH_ADD_TO_TAIL);
-      }
-      position = *end ? end + 1 : end;
-    }
-    lua_newtable(L);
-    lua_pushstring(L, games[i].folder); lua_setfield(L, -2, "folder");
-    lua_pushstring(L, games[i].title); lua_setfield(L, -2, "title");
-    lua_pushinteger(L, games[i].depot); lua_setfield(L, -2, "depot");
-    lua_pushboolean(L, mounted); lua_setfield(L, -2, "mounted");
-    lua_pushboolean(L, mounted); lua_setfield(L, -2, "installed");
-    lua_pushboolean(L, mounted); lua_setfield(L, -2, "owned");
-    lua_rawseti(L, -2, ++count);
-  }
-  return 1;
-}
+extern int HL2SB_EngineGetGames( lua_State *L );
 
 static int engine_GetEngineBuildNumber (lua_State *L) {
   lua_pushinteger(L, engine->GetEngineBuildNumber());
@@ -589,7 +550,7 @@ static const luaL_Reg enginelib[] = {
   {"GetAppID",   engine_GetAppID},
   {"GetDXSupportLevel", engine_GetDXSupportLevel},
   {"GetAddons", engine_GetAddons},
-  {"GetGames", engine_GetGames},
+  {"GetGames", HL2SB_EngineGetGames},
   {"GetEngineBuildNumber",   engine_GetEngineBuildNumber},
   {"GetGameDirectory", engine_GetGameDirectory},
   {"GetLastTimeStamp", engine_GetLastTimeStamp},

@@ -282,6 +282,18 @@ static void SendProxy_SpawnEffectTime(const SendProp *, const void *entity, cons
 
 // This table encodes the CBaseEntity data.
 IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
+#ifdef LUA_SDK
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_bool), SendPropInt(SENDINFO_ARRAY(m_GMOD_bool), 1, SPROP_UNSIGNED)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_float), SendPropFloat(SENDINFO_ARRAY(m_GMOD_float), 0, SPROP_NOSCALE)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_int), SendPropInt(SENDINFO_ARRAY(m_GMOD_int), 32, 0)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_vector), SendPropVector(SENDINFO_ARRAY(m_GMOD_vector), 0, SPROP_NOSCALE)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_angle), SendPropVector(SENDINFO_ARRAY(m_GMOD_angle), 0, SPROP_NOSCALE)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_entity), SendPropEHandle(SENDINFO_ARRAY(m_GMOD_entity))),
+	SendPropString(SENDINFO(m_GMOD_String0)),
+	SendPropString(SENDINFO(m_GMOD_String1)),
+	SendPropString(SENDINFO(m_GMOD_String2)),
+	SendPropString(SENDINFO(m_GMOD_String3)),
+#endif
 	SendPropDataTable( "AnimTimeMustBeFirst", 0, &REFERENCE_SEND_TABLE(DT_AnimTimeMustBeFirst), SendProxy_ClientSideAnimation ),
 	SendPropInt			(SENDINFO(m_flSimulationTime),	SIMULATION_TIME_WINDOW_BITS, SPROP_UNSIGNED|SPROP_CHANGES_OFTEN|SPROP_ENCODED_AGAINST_TICKCOUNT, SendProxy_SimulationTime),
 
@@ -450,6 +462,11 @@ CBaseEntity::CBaseEntity( bool bServerOnly )
 
 #if defined( LUA_SDK )
 	m_nTableReference = LUA_NOREF;
+	Q_memset(m_GMOD_String0.GetForModify(),0,512);
+	Q_memset(m_GMOD_String1.GetForModify(),0,512);
+	Q_memset(m_GMOD_String2.GetForModify(),0,512);
+	Q_memset(m_GMOD_String3.GetForModify(),0,512);
+
 #endif
 }
 
@@ -1953,6 +1970,18 @@ BEGIN_SIMPLE_DATADESC( ResponseContext_t )
 END_DATADESC()
 
 BEGIN_DATADESC_NO_BASE( CBaseEntity )
+#ifdef LUA_SDK
+	DEFINE_ARRAY(m_GMOD_bool, FIELD_BOOLEAN, 32),
+	DEFINE_ARRAY(m_GMOD_float, FIELD_FLOAT, 32),
+	DEFINE_ARRAY(m_GMOD_int, FIELD_INTEGER, 32),
+	DEFINE_ARRAY(m_GMOD_vector, FIELD_VECTOR, 32),
+	DEFINE_ARRAY(m_GMOD_angle, FIELD_VECTOR, 32),
+	DEFINE_ARRAY(m_GMOD_entity, FIELD_EHANDLE, 32),
+	DEFINE_ARRAY(m_GMOD_String0, FIELD_CHARACTER, 512),
+	DEFINE_ARRAY(m_GMOD_String1, FIELD_CHARACTER, 512),
+	DEFINE_ARRAY(m_GMOD_String2, FIELD_CHARACTER, 512),
+	DEFINE_ARRAY(m_GMOD_String3, FIELD_CHARACTER, 512),
+#endif
 
 	DEFINE_KEYFIELD( m_iClassname, FIELD_STRING, "classname" ),
 	DEFINE_GLOBAL_KEYFIELD( m_iGlobalname, FIELD_STRING, "globalname" ),

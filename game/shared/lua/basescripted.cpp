@@ -347,23 +347,7 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		lua_getref( L, m_nTableReference );
 	}
 
-	// HL2SB GMod SENT compat: GMod's engine calls ENT:SetupDataTables() while
-	// it sets a scripted entity up, and that is where ENT:NetworkVar()
-	// declares the per-instance accessors the script uses.  GMod's sent_ball
-	// declares BallSize/BallColor there and its SpawnFunction calls
-	// SetBallSize() before Spawn(), so without this call the entity throws on
-	// its first line ("attempt to call a method 'SetBallSize'").
-	//
-	// The shim itself is not defined by the entity script: it is installed
-	// here from the globals the engine publishes, so a stock GMod entity
-	// script runs unmodified.  When those globals are absent this is a no-op,
-	// which keeps entities that do not use NetworkVar working.
-	//
-	// HL2SB (2026-10-04) shared by BOTH branches: the fresh bind's class table
-	// and the healed merge's instance table land here, and an instance table
-	// created by a pre-bind field write has none of the seeds the fresh branch
-	// used to install -- GMod's scripted_ents.Get re-copies them on every
-	// re-run, so re-seed here whenever the Entity field is missing.
+	// Preserve creation-time script state when Spawn reuses the instance.
 	bool bSeeded = false;
 	if ( lua_istable( L, -1 ) )
 	{
@@ -417,52 +401,6 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		lua_pushcclosure( L, HL2SB_EntityTableIsValid, 1 );
 		lua_setfield( L, -2, "IsValid" );
 
-		lua_getglobal( L, "HL2SB_EntityNetworkVar" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVar" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		lua_getglobal( L, "HL2SB_EntityNetworkVarNotify" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVarNotify" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		// Keep legacy table callers using the same declaration helpers.
-		lua_getglobal( L, "HL2SB_EntityDTVar" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "DTVar" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		// HL2SB GMod compat (2026-10-08): NetworkVarElement gets the same
-		// treatment -- env_skypaint packs its three star values into one
-		// Angle slot through self:NetworkVarElement("Angle", 0, "p", ...).
-		// The implementation is a Lua shim (HL2SB_EntityNetworkVarElement);
-		// absent global, this is a no-op like the others.
-		lua_getglobal( L, "HL2SB_EntityNetworkVarElement" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVarElement" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
 
 	}
 	else if ( lua_istable( L, -1 ) && !bFreshBind )
@@ -495,23 +433,9 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		lua_pop( L, 1 );
 	}
 
-	// Bind the instance before invoking script so closures capture the entity,
-	// and every entity method is available during data-table setup.
-	if ( !bSeeded && m_nTableReference >= 0 )
-	{
-		lua_getref( L, m_nTableReference );
-		lua_getfield( L, -1, "SetupDataTables" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_pushanimating( L, this );
-			luasrc_pcall( L, 1, 0, 0 );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-		lua_pop( L, 1 );
-	}
+	extern void HL2SB_InstallScriptDataTables(lua_State *, CBaseEntity *);
+	if (!bSeeded && m_nTableReference >= 0)
+		HL2SB_InstallScriptDataTables(L,this);
 
 	// HL2SB GMod compat: Initialize dispatches at SPAWN, not at create.  GMod's
 	// ents.Create does not run ENT:Initialize -- scripts configure the entity

@@ -3438,6 +3438,15 @@ static const luaL_Reg CBasePlayer_funcs[] = {
 /*
 ** Open CBasePlayer object
 */
+static int player_GetByID( lua_State *L ) {
+  const double index = luaL_checknumber( L, 1 );
+  CBasePlayer *player = NULL;
+  if ( index >= 1 && index < (double)gpGlobals->maxClients + 1 )
+    player = UTIL_PlayerByIndex( (int)index );
+  lua_pushplayer( L, player );
+  return 1;
+}
+
 LUALIB_API int luaopen_CBasePlayer_shared (lua_State *L) {
   luaL_getmetatable(L, LUA_BASEPLAYERLIBNAME);
   if (lua_isnoneornil(L, -1)) {
@@ -3448,6 +3457,14 @@ LUALIB_API int luaopen_CBasePlayer_shared (lua_State *L) {
   lua_pushstring(L, "entity");
   lua_setfield(L, -2, "__type");  /* metatable.__type = "entity" */
   luaL_register(L, "_G", CBasePlayer_funcs);
+  lua_getglobal( L, "player" );
+  if ( !lua_istable( L, -1 ) ) {
+    lua_pop( L, 1 );
+    lua_newtable( L );
+  }
+  lua_pushcfunction( L, player_GetByID );
+  lua_setfield( L, -2, "GetByID" );
+  lua_setglobal( L, "player" );
   HL2SB_EnsureUserCmdMeta(L);
   lua_pop(L, 1);
   HL2SB_EnsureMoveDataMeta(L);

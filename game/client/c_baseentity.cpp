@@ -451,7 +451,84 @@ END_RECV_TABLE()
 #endif
 
 
+#ifdef LUA_SDK
+extern void HL2SB_ReceiveDTVar(CBaseEntity *, const char *, int, const void *);
+
+static void HL2SB_RecvDT_bool(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_bool));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(bool);
+  const bool value = data->m_Value.m_Int != 0;
+  if (value != *(bool *)out) HL2SB_ReceiveDTVar(entity,"Bool",index,&value);
+  *(bool *)out = value;
+}
+
+static void HL2SB_RecvDT_float(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_float));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(float);
+  const float value = data->m_Value.m_Float;
+  if (value != *(float *)out) HL2SB_ReceiveDTVar(entity,"Float",index,&value);
+  *(float *)out = value;
+}
+
+static void HL2SB_RecvDT_int(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_int));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(int);
+  const int value = data->m_Value.m_Int;
+  if (value != *(int *)out) HL2SB_ReceiveDTVar(entity,"Int",index,&value);
+  *(int *)out = value;
+}
+
+static void HL2SB_RecvDT_vector(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_vector));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(Vector);
+  const Vector value = Vector(data->m_Value.m_Vector[0],data->m_Value.m_Vector[1],data->m_Value.m_Vector[2]);
+  if (value != *(Vector *)out) HL2SB_ReceiveDTVar(entity,"Vector",index,&value);
+  *(Vector *)out = value;
+}
+
+static void HL2SB_RecvDT_angle(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_angle));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(QAngle);
+  const QAngle value = QAngle(data->m_Value.m_Vector[0],data->m_Value.m_Vector[1],data->m_Value.m_Vector[2]);
+  if (value != *(QAngle *)out) HL2SB_ReceiveDTVar(entity,"Angle",index,&value);
+  *(QAngle *)out = value;
+}
+
+static void HL2SB_RecvDT_entity(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_entity));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(EHANDLE);
+  EHANDLE value;
+  RecvProxy_IntToEHandle(data,base,&value);
+  if (value.Get() != ((EHANDLE *)out)->Get()) HL2SB_ReceiveDTVar(entity,"Entity",index,&value);
+  *(EHANDLE *)out = value;
+}
+
+static void HL2SB_RecvDT_String(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)base;
+  int index = 0;
+  const int offset = data->m_pRecvProp->GetOffset();
+  if (offset == offsetof(C_BaseEntity,m_GMOD_String1)) index = 1;
+  else if (offset == offsetof(C_BaseEntity,m_GMOD_String2)) index = 2;
+  else if (offset == offsetof(C_BaseEntity,m_GMOD_String3)) index = 3;
+  const char *value = data->m_Value.m_pString;
+  if (Q_strcmp((const char *)out,value)) HL2SB_ReceiveDTVar(entity,"String",index,value);
+  Q_strncpy((char *)out,value,512);
+}
+#endif
+
 BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
+#ifdef LUA_SDK
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_bool), RecvPropInt(RECVINFO(m_GMOD_bool[0]), 0, HL2SB_RecvDT_bool)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_float), RecvPropFloat(RECVINFO(m_GMOD_float[0]), 0, HL2SB_RecvDT_float)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_int), RecvPropInt(RECVINFO(m_GMOD_int[0]), 0, HL2SB_RecvDT_int)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_vector), RecvPropVector(RECVINFO(m_GMOD_vector[0]), 0, HL2SB_RecvDT_vector)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_angle), RecvPropVector(RECVINFO(m_GMOD_angle[0]), 0, HL2SB_RecvDT_angle)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_entity), RecvPropEHandle(RECVINFO(m_GMOD_entity[0]), HL2SB_RecvDT_entity)),
+	RecvPropString(RECVINFO(m_GMOD_String0),0,HL2SB_RecvDT_String),
+	RecvPropString(RECVINFO(m_GMOD_String1),0,HL2SB_RecvDT_String),
+	RecvPropString(RECVINFO(m_GMOD_String2),0,HL2SB_RecvDT_String),
+	RecvPropString(RECVINFO(m_GMOD_String3),0,HL2SB_RecvDT_String),
+#endif
 	RecvPropDataTable( "AnimTimeMustBeFirst", 0, 0, &REFERENCE_RECV_TABLE(DT_AnimTimeMustBeFirst) ),
 	RecvPropInt( RECVINFO(m_flSimulationTime), 0, RecvProxy_SimulationTime ),
 	RecvPropInt( RECVINFO( m_ubInterpolationFrame ) ),
@@ -511,6 +588,18 @@ END_RECV_TABLE()
 const float coordTolerance = 2.0f / (float)( 1 << COORD_FRACTIONAL_BITS );
 
 BEGIN_PREDICTION_DATA_NO_BASE( C_BaseEntity )
+#ifdef LUA_SDK
+	DEFINE_PRED_ARRAY(m_GMOD_bool, FIELD_BOOLEAN, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_float, FIELD_FLOAT, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_int, FIELD_INTEGER, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_vector, FIELD_VECTOR, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_angle, FIELD_VECTOR, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_entity, FIELD_EHANDLE, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String0, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String1, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String2, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String3, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+#endif
 
 	// These have a special proxy to handle send/receive
 	DEFINE_PRED_TYPEDESCRIPTION( m_Collision, CCollisionProperty ),
@@ -947,6 +1036,11 @@ C_BaseEntity::C_BaseEntity() :
 	// fired on the client and produced no impact effects), GetPlayerLocalData()
 	// (footstep sounds), GetAimVector(), ViewPunch(), and so on.
 	m_nTableReference = LUA_NOREF;
+	Q_memset(m_GMOD_String0.GetForModify(),0,512);
+	Q_memset(m_GMOD_String1.GetForModify(),0,512);
+	Q_memset(m_GMOD_String2.GetForModify(),0,512);
+	Q_memset(m_GMOD_String3.GetForModify(),0,512);
+
 #endif
 
 	m_iParentAttachment = 0;

@@ -46,6 +46,7 @@
 #include "particle_parse.h"			// HL2SB: Entity:StopParticles (StopParticleEffects)
 #endif
 #include "lbaseplayer_shared.h"
+#include "lvehicle_shared.h"
 #include "lbasecombatweapon_shared.h"
 #include "lgametrace.h"
 #include "SoundEmitterSystem/lisoundemittersystembase.h"
@@ -4485,6 +4486,8 @@ void HL2SB_PushNullEntityIndex (lua_State *L, const char *pszField) {
     bKnown = HL2SB_PushClassField( L, s_pszNullIndexParents[i], pszField );
 
   if ( bKnown ) {
+    // DT methods validate NULL receivers themselves.
+    if (lua_isfunction(L,-1) && (!Q_strncmp(pszField,"GetDT",5) || !Q_strncmp(pszField,"SetDT",5))) return;
     lua_pop( L, 1 );   /* drop the looked-up value; answer the call-safe stub */
     lua_pushcfunction( L, HL2SB_NullEntityMethod );
   } else {
@@ -6046,7 +6049,240 @@ static int CBaseEntity_GetParentWorldTransformMatrix (lua_State *L) {
   return 1;
 }
 
+
+static bool HL2SB_IsDTEntity(lua_State *L, int index) {
+  if (lua_type(L,index) != LUA_TUSERDATA || lua_rawlen(L,index) != sizeof(CBaseHandle)) return false;
+  static const char *const metatables[] = {
+    "CBaseEntity", "CBaseAnimating", "CBaseFlex", "CBaseCombatCharacter",
+    "CBasePlayer", "CHL2MP_Player", "CBaseCombatWeapon", "Vehicle", "NPC", "NextBot"
+  };
+  for (int i = 0; i < ARRAYSIZE(metatables); ++i)
+    if (luaL_testudata(L,index,metatables[i])) return true;
+  return false;
+}
+
+static CBaseEntity *HL2SB_DTEntity(lua_State *L) {
+  if (!HL2SB_IsDTEntity(L,1)) { luaL_typerror(L,1,"Entity"); return NULL; }
+  CBaseEntity *entity = lua_toentity(L,1);
+  if (!entity) luaL_error(L,"Tried to use a NULL entity!");
+  return entity;
+}
+
+// Slot indices use the same integer conversion for both realms.
+static int HL2SB_DTInteger( double value ) {
+  return value >= -2147483648.0 && value < 2147483648.0 ? (int)value : (-2147483647 - 1);
+}
+
+static int HL2SB_DTIndex( lua_State *L, int count, bool setter ) {
+  const int index = HL2SB_DTInteger( luaL_checknumber(L, 2) );
+  if ( index < 0 || index >= count ) return setter ? -1 : 0;
+  return index;
+}
+
+extern int Vehicle_GetThirdPersonMode(lua_State *L);
+extern int Vehicle_SetThirdPersonMode(lua_State *L);
+extern int Vehicle_GetCameraDistance(lua_State *L);
+extern int Vehicle_SetCameraDistance(lua_State *L);
+extern int Vehicle_GetVehicleClass(lua_State *L);
+extern int Vehicle_SetVehicleClass(lua_State *L);
+
+static int CBaseEntity_GetDTBool(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  if (index == 3 && lua_entityisvehicle(entity)) return Vehicle_GetThirdPersonMode(L);
+  lua_pushboolean(L,entity->m_GMOD_bool[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTBool(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const bool value = lua_toboolean(L,3) != 0;
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  if (index == 3 && lua_entityisvehicle(entity)) { lua_settop(L,1); lua_pushboolean(L,value); return Vehicle_SetThirdPersonMode(L); }
+  entity->m_GMOD_bool.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTFloat(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  if (index == 3 && lua_entityisvehicle(entity)) return Vehicle_GetCameraDistance(L);
+  lua_pushnumber(L,entity->m_GMOD_float[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTFloat(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const float value = (float)luaL_checknumber(L,3);
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  if (index == 3 && lua_entityisvehicle(entity)) { lua_remove(L,2); return Vehicle_SetCameraDistance(L); }
+  entity->m_GMOD_float.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTInt(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushinteger(L,entity->m_GMOD_int[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTInt(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int value = HL2SB_DTInteger(luaL_checknumber(L,3));
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  entity->m_GMOD_int.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTVector(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushvector(L,entity->m_GMOD_vector[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTVector(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const Vector value = luaL_checkvector(L,3);
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  entity->m_GMOD_vector.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTAngle(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushangle(L,entity->m_GMOD_angle[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTAngle(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const QAngle value = luaL_checkangle(L,3);
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  entity->m_GMOD_angle.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTEntity(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushentity(L,entity->m_GMOD_entity[index].Get());
+  return 1;
+}
+
+static int CBaseEntity_SetDTEntity(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  CBaseEntity *value = NULL;
+  if (lua_isnone(L,3)) return luaL_typerror(L,3,"Entity");
+  if (!lua_isnil(L,3)) {
+    if (!HL2SB_IsDTEntity(L,3)) return luaL_typerror(L,3,"Entity");
+    value = lua_toentity(L,3);
+  }
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index >= 0) entity->m_GMOD_entity.Set(index,EHANDLE(value));
+  return 0;
+}
+
+static int CBaseEntity_GetDTString(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,4,false);
+  if (index == 3 && lua_entityisvehicle(entity)) return Vehicle_GetVehicleClass(L);
+  const char *value = "";
+  switch(index) {
+    case 0: value = entity->m_GMOD_String0.Get(); break;
+    case 1: value = entity->m_GMOD_String1.Get(); break;
+    case 2: value = entity->m_GMOD_String2.Get(); break;
+    case 3: value = entity->m_GMOD_String3.Get(); break;
+  }
+  lua_pushstring(L,value);
+  return 1;
+}
+
+static int CBaseEntity_SetDTString(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const char *value = luaL_checkstring(L,3);
+  const int index = HL2SB_DTIndex(L,4,true);
+  if (index < 0) return 0;
+  if (index == 3 && lua_entityisvehicle(entity)) { lua_remove(L,2); return Vehicle_SetVehicleClass(L); }
+  char *target = NULL;
+  switch(index) {
+    case 0: target = entity->m_GMOD_String0.GetForModify(); break;
+    case 1: target = entity->m_GMOD_String1.GetForModify(); break;
+    case 2: target = entity->m_GMOD_String2.GetForModify(); break;
+    case 3: target = entity->m_GMOD_String3.GetForModify(); break;
+  }
+  Q_memset(target,0,512);
+  Q_strncpy(target,value,512);
+  return 0;
+}
+
+#ifdef CLIENT_DLL
+void HL2SB_ReceiveDTVar(CBaseEntity *entity, const char *type, int index, const void *value) {
+  if (!L || !g_bLuaInitialized) return;
+  const int top = lua_gettop(L);
+  lua_getglobal(L,"DTVar_ReceiveProxyGL");
+  if (lua_isfunction(L,-1)) {
+    lua_pushentity(L,entity);
+    lua_pushstring(L,type);
+    lua_pushinteger(L,index);
+    if (!Q_strcmp(type,"Bool")) lua_pushboolean(L,*(const bool *)value);
+    else if (!Q_strcmp(type,"Float")) lua_pushnumber(L,*(const float *)value);
+    else if (!Q_strcmp(type,"Int")) lua_pushinteger(L,*(const int *)value);
+    else if (!Q_strcmp(type,"Vector")) lua_pushvector(L,*(const Vector *)value);
+    else if (!Q_strcmp(type,"Angle")) lua_pushangle(L,*(const QAngle *)value);
+    else if (!Q_strcmp(type,"Entity")) lua_pushentity(L,((const EHANDLE *)value)->Get());
+    else lua_pushstring(L,(const char *)value);
+    luasrc_pcall(L,4,0,0);
+  }
+  lua_settop(L,top);
+}
+#endif
+
+void HL2SB_InstallScriptDataTables(lua_State *L, CBaseEntity *entity) {
+  const int top = lua_gettop(L);
+  lua_pushentity(L,entity);
+  const int self = lua_gettop(L);
+  lua_getfield(L,self,"SetupDataTables");
+  const bool hasSetup = lua_isfunction(L,-1);
+  lua_pop(L,1);
+  if (hasSetup) {
+    const char *methods[] = {"InstallDataTable", "SetupDataTables"};
+    for (int i = 0; i < 2; ++i) {
+      lua_getfield(L,self,methods[i]);
+      if (!lua_isfunction(L,-1)) {
+        luasrc_LuaWarnMsgF("Missing entity data-table method %s\n",methods[i]);
+        break;
+      }
+      lua_pushvalue(L,self);
+      if (luasrc_pcall(L,1,0,0) != 0) break;
+    }
+  }
+  lua_settop(L,top);
+}
+
 static const luaL_Reg CBaseEntitymeta[] = {
+  {"GetDTBool", CBaseEntity_GetDTBool},
+  {"SetDTBool", CBaseEntity_SetDTBool},
+  {"GetDTFloat", CBaseEntity_GetDTFloat},
+  {"SetDTFloat", CBaseEntity_SetDTFloat},
+  {"GetDTInt", CBaseEntity_GetDTInt},
+  {"SetDTInt", CBaseEntity_SetDTInt},
+  {"GetDTString", CBaseEntity_GetDTString},
+  {"SetDTString", CBaseEntity_SetDTString},
+  {"GetDTEntity", CBaseEntity_GetDTEntity},
+  {"SetDTEntity", CBaseEntity_SetDTEntity},
+  {"GetDTVector", CBaseEntity_GetDTVector},
+  {"SetDTVector", CBaseEntity_SetDTVector},
+  {"GetDTAngle", CBaseEntity_GetDTAngle},
+  {"SetDTAngle", CBaseEntity_SetDTAngle},
+
   {"GetWorldTransformMatrix", CBaseEntity_GetWorldTransformMatrix},
   {"GetParentWorldTransformMatrix", CBaseEntity_GetParentWorldTransformMatrix},
   {"GetForward", CBaseEntity_GetForward},
