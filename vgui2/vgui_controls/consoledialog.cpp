@@ -619,7 +619,7 @@ void CConsolePanel::OnAutoComplete(bool reverse)
 		return;
 
 	// match found, set text
-	char completedText[256];
+	char completedText[CONSOLE_TEXT_MAX_LENGTH];
 	CompletionItem *item = m_CompletionList[m_iNextCompletion];
 	Assert( item );
 
@@ -750,7 +750,7 @@ void CConsolePanel::OnCommand(const char *command)
 	if ( !Q_stricmp( command, "Submit" ) )
 	{
 		// submit the entry as a console commmand
-		char szCommand[256];
+		char szCommand[CONSOLE_TEXT_MAX_LENGTH];
 		m_pEntry->GetText(szCommand, sizeof(szCommand));
 		PostActionSignal( new KeyValues( "CommandSubmitted", "command", szCommand ) );
 

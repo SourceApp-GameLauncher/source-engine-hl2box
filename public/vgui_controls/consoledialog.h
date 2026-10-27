@@ -16,8 +16,11 @@
 #include "vgui_controls/EditablePanel.h"
 #include "vgui_controls/Frame.h"
 #include "icvar.h"
+#include "tier1/convar.h"
 
 class ConCommandBase;
+
+enum { CONSOLE_TEXT_MAX_LENGTH = 512 };
 
 
 namespace vgui
@@ -122,8 +125,8 @@ protected:
 	Color m_DPrintColor;
 
 	int m_iNextCompletion;		// the completion that we'll next go to
-	char m_szPartialText[256];
-	char m_szPreviousPartialText[256];
+	char m_szPartialText[CONSOLE_TEXT_MAX_LENGTH];
+	char m_szPreviousPartialText[CONSOLE_TEXT_MAX_LENGTH];
 	bool m_bAutoCompleteMode;	// true if the user is currently tabbing through completion options
 	bool m_bWasBackspacing;
 	bool m_bStatusVersion;
