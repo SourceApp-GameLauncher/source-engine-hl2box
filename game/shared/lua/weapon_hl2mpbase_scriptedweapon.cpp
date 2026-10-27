@@ -20,6 +20,8 @@
 #include "lbasecombatweapon_shared.h"
 #if defined( CLIENT_DLL ) && defined( LUA_SDK )
 #include "cdll_int.h"	// HL2SB: engine->ClientCmd for the NW seed request (hl2sb_nwrequest)
+#include "vgui/ISurface.h"
+#include "vgui_controls/Controls.h"
 #endif
 // HL2SB: SWEP:CalcView pushes/reads the Player, Vector and QAngle userdata.
 #include "lbaseplayer_shared.h"
@@ -41,8 +43,10 @@ IMPLEMENT_NETWORKCLASS_ALIASED( HL2MPScriptedWeapon, DT_HL2MPScriptedWeapon )
 BEGIN_NETWORK_TABLE( CHL2MPScriptedWeapon, DT_HL2MPScriptedWeapon )
 #ifdef CLIENT_DLL
 	RecvPropString( RECVINFO( m_iScriptedClassname ) ),
+	RecvPropString( RECVINFO( m_szHoldType ) ),
 #else
 	SendPropString( SENDINFO( m_iScriptedClassname ) ),
+	SendPropString( SENDINFO( m_szHoldType ) ),
 #endif
 END_NETWORK_TABLE()
 
@@ -231,6 +235,9 @@ int CHL2MPScriptedWeapon::ActivityListCount( void ) { return LUA_MAX_WEAPON_ACTI
 //-----------------------------------------------------------------------------
 CHL2MPScriptedWeapon::CHL2MPScriptedWeapon( void )
 {
+	m_szHoldType.GetForModify()[0] = '\0';
+	m_szAppliedHoldType[0] = '\0';
+	m_bUpdatingHoldType = false;
 	m_pLuaWeaponInfo = dynamic_cast< CHL2MPSWeaponInfo* >( CreateWeaponInfo() );
 
 #ifdef LUA_SDK
@@ -428,11 +435,6 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	lua_setfield( L, -2, "Weapon" );
 	lua_pushweapon( L, this );
 	lua_setfield( L, -2, "Entity" );
-	if ( GetOwner() )
-	{
-		CBaseEntity::PushLuaInstanceSafe( L, GetOwner() );
-		lua_setfield( L, -2, "Owner" );
-	}
 
 	m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
 #ifndef CLIENT_DLL
@@ -842,6 +844,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Initialize" );
 	END_LUA_CALL_WEAPON_METHOD( 0, 0 );
+	UpdateHoldType();
 #endif
 }
 
@@ -879,6 +882,7 @@ void CHL2MPScriptedWeapon::Simulate()
 	BaseClass::Simulate();
 	if ( guard.Get() != this || L == NULL || m_nTableReference < 0 )
 		return;
+	UpdateHoldType();
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 	if ( !pOwner || !pOwner->IsAlive() || pOwner->GetActiveWeapon() != this )
 		return;
@@ -1125,9 +1129,7 @@ bool CHL2MPScriptedWeapon::UseHands( void ) const
 // already popped -- a pointer the GC could collect before the HUD copied it --
 // and it ignored every non-string, so the Material() form silently fell through
 // to the paper "weapons/swep" icon.  The classic WepSelectIcon spelling as a
-// surface.GetTextureID() NUMBER used to be ignored too; the Lua side now keeps
-// id -> path in surface.__textureNames (gmod_surface.lua) and the LUA_TNUMBER
-// branch below resolves it, which is what picked up e.g. the CF pack
+// surface.GetTextureID() numbers are resolved through the native texture dictionary.
 // ("killicon/ak47_beast").
 //-----------------------------------------------------------------------------
 const char *CHL2MPScriptedWeapon::GetWepSelectIcon( void ) const
@@ -1164,28 +1166,10 @@ const char *CHL2MPScriptedWeapon::GetWepSelectIcon( void ) const
 		}
 		else if ( lua_type( L, -1 ) == LUA_TNUMBER )
 		{
-			// Classic GMod spelling: SWEP.WepSelectIcon =
-			// surface.GetTextureID( "killicon/ak47_beast" ).  Resolve the
-			// texture id back to its material path via the Lua registry.
-			int iTextureID = (int) lua_tonumber( L, -1 );
-			lua_getglobal( L, "surface" );
-			if ( lua_istable( L, -1 ) )
-			{
-				lua_getfield( L, -1, "__textureNames" );
-				if ( lua_istable( L, -1 ) )
-				{
-					lua_pushnumber( L, iTextureID );
-					lua_rawget( L, -2 );
-					if ( lua_type( L, -1 ) == LUA_TSTRING )
-					{
-						Q_strncpy( s_szWepSelectIcon, lua_tostring( L, -1 ), sizeof( s_szWepSelectIcon ) );
-						bHaveIcon = true;
-					}
-					lua_pop( L, 1 );
-				}
-				lua_pop( L, 1 );
-			}
-			lua_pop( L, 1 );
+#ifdef CLIENT_DLL
+			const int texture = (int)lua_tonumber( L, -1 );
+			bHaveIcon = vgui::surface()->DrawGetTextureFile( texture, s_szWepSelectIcon, sizeof( s_szWepSelectIcon ) );
+#endif
 		}
 		else if ( lua_istable( L, -1 ) )
 		{
@@ -1623,8 +1607,37 @@ const char *CHL2MPScriptedWeapon::GetTracerType( void )
 // through to the engine walk -- the same answer twice for base weapons, and
 // a script's own translation wins for custom ones.
 //-----------------------------------------------------------------------------
+void CHL2MPScriptedWeapon::SetNativeHoldType( const char *name )
+{
+	if ( name && name[0] )
+		Q_strncpy( m_szHoldType.GetForModify(), name, 80 );
+}
+
+const char *CHL2MPScriptedWeapon::GetNativeHoldType() const
+{
+	return m_szHoldType.Get();
+}
+
+void CHL2MPScriptedWeapon::UpdateHoldType()
+{
+#if defined( LUA_SDK )
+	if ( L == NULL || m_nTableReference < 0 || m_bUpdatingHoldType ||
+		!Q_strcmp( m_szAppliedHoldType, m_szHoldType.Get() ) ) return;
+	m_bUpdatingHoldType = true;
+	if ( m_szHoldType.Get()[0] )
+	{
+		BEGIN_LUA_CALL_WEAPON_METHOD( "SetWeaponHoldType" );
+			lua_pushstring( L, m_szHoldType.Get() );
+		END_LUA_CALL_WEAPON_METHOD( 1, 0 );
+	}
+	Q_strncpy( m_szAppliedHoldType, m_szHoldType.Get(), sizeof( m_szAppliedHoldType ) );
+	m_bUpdatingHoldType = false;
+#endif
+}
+
 Activity CHL2MPScriptedWeapon::ActivityOverride( Activity baseAct, bool *pRequired )
 {
+	UpdateHoldType();
 #if defined ( LUA_SDK )
 	BEGIN_LUA_CALL_WEAPON_METHOD( "TranslateActivity" );
 		lua_pushinteger( L, (int)baseAct );
@@ -1679,36 +1692,20 @@ bool CHL2MPScriptedWeapon::Reload( void )
 // Purpose: 
 // Output : Returns true on success, false on failure.
 //-----------------------------------------------------------------------------
-//-----------------------------------------------------------------------------
-// HL2SB GMod compat: GMod keeps self.Owner / self.Weapon on the weapon's Lua
-// table for every SWEP method call.  Old addons reach for self.Owner directly
-// (the minecraft SWEP: self.Owner:GetEyeTrace(), self.Owner:ConCommand(...)),
-// so the fields have to exist.  Refreshed on Deploy, which covers every owner
-// change (a weapon that changed hands redeploys first).
-//-----------------------------------------------------------------------------
-void HL2SB_WeaponUpdateLuaOwnerFields( CHL2MPScriptedWeapon *pWeapon )
+// Legacy self references resolve to the weapon; ownership remains a native read.
+static void HL2SB_WeaponUpdateLuaSelfAliases( CHL2MPScriptedWeapon *pWeapon )
 {
 #if defined ( LUA_SDK )
 	if ( L == NULL || !lua_isrefvalid( L, pWeapon->m_nTableReference ) )
 		return;
-
 	lua_getref( L, pWeapon->m_nTableReference );
-	if ( !lua_istable( L, -1 ) )
+	if ( lua_istable( L, -1 ) )
 	{
-		lua_pop( L, 1 );
-		return;
+		lua_pushweapon( L, pWeapon );
+		lua_setfield( L, -2, "Weapon" );
+		lua_pushweapon( L, pWeapon );
+		lua_setfield( L, -2, "Entity" );
 	}
-
-	lua_pushweapon( L, pWeapon );
-	lua_setfield( L, -2, "Weapon" );
-
-	CBasePlayer *pPlayer = ToBasePlayer( pWeapon->GetOwner() );
-	if ( pPlayer != NULL )
-		lua_pushplayer( L, pPlayer );
-	else
-		lua_pushnil( L );
-	lua_setfield( L, -2, "Owner" );
-
 	lua_pop( L, 1 );
 #endif
 }
@@ -1810,11 +1807,6 @@ bool HL2SB_ViewmodelFireAnimationEvent( C_BaseCombatWeapon *pWpn, const Vector &
 	if ( pScripted == NULL || !lua_isrefvalid( L, pScripted->m_nTableReference ) )
 		return false;
 
-	// self.Owner / self.Weapon are only written on Deploy/Equip; a weapon
-	// re-bound mid-life (give/switch window) would dispatch with a stale or
-	// nil Owner and die inside the script (cf_beast muzzle effect suppressed
-	// at cf_base:108, then the error-path pop below underflowed the stack).
-	HL2SB_WeaponUpdateLuaOwnerFields( pScripted );
 
 	lua_getref( L, pScripted->m_nTableReference );
 	if ( !lua_istable( L, -1 ) )
@@ -1833,7 +1825,7 @@ bool HL2SB_ViewmodelFireAnimationEvent( C_BaseCombatWeapon *pWpn, const Vector &
 		return false;
 	}
 
-	lua_pushvalue( L, -2 );			// self
+	lua_pushweapon( L, pWpn );
 	lua_pushvector( L, pos );
 	lua_pushangle( L, ang );
 	lua_pushinteger( L, event );
@@ -1875,8 +1867,8 @@ bool CHL2MPScriptedWeapon::Deploy( void )
 #endif
 		entindex(), GetClassname(), (int)m_nTableReference, (int)m_iState );
 
-	// HL2SB: refresh self.Owner / self.Weapon BEFORE the script sees the deploy.
-	HL2SB_WeaponUpdateLuaOwnerFields( this );
+	// Refresh legacy self references before the script sees the deploy.
+	HL2SB_WeaponUpdateLuaSelfAliases( this );
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
 
 #ifdef CLIENT_DLL
@@ -1945,7 +1937,7 @@ void CHL2MPScriptedWeapon::Equip( CBaseCombatCharacter *pOwner )
 	BaseClass::Equip( pOwner );
 
 #if defined ( LUA_SDK )
-	HL2SB_WeaponUpdateLuaOwnerFields( this );
+	HL2SB_WeaponUpdateLuaSelfAliases( this );
 
 	BEGIN_LUA_CALL_WEAPON_METHOD( "Equip" );
 		if ( pOwner != NULL )
@@ -2215,6 +2207,7 @@ bool CHL2MPScriptedWeapon::Holster( CBaseCombatWeapon *pSwitchingTo )
 //-----------------------------------------------------------------------------
 void CHL2MPScriptedWeapon::ItemPostFrame( void )
 {
+	UpdateHoldType();
 #ifdef CLIENT_DLL
 	HL2SB_EnsureInitialWeaponDeploy( this );
 #endif
@@ -2571,102 +2564,71 @@ Vector CHL2MPScriptedWeapon::GetBulletSpread( WeaponProficiency_t proficiency )
 	return BaseClass::GetBulletSpread( proficiency );
 }
 
-//-----------------------------------------------------------------------------
-// HL2SB GMod compat (wiki): WEAPON:GetNPCBurstSettings() -> minBurst,
-// maxBurst, fireRate-delay; WEAPON:GetNPCRestTimes() -> minRest, maxRest.
-// The SDK's shot regulator polls the five scalar virtuals below; each
-// answers from the wiki hook (a few Lua calls per regulator update, which
-// runs on equip/weapon change -- not per tick).
-//-----------------------------------------------------------------------------
+// NPC settings are accepted as a complete numeric group. Preserve the caller's
+// Lua stack on missing methods, invalid results and protected-call failures.
+static bool ReadNPCWeaponSettings( CHL2MPScriptedWeapon *weapon,
+                                   const char *method, int count, float *values )
+{
+#if defined( LUA_SDK )
+	if ( L == NULL || weapon->m_nTableReference < 0 ||
+		!lua_isrefvalid( L, weapon->m_nTableReference ) ) return false;
+	const int top = lua_gettop( L );
+	lua_getref( L, weapon->m_nTableReference );
+	if ( !lua_istable( L, -1 ) ) { lua_settop( L, top ); return false; }
+	luasrc_PushScriptField( L, -1, method );
+	lua_remove( L, -2 );
+	if ( !lua_isfunction( L, -1 ) ) { lua_settop( L, top ); return false; }
+	lua_pushweapon( L, weapon );
+	if ( luasrc_pcall( L, 1, count, 0 ) != LUA_OK ) {
+		lua_settop( L, top );
+		return false;
+	}
+	bool valid = true;
+	for ( int i = 0; i < count; ++i )
+		if ( lua_type( L, top + i + 1 ) != LUA_TNUMBER ) valid = false;
+	if ( valid )
+		for ( int i = 0; i < count; ++i )
+			values[i] = (float)lua_tonumber( L, top + i + 1 );
+	lua_settop( L, top );
+	return valid;
+#else
+	return false;
+#endif
+}
+
 float CHL2MPScriptedWeapon::GetFireRate( void )
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_WEAPON_METHOD( "GetNPCBurstSettings" );
-	END_LUA_CALL_WEAPON_METHOD( 0, 3 );
-
-	// returns: minBurst, maxBurst, delay -- the delay is the last value
-	if ( lua_gettop( L ) >= 3 && lua_isnumber( L, -1 ) )
-	{
-		const float flDelay = (float)lua_tonumber( L, -1 );
-		lua_pop( L, 3 );
-		return MAX( 0.05f, flDelay );
-	}
-	if ( lua_gettop( L ) > 0 )
-		lua_pop( L, lua_gettop( L ) );
-#endif
-	return BaseClass::GetFireRate();
+	float settings[3];
+	return ReadNPCWeaponSettings( this, "GetNPCBurstSettings", 3, settings )
+		? settings[2] : BaseClass::GetFireRate();
 }
 
 int CHL2MPScriptedWeapon::GetMinBurst( void )
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_WEAPON_METHOD( "GetNPCBurstSettings" );
-	END_LUA_CALL_WEAPON_METHOD( 0, 3 );
-
-	if ( lua_gettop( L ) >= 3 && lua_isnumber( L, -3 ) )
-	{
-		const int nMin = (int)lua_tointeger( L, -3 );
-		lua_pop( L, 3 );
-		return MAX( 1, nMin );
-	}
-	if ( lua_gettop( L ) > 0 )
-		lua_pop( L, lua_gettop( L ) );
-#endif
-	return BaseClass::GetMinBurst();
+	float settings[3];
+	return ReadNPCWeaponSettings( this, "GetNPCBurstSettings", 3, settings )
+		? (int)settings[0] : 1;
 }
 
 int CHL2MPScriptedWeapon::GetMaxBurst( void )
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_WEAPON_METHOD( "GetNPCBurstSettings" );
-	END_LUA_CALL_WEAPON_METHOD( 0, 3 );
-
-	if ( lua_gettop( L ) >= 3 && lua_isnumber( L, -2 ) )
-	{
-		const int nMax = (int)lua_tointeger( L, -2 );
-		lua_pop( L, 3 );
-		return MAX( 1, nMax );
-	}
-	if ( lua_gettop( L ) > 0 )
-		lua_pop( L, lua_gettop( L ) );
-#endif
-	return BaseClass::GetMaxBurst();
+	float settings[3];
+	return ReadNPCWeaponSettings( this, "GetNPCBurstSettings", 3, settings )
+		? (int)settings[1] : 1;
 }
 
 float CHL2MPScriptedWeapon::GetMinRestTime( void )
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_WEAPON_METHOD( "GetNPCRestTimes" );
-	END_LUA_CALL_WEAPON_METHOD( 0, 2 );
-
-	if ( lua_gettop( L ) >= 2 && lua_isnumber( L, -2 ) )
-	{
-		const float flMin = (float)lua_tonumber( L, -2 );
-		lua_pop( L, 2 );
-		return MAX( 0.0f, flMin );
-	}
-	if ( lua_gettop( L ) > 0 )
-		lua_pop( L, lua_gettop( L ) );
-#endif
-	return BaseClass::GetMinRestTime();
+	float settings[2];
+	return ReadNPCWeaponSettings( this, "GetNPCRestTimes", 2, settings )
+		? settings[0] : 0.3f;
 }
 
 float CHL2MPScriptedWeapon::GetMaxRestTime( void )
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_WEAPON_METHOD( "GetNPCRestTimes" );
-	END_LUA_CALL_WEAPON_METHOD( 0, 2 );
-
-	if ( lua_gettop( L ) >= 2 && lua_isnumber( L, -1 ) )
-	{
-		const float flMax = (float)lua_tonumber( L, -1 );
-		lua_pop( L, 2 );
-		return MAX( 0.0f, flMax );
-	}
-	if ( lua_gettop( L ) > 0 )
-		lua_pop( L, lua_gettop( L ) );
-#endif
-	return BaseClass::GetMaxRestTime();
+	float settings[2];
+	return ReadNPCWeaponSettings( this, "GetNPCRestTimes", 2, settings )
+		? settings[1] : 0.6f;
 }
 
 //-----------------------------------------------------------------------------

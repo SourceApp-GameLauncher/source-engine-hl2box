@@ -13,6 +13,7 @@
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
 #include "basescripted.h"
+#include "weapon_hl2mpbase_scriptedweapon.h"
 #include "activitylist.h"
 #include "mathlib/lvector.h"
 
@@ -427,20 +428,18 @@ static int CBaseCombatWeapon_GetPrimaryAttackActivity (lua_State *L) {
   return 1;
 }
 
+static int CBaseCombatWeapon_SetHoldType (lua_State *L) {
+  CBaseCombatWeapon *weapon = luaL_checkweapon(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  if (weapon->IsScripted())
+    static_cast<CHL2MPScriptedWeapon *>(weapon)->SetNativeHoldType(name);
+  return 0;
+}
+
 static int CBaseCombatWeapon_GetHoldType (lua_State *L) {
   CBaseCombatWeapon *pWeapon = luaL_checkweapon(L, 1);
   if ( pWeapon->IsScripted() ) {
-    lua_getref( L, pWeapon->m_nTableReference );
-    if ( lua_istable( L, -1 ) ) {
-      lua_getfield( L, -1, "HoldType" );
-      if ( lua_type( L, -1 ) == LUA_TSTRING ) {
-        lua_remove( L, -2 );
-        return 1;
-      }
-      lua_pop( L, 1 );
-    }
-    lua_pop( L, 1 );
-    lua_pushliteral( L, "normal" );
+    lua_pushstring(L, static_cast<CHL2MPScriptedWeapon *>(pWeapon)->GetNativeHoldType());
     return 1;
   }
   const Activity activity = pWeapon->ActivityOverride( ACT_MP_STAND_IDLE, NULL );
@@ -1275,6 +1274,7 @@ static const luaL_Reg CBaseCombatWeaponmeta[] = {
   {"GetPrimaryAmmoType", CBaseCombatWeapon_GetPrimaryAmmoType},
   {"GetPrimaryAttackActivity", CBaseCombatWeapon_GetPrimaryAttackActivity},
   {"GetPrintName", CBaseCombatWeapon_GetPrintName},
+  {"SetHoldType", CBaseCombatWeapon_SetHoldType},
   {"GetHoldType", CBaseCombatWeapon_GetHoldType},
   {"GetRandomBurst", CBaseCombatWeapon_GetRandomBurst},
   {"GetRumbleEffect", CBaseCombatWeapon_GetRumbleEffect},

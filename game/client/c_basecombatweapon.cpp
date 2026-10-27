@@ -641,6 +641,10 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 		if ( s_bInDrawWorldModel )
 			return BaseClass::DrawModel( flags );
 
+		// Custom world models read the weapon's cached bones before drawing.
+		// Prepare them even when Lua hides the underlying weapon model.
+		SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+
 		bool bTranslucent = ( flags & STUDIO_TRANSPARENCY ) != 0;
 		const char *pszMethod = bTranslucent ? "DrawWorldModelTranslucent" : "DrawWorldModel";
 

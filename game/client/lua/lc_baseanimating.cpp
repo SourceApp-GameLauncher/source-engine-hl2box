@@ -7,6 +7,7 @@
 #define lc_baseanimating_cpp
 
 #include "cbase.h"
+#include "basecombatweapon_shared.h"
 #include "activitylist.h"
 #include "luamanager.h"
 #include "luasrclib.h"
@@ -496,7 +497,9 @@ static int CBaseAnimating_DrawModel (lua_State *L) {
 
   // Use the same scripted draw scope as the Entity metatable binding.
   int nFlags = luaL_optint( L, 2, STUDIO_RENDER );
-  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL )
+  C_BaseCombatWeapon *pWeapon = dynamic_cast<C_BaseCombatWeapon *>( pEntity );
+  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL ||
+       ( pWeapon != NULL && pWeapon->IsScripted() ) )
     nResult = pEntity->DrawModel( nFlags );
   else
     nResult = pEntity->InternalDrawModel( nFlags );

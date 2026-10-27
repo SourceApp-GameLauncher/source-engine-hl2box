@@ -717,26 +717,6 @@ static bool HL2SB_PushPlayerAnimationHook( const char *pszName, CHL2MP_Player *p
     return true;
 }
 
-// The original Lua's generic activity offsets predate this engine's enum layout.
-static Activity HL2SB_NormalizePlayerActivity( Activity ideal, Activity translated )
-{
-    static const struct { Activity ideal; int offset; Activity native; } mappings[] =
-    {
-        { ACT_MP_STAND_IDLE, 0, ACT_HL2MP_IDLE },
-        { ACT_MP_WALK, 1, ACT_HL2MP_WALK },
-        { ACT_MP_RUN, 2, ACT_HL2MP_RUN },
-        { ACT_MP_CROUCH_IDLE, 3, ACT_HL2MP_IDLE_CROUCH },
-        { ACT_MP_CROUCHWALK, 4, ACT_HL2MP_WALK_CROUCH },
-        { ACT_MP_SWIM, 9, ACT_HL2MP_SWIM }
-    };
-    for ( int i = 0; i < ARRAYSIZE( mappings ); ++i )
-    {
-        if ( mappings[i].ideal == ideal && translated == ACT_HL2MP_IDLE + mappings[i].offset )
-            return mappings[i].native;
-    }
-    return translated;
-}
-
 void CPlayerAnimState::Update()
 {
     CHL2MP_Player *pPlayer = GetOuter();
@@ -789,7 +769,6 @@ void CPlayerAnimState::Update()
     }
     if ( !translatedByLua && pWeapon )
         translated = pWeapon->ActivityOverride( ideal, NULL );
-    translated = HL2SB_NormalizePlayerActivity( ideal, translated );
 
     int desiredSequence = sequenceOverride;
     const int currentSequence = pPlayer->GetSequence();

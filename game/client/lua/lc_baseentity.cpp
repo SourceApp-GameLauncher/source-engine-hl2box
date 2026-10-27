@@ -7,6 +7,7 @@
 #define lc_baseentity_cpp
 
 #include "cbase.h"
+#include "basecombatweapon_shared.h"
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lbaseentity_shared.h"
@@ -130,12 +131,12 @@ static int CBaseEntity_DrawModel (lua_State *L) {
   C_BaseEntity *pEntity = luaL_checkentity(L, 1);
   int nFlags = luaL_optint(L, 2, STUDIO_RENDER);
 
-  // GMod lets a scripted entity draw its custom geometry on the first call.
-  // The entity's draw scope handles a nested self:DrawModel as a model draw.
-  CBaseScripted *pScripted = dynamic_cast<CBaseScripted *>( pEntity );
-  if ( pScripted != NULL )
+  // Scripted entities and weapons own their first draw; nested calls draw the model.
+  C_BaseCombatWeapon *pWeapon = dynamic_cast<C_BaseCombatWeapon *>( pEntity );
+  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL ||
+       ( pWeapon != NULL && pWeapon->IsScripted() ) )
   {
-    lua_pushinteger( L, pScripted->DrawModel( nFlags ) );
+    lua_pushinteger( L, pEntity->DrawModel( nFlags ) );
     return 1;
   }
 

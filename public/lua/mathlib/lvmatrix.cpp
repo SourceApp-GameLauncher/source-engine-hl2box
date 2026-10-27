@@ -176,8 +176,14 @@ static int VMatrix_PreTranslate (lua_State *L) {
 }
 
 static int VMatrix_Scale (lua_State *L) {
-  lua_pushvmatrix(L, luaL_checkvmatrix(L, 1).Scale(luaL_checkvector(L, 2)));
-  return 1;
+  VMatrix &matrix = luaL_checkvmatrix(L, 1);
+  const Vector &scale = luaL_checkvector(L, 2);
+  for (int row = 0; row < 4; ++row) {
+    matrix[row][0] *= scale.x;
+    matrix[row][1] *= scale.y;
+    matrix[row][2] *= scale.z;
+  }
+  return 0;
 }
 
 static int VMatrix_Set3x4 (lua_State *L) {
@@ -397,9 +403,9 @@ static const luaL_Reg VMatrixmeta[] = {
 
 
 static int luasrc_VMatrix (lua_State *L) {
-  if (lua_gettop(L) < 1) {
-    VMatrix matrix = VMatrix();
-    memset( &matrix, 0, sizeof( VMatrix ) );
+  if (lua_isnoneornil(L, 1)) {
+    VMatrix matrix;
+    matrix.Identity();
     lua_pushvmatrix(L, matrix);
   } else if (lua_gettop(L) < 3) {
     VMatrix matrix = VMatrix(luaL_checkmatrix(L, 1));

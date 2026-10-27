@@ -443,6 +443,17 @@ static int surface_DrawSetTextScale (lua_State *L) {
   return 0;
 }
 
+static int surface_GetTextureID (lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  int texture = surface()->DrawGetTextureId(path);
+  if (texture == -1) {
+    texture = surface()->CreateNewTextureID(false);
+    surface()->DrawSetTextureFile(texture, path, false, false);
+  }
+  lua_pushinteger(L, texture);
+  return 1;
+}
+
 static int surface_DrawSetTexture (lua_State *L) {
   surface()->DrawSetTexture(luaL_checkint(L, 1));
   return 0;
@@ -1228,6 +1239,8 @@ static const luaL_Reg surfacelib[] = {
   {"DrawSetTextFont",   surface_DrawSetTextFont},
   {"DrawSetTextPos",   surface_DrawSetTextPos},
   {"DrawSetTextScale",   surface_DrawSetTextScale},
+  {"GetTextureID",     surface_GetTextureID},
+  {"SetTexture",       surface_DrawSetTexture},
   {"DrawSetTexture",   surface_DrawSetTexture},
   {"DrawSetTextureFile",   surface_DrawSetTextureFile},
   {"DrawSetTexturePNG",    surface_DrawSetTexturePNG},

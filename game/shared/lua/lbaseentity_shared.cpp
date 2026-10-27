@@ -2749,23 +2749,7 @@ int CBaseEntity_SetPos (lua_State *L) {
   else
     pEntity->Teleport( &vecOrigin, NULL, NULL );
 #else
-  // HL2SB GMod parity (2026-09-25): SetPos on a PARENTED clientside entity
-  // must move it to the WORLD position (GMod: "Moves the entity to the
-  // specified position", plus "use Entity:SetupBones to force it" - which is
-  // exactly First Person Body's SetPos + SetupBones pattern).  Feeding a
-  // world vector into the parent-follow as a LOCAL offset is what launched
-  // the body into the air above the player's head.
-  CBaseEntity *pParent = pEntity->GetMoveParent();
-  if ( pParent != NULL )
-  {
-    matrix3x4_t worldToParent;
-    AngleIMatrix( pParent->GetAbsAngles(), pParent->GetAbsOrigin(), worldToParent );
-    Vector vecLocal;
-    VectorTransform( vecOrigin, worldToParent, vecLocal );
-    pEntity->SetLocalOrigin( vecLocal );
-    return 0;
-  }
-  pEntity->SetAbsOrigin(vecOrigin);
+  pEntity->SetAbsOrigin( vecOrigin );
 #endif
   return 0;
 }
@@ -4825,22 +4809,13 @@ static int CBaseEntity_SetAngles (lua_State *L) {
   }
   return 0;
 #else
-  // HL2SB GMod parity (2026-09-25): SetAngles on a parented clientside entity
-  // is WORLD space, same contract as SetPos above (First Person Body sets the
-  // body angles to the eye angles every RenderScene).
-  CBaseEntity *pParent = pEntity->GetMoveParent();
-  if ( pParent != NULL )
-  {
-    pEntity->SetLocalAngles( angWorld - pParent->GetAbsAngles() );
-    return 0;
-  }
+  pEntity->SetAbsAngles( angWorld );
 #endif
-  pEntity->SetLocalAngles( angWorld );
   return 0;
 }
 
 static int CBaseEntity_GetAngles (lua_State *L) {
-  lua_pushangle(L, luaL_checkentity(L, 1)->GetLocalAngles());
+  lua_pushangle(L, luaL_checkentity(L, 1)->GetAbsAngles());
   return 1;
 }
 
@@ -4912,17 +4887,13 @@ static int CBaseEntity_TakeDamageInfo (lua_State *L) {
 // C++ accessor for the same field is GetOwnerEntity().
 //-----------------------------------------------------------------------------
 static int CBaseEntity_GetOwner (lua_State *L) {
-  // HL2SB (2026-10-19): answer nil for a missing owner, as the reference does.
-  // Pushing the NULL sentinel made "if ( self:GetOwner() ~= nil )" guards pass,
-  // and a method called on the sentinel answers false for every name -- so
-  // scripts ended up doing arithmetic on a boolean.  A TNT entity hit exactly
-  // that after its owner went away: the bookkeeping line raised before its own
-  // self:Remove(), so it never despawned and kept exploding.
-  CBaseEntity *pOwner = luaL_checkentity( L, 1 )->GetOwnerEntity();
-  if ( pOwner == NULL )
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseCombatWeapon *weapon = dynamic_cast<CBaseCombatWeapon *>( entity );
+  CBaseEntity *owner = weapon ? weapon->GetOwner() : entity->GetOwnerEntity();
+  if ( owner == NULL )
     lua_pushnil( L );
   else
-    lua_pushentity( L, pOwner );
+    CBaseEntity::PushLuaInstanceSafe( L, owner );
   return 1;
 }
 

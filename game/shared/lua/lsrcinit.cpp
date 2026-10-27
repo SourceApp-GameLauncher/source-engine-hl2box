@@ -14,6 +14,7 @@
 #include "luasrclib.h"
 #include "lauxlib.h"
 #include "lsql.h"
+#include "activitylist.h"
 
 // HL2SB: game.AddParticles() below drives the particle system manager directly.
 #include "particles/particles.h"
@@ -3768,6 +3769,8 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   luasrc_install_type_names(L);
   luasrc_install_animation_methods(L, LUA_BASEPLAYERLIBNAME);
   luasrc_install_animation_methods(L, LUA_BASECOMBATWEAPONLIBNAME);
+  lua_pushinteger(L, ActivityList_RegisterPrivateActivity("ACT_MP_SWIM_IDLE"));
+  lua_setglobal(L, "ACT_MP_SWIM_IDLE");
 
   /* ...and the library tables themselves can be reachable under GMod's names. */
   luasrc_install_lib_aliases(L);
