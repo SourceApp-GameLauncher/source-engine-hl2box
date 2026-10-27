@@ -16,6 +16,10 @@
 #include "weapon_hl2mpbase_scriptedweapon.h"
 #include "activitylist.h"
 #include "mathlib/lvector.h"
+#include "usermessages.h"
+#ifndef CLIENT_DLL
+#include "recipientfilter.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -1211,7 +1215,46 @@ static int CBaseCombatWeapon___tostring (lua_State *L) {
 }
 
 
+static int CBaseCombatWeapon_LastShootTime(lua_State *L) {
+  lua_pushnumber(L,luaL_checkweapon(L,1)->m_flLastShootTime);
+  return 1;
+}
+
+static int CBaseCombatWeapon_SetLastShootTime(lua_State *L) {
+  CBaseCombatWeapon *weapon = luaL_checkweapon(L,1);
+  weapon->m_flLastShootTime = lua_type(L,2) == LUA_TNUMBER ? lua_tonumber(L,2) : gpGlobals->curtime;
+  return 0;
+}
+
+static int CBaseCombatWeapon_CallOnClient(lua_State *L) {
+#ifndef CLIENT_DLL
+  CBaseCombatWeapon *weapon = luaL_checkweapon(L,1);
+  CBasePlayer *owner = ToBasePlayer(weapon->GetOwner());
+  if (!owner) {
+    DevMsg("ERROR! CallOnClient called on weapon without an owner!\n");
+    return 0;
+  }
+  const char *method = luaL_checkstring(L,2);
+  const char *data = lua_type(L,3) == LUA_TSTRING ? lua_tostring(L,3) : "";
+  if (Q_strlen(method) + Q_strlen(data) > 254) {
+    DevMsg("CallOnClient arguments exceed the usermessage limit\n");
+    return 0;
+  }
+  CSingleUserRecipientFilter filter(owner);
+  filter.MakeReliable();
+  UserMessageBegin(filter,"SWEPCmd");
+    WRITE_EHANDLE(weapon);
+    WRITE_STRING(method);
+    WRITE_STRING(data);
+  MessageEnd();
+#endif
+  return 0;
+}
+
 static const luaL_Reg CBaseCombatWeaponmeta[] = {
+  {"LastShootTime", CBaseCombatWeapon_LastShootTime},
+  {"SetLastShootTime", CBaseCombatWeapon_SetLastShootTime},
+  {"CallOnClient", CBaseCombatWeapon_CallOnClient},
   {"AbortReload", CBaseCombatWeapon_AbortReload},
   {"Activate", CBaseCombatWeapon_Activate},
   {"ActivityListCount", CBaseCombatWeapon_ActivityListCount},

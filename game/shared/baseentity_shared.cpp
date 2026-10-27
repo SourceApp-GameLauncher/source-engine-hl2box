@@ -1704,6 +1704,13 @@ bool HL2SB_HasShotTracerName( void )
 
 void CBaseEntity::FireBullets( const FireBulletsInfo_t &info )
 {
+#ifdef LUA_SDK
+  CBaseCombatWeapon *shotWeapon = dynamic_cast<CBaseCombatWeapon *>(this);
+  CBaseCombatCharacter *shooter = MyCombatCharacterPointer();
+  if (!shotWeapon && shooter) shotWeapon = shooter->GetActiveWeapon();
+  if (shotWeapon) shotWeapon->m_flLastShootTime = gpGlobals->curtime;
+#endif
+
 	static int	tracerCount;
 	trace_t		tr;
 	CAmmoDef*	pAmmoDef	= GetAmmoDef();

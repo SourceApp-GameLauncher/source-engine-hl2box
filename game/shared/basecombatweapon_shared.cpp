@@ -74,6 +74,7 @@ CBaseCombatWeapon::CBaseCombatWeapon() : BASECOMBATWEAPON_DERIVED_FROM()
 	m_fMaxRange2		= 1024;
 
 	m_bReloadsSingly	= false;
+	m_flLastShootTime = 0.0;
 
 	// Defaults to zero
 	m_nViewModelIndex	= 0;

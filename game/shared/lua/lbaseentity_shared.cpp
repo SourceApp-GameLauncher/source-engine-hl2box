@@ -2755,32 +2755,6 @@ int CBaseEntity_SetPos (lua_State *L) {
   return 0;
 }
 
-// HL2SB (2026-09-22): Entity:CallOnClient( functionName, data ) -- the GMod
-// wiki documents it under Weapon, but cf_beast's SWEP base calls it as
-// self:CallOnClient( "Muzzle" ) and the mechanism is entity-level.  Server
-// only (the wiki: "Does nothing on client"); one user message carries the
-// entity index, the function name and the data string, and the client invokes
-// ent:functionName( data ) on its scripted entity (see __MsgFunc_HL2SB_RPC in
-// lsrcinit.cpp).  GMod caps name+data at 254 bytes -- the usermessage limit.
-static int CBaseEntity_CallOnClient (lua_State *L) {
-#ifdef GAME_DLL
-  CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  const char *pszFn = luaL_checkstring(L, 2);
-  const char *pszData = luaL_optstring(L, 3, "");
-  if (Q_strlen(pszFn) + Q_strlen(pszData) > 254) {
-    return luaL_error(L, "CallOnClient: function name + data must fit in 254 bytes");
-  }
-
-  CReliableBroadcastRecipientFilter filter;
-  UserMessageBegin(filter, "HL2SB_RPC");
-    WRITE_SHORT(pEntity->entindex());
-    WRITE_STRING(pszFn);
-    WRITE_STRING(pszData);
-  MessageEnd();
-#endif
-  return 0;
-}
-
 // HL2SB GMod SWEP compat: GMod calls ent:SetKeyValue(k, v) (alias for KeyValue).
 static int CBaseEntity_SetKeyValue (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
@@ -6645,8 +6619,6 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetPos", CBaseEntity_SetPos},
   {"SetKeyValue", CBaseEntity_SetKeyValue},
   {"GetPos", CBaseEntity_GetPos},
-  // HL2SB (2026-09-22): GMod's CallOnClient -- cf_beast's weapon base needs it.
-  {"CallOnClient", CBaseEntity_CallOnClient},
   {"SetAbsQueriesValid", CBaseEntity_SetAbsQueriesValid},
   {"SetAbsVelocity", CBaseEntity_SetAbsVelocity},
   {"SetAIWalkable", CBaseEntity_SetAIWalkable},

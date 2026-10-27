@@ -1422,6 +1422,7 @@ void CHL2MPScriptedWeapon::SecondaryAttack( void )
 //-----------------------------------------------------------------------------
 void CHL2MPScriptedWeapon::FireBullets( const FireBulletsInfo_t &info )
 {
+	m_flLastShootTime = gpGlobals->curtime;
 	if(CBasePlayer *pPlayer = ToBasePlayer ( GetOwner() ) )
 	{
 		pPlayer->FireBullets(info);

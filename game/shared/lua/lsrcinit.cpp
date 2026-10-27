@@ -75,7 +75,7 @@ static ConVar cl_drawownshadow("cl_drawownshadow", "0", FCVAR_ARCHIVE, "Render t
 #include "usermessages.h"
 #ifdef CLIENT_DLL
 #include "c_user_message_register.h"	// USER_MESSAGE_REGISTER (client hook)
-#include "cliententitylist.h"			// HL2SB_RPC: entity index -> C_BaseEntity
+#include "cliententitylist.h"			// SWEPCmd: entity index -> C_BaseEntity
 #endif
 
 // HL2SB (2026-10-02): game.GetAmmoName reads the shared ammo def.
@@ -2304,7 +2304,7 @@ static void __MsgFunc_HL2SB_NW( bf_read &read )
 // addon reading the second argument raised "concatenate a nil value" on each
 // pickup.  hook.Run( name, ... ) forwards ( ammoName, amount ) to registered
 // hooks and then falls back to GM:HUDAmmoPickedUp, which is exactly the GMod
-// contract.  Stack discipline matches __MsgFunc_HL2SB_RPC below: snapshot the
+// contract.  Stack discipline matches __MsgFunc_SWEPCmd below: snapshot the
 // top and restore unconditionally instead of hand-counting pops.
 static void __MsgFunc_HL2SB_AMMO( bf_read &read )
 {
@@ -2335,50 +2335,28 @@ static void __MsgFunc_HL2SB_AMMO( bf_read &read )
 	lua_settop( L, iBase );		// unconditional restore
 }
 
-// HL2SB (2026-09-22): Entity:CallOnClient( name, data ) receiver -- the server
-// sends SHORT entindex, STRING functionName, STRING data; we resolve the
-// client entity and call its Lua method of that name with the data string as
-// the only argument (GMod's contract: the SWEP's function runs on the client
-// with `data` as its first parameter).
-static void __MsgFunc_HL2SB_RPC( bf_read &read )
-{
-	int entindex = read.ReadShort();
-	char szFn[ 128 ];
-	read.ReadString( szFn, sizeof( szFn ) );
-	char szData[ 256 ];
-	read.ReadString( szData, sizeof( szData ) );
-
-	if ( read.IsOverflowed() || szFn[ 0 ] == '\0' )
-		return;
-
-	IClientEntity *pIClient = cl_entitylist->GetClientEntity( entindex );
-	C_BaseEntity *pEnt = pIClient ? pIClient->GetBaseEntity() : NULL;
-	if ( pEnt == NULL )
-		return;
-
-	// The in-game state (global L); hooks only arrive once it exists.
-	if ( L == NULL )
-		return;
-
-	// Snapshot FIRST.  luasrc_pcall pops the function and its arguments on
-	// BOTH paths (results and errors alike), so the only safe cleanup is a
-	// full restore to this depth -- the first version hardcoded lua_pop(2)
-	// after it, which underflowed the main state's stack by one per call
-	// (call it from a SWEP's PrimaryAttack and the game dies within a few
-	// shots, which is exactly the CF pack's "fires once and crashes").
-	const int iBase = lua_gettop( L );
-
-	// PushLuaInstanceSafe, NOT lua_pushentity: the latter always installs the
-	// generic CBaseEntity metatable, so a weapon CallOnClient("Deploy") ran
-	// SWEP:Deploy with a self that had no SetNextPrimaryFire (on CBaseCombatWeapon).
-	CBaseEntity::PushLuaInstanceSafe( L, pEnt );
-	lua_getfield( L, -1, szFn );		// [ent, fn]  (resolved through __index)
-	if ( lua_isfunction( L, -1 ) ) {
-		lua_pushvalue( L, -2 );			// [ent, fn, self]
-		lua_pushstring( L, szData );	// [ent, fn, self, data]
-		luasrc_pcall( L, 2, 0, 0 );		// protected: a bad callback must not kill the frame
-	}
-	lua_settop( L, iBase );				// unconditional restore -- no under/overflow
+// Owner-only weapon method message, retaining the entity serial number.
+static void __MsgFunc_SWEPCmd(bf_read &read) {
+  const unsigned int encoded = (unsigned int)read.ReadLong();
+  char method[32], data[256];
+  read.ReadString(method,sizeof(method));
+  read.ReadString(data,sizeof(data));
+  if (read.IsOverflowed() || !L || !g_bLuaInitialized || !method[0] ||
+      encoded == INVALID_NETWORKED_EHANDLE_VALUE) return;
+  const int index = encoded & ((1 << MAX_EDICT_BITS) - 1);
+  const int serial = encoded >> MAX_EDICT_BITS;
+  CBaseEntity *entity = cl_entitylist->GetBaseEntity(index);
+  if (!entity || (entity->GetRefEHandle().GetSerialNumber() &
+      ((1 << NUM_NETWORKED_EHANDLE_SERIAL_NUMBER_BITS) - 1)) != serial || !entity->IsWeapon()) return;
+  const int top = lua_gettop(L);
+  CBaseEntity::PushLuaInstanceSafe(L,entity);
+  lua_getfield(L,-1,method);
+  if (lua_isfunction(L,-1)) {
+    lua_pushvalue(L,-2);
+    lua_pushstring(L,data);
+    luasrc_pcall(L,2,0,0);
+  }
+  lua_settop(L,top);
 }
 // Hooked in luasrc_openlibs' client tail (usermessages->HookMessage).
 #endif // CLIENT_DLL
@@ -4008,10 +3986,10 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     // MessageEnd and refuses the send outright on mismatch ("User Msg
     // 'HL2SB_NW': N bytes written, expected 256" -- 226 refusals in one
     // session), so the fixed 256 dropped every broadcast server-side.
-  // HL2SB (2026-09-22): Entity:CallOnClient carrier message -- registered
+  // HL2SB (2026-09-22): Weapon:CallOnClient carrier message -- registered
   // here for the same signon-table reason as HL2SB_NW above.
-  if ( usermessages->LookupUserMessage( "HL2SB_RPC" ) == -1 )
-    usermessages->Register( "HL2SB_RPC", -1 );
+  if ( usermessages->LookupUserMessage( "SWEPCmd" ) == -1 )
+    usermessages->Register( "SWEPCmd", -1 );
   // HL2SB (2026-09-25): ammo pickup popup carrier -- see CBasePlayer_GiveAmmo
   // (game/server/lua/lplayer.cpp), which sends it unless hidePopup is set.
   if ( usermessages->LookupUserMessage( "HL2SB_AMMO" ) == -1 )
@@ -4032,10 +4010,10 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     usermessages->Register( "HL2SB_NW", -1 );  // -1: variable size (see server
     // branch above -- a fixed declared size makes the engine refuse the send).
   usermessages->HookMessage( "HL2SB_NW", __MsgFunc_HL2SB_NW );
-  // HL2SB (2026-09-22): Entity:CallOnClient receiver -- same timing rules.
-  if ( usermessages->LookupUserMessage( "HL2SB_RPC" ) == -1 )
-    usermessages->Register( "HL2SB_RPC", -1 );
-  usermessages->HookMessage( "HL2SB_RPC", __MsgFunc_HL2SB_RPC );
+  // HL2SB (2026-09-22): Weapon:CallOnClient receiver -- same timing rules.
+  if ( usermessages->LookupUserMessage( "SWEPCmd" ) == -1 )
+    usermessages->Register( "SWEPCmd", -1 );
+  usermessages->HookMessage( "SWEPCmd", __MsgFunc_SWEPCmd );
   // HL2SB (2026-09-25): ammo pickup popup receiver -> HUDAmmoPickedUp hook.
   if ( usermessages->LookupUserMessage( "HL2SB_AMMO" ) == -1 )
     usermessages->Register( "HL2SB_AMMO", -1 );
