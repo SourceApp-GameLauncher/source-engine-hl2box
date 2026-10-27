@@ -3157,6 +3157,25 @@ static int CBaseEntity_SetColor (lua_State *L) {
   return 0;
 }
 
+static int CBaseEntity_GetColor4Part (lua_State *L) {
+  color32 clr = luaL_checkentity(L, 1)->GetRenderColor();
+  lua_pushinteger(L, clr.r);
+  lua_pushinteger(L, clr.g);
+  lua_pushinteger(L, clr.b);
+  lua_pushinteger(L, clr.a);
+  return 4;
+}
+
+static int CBaseEntity_SetColor4Part (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  pEntity->SetRenderColor(
+    (int)luaL_checknumber(L, 2),
+    (int)luaL_checknumber(L, 3),
+    (int)luaL_checknumber(L, 4),
+    (int)luaL_optnumber(L, 5, 255) );
+  return 0;
+}
+
 // Material accessors share the entity variable transport defined below.
 static int CBaseEntity_GetMaterial( lua_State *L );
 static int CBaseEntity_SetMaterial( lua_State *L );
@@ -6254,6 +6273,52 @@ void HL2SB_InstallScriptDataTables(lua_State *L, CBaseEntity *entity) {
   lua_settop(L,top);
 }
 
+static int CBaseEntity_DropToFloor( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+#ifdef GAME_DLL
+  lua_pushinteger( L, UTIL_DropToFloor( entity, luaL_optinteger( L, 2, MASK_SOLID ), luaL_optentity( L, 3, NULL ) ) );
+#else
+  lua_pushinteger( L, 0 );
+#endif
+  return 1;
+}
+
+static int CBaseEntity_GetActiveWeapon( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseCombatCharacter *character = dynamic_cast<CBaseCombatCharacter *>( entity );
+  CBaseCombatWeapon *weapon = character ? character->GetActiveWeapon() : NULL;
+  CBaseEntity::PushLuaInstanceSafe( L, weapon );
+  return 1;
+}
+
+static int CBaseEntity_SetBodyGroups( lua_State *L ) {
+  CBaseAnimating *anim = luaL_checkentity( L, 1 )->GetBaseAnimating();
+  if ( !anim ) return 0;
+  const char *groups = luaL_checkstring( L, 2 );
+  const int count = MIN( Q_strlen( groups ), anim->GetNumBodyGroups() );
+  for ( int i = 0; i < count; ++i ) {
+    const char c = groups[i];
+    int value = -1;
+    if ( c >= '0' && c <= '9' ) value = c - '0';
+    else if ( c >= 'a' && c <= 'z' ) value = c - 'a' + 10;
+    else if ( c >= 'A' && c <= 'Z' ) value = c - 'A' + 10;
+    if ( value >= 0 ) anim->SetBodygroup( i, value );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetPersistent( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  lua_pushboolean( L, entity->m_GMOD_bool[31] );
+  return 1;
+}
+
+static int CBaseEntity_SetPersistent( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  entity->m_GMOD_bool.Set( 31, lua_toboolean( L, 2 ) != 0 );
+  return 0;
+}
+
 static const luaL_Reg CBaseEntitymeta[] = {
   {"GetDTBool", CBaseEntity_GetDTBool},
   {"SetDTBool", CBaseEntity_SetDTBool},
@@ -6479,6 +6544,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // HL2SB GMod compat: GMod's spellings of the same idea (a Color rather than a
   // normalised Vector), plus a material name that has no engine-side override.
   {"GetColor", CBaseEntity_GetColor},
+  {"GetPersistent", CBaseEntity_GetPersistent},
+  {"GetActiveWeapon", CBaseEntity_GetActiveWeapon},
+  {"GetColor4Part", CBaseEntity_GetColor4Part},
   {"GetMaterial", CBaseEntity_GetMaterial},
   {"GetSimulatingPlayer", CBaseEntity_GetSimulatingPlayer},
   {"GetSimulationTime", CBaseEntity_GetSimulationTime},
@@ -6683,6 +6751,10 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetPredictionPlayer", CBaseEntity_SetPredictionPlayer},
   {"SetRenderColor", CBaseEntity_SetRenderColor},
   {"SetColor", CBaseEntity_SetColor},
+  {"SetPersistent", CBaseEntity_SetPersistent},
+  {"DropToFloor", CBaseEntity_DropToFloor},
+  {"SetBodyGroups", CBaseEntity_SetBodyGroups},
+  {"SetColor4Part", CBaseEntity_SetColor4Part},
   {"SetMaterial", CBaseEntity_SetMaterial},
   {"SetSkin", CBaseEntity_SetSkin},
   {"SetRenderColorA", CBaseEntity_SetRenderColorA},

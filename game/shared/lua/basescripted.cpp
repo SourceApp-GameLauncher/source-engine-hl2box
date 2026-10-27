@@ -155,40 +155,70 @@ CBaseScripted::~CBaseScripted( void )
 
 void CBaseScripted::LoadScriptedEntity( void )
 {
-	lua_getglobal( L, "entity" );
-	if ( lua_istable( L, -1 ) )
-	{
-		lua_getfield( L, -1, "get" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_remove( L, -2 );
-			// HL2SB (2026-09-21, the "ball shows the C4 model" bug): look the
-			// script up by the SCRIPTED classname.  The client's GetClassname()
-			// collapses every scripted entity to the FIRST-registered SENT
-			// ("cod-c4") through the classmap's reverse lookup, so binding by
-			// it gave EVERY scripted entity the cod_c4 client table on the
-			// client -- its ENT:Draw is self:DrawModel(), which is why the
-			// ball rendered a bomb model and the nyan grenade rendered the
-			// suitcase instead of their sprites.
+  const char *pszScriptClass = NULL;
 #ifdef CLIENT_DLL
-			const char *pszScriptClass = GetScriptedClassname();
+  pszScriptClass = GetScriptedClassname();
 #else
-			const char *pszScriptClass = GetClassname();
+  pszScriptClass = GetClassname();
 #endif
-			if ( pszScriptClass == NULL || pszScriptClass[0] == 0 )
-				pszScriptClass = GetClassname();
-			lua_pushstring( L, pszScriptClass );
-			luasrc_pcall( L, 1, 1, 0 );
-		}
-		else
-		{
-			lua_pop( L, 2 );
-		}
-	}
-	else
-	{
-		lua_pop( L, 1 );
-	}
+  if ( pszScriptClass == NULL || pszScriptClass[0] == 0 )
+    pszScriptClass = GetClassname();
+
+  // Keep the legacy class lookup for the existing entity binding contract.
+  lua_getglobal( L, "entity" );
+  if ( lua_istable( L, -1 ) )
+  {
+    lua_getfield( L, -1, "get" );
+    if ( lua_isfunction( L, -1 ) )
+    {
+      lua_remove( L, -2 );
+      lua_pushstring( L, pszScriptClass );
+      luasrc_pcall( L, 1, 1, 0 );
+    }
+    else
+    {
+      lua_pop( L, 2 );
+    }
+  }
+  else
+  {
+    lua_pop( L, 1 );
+  }
+
+  // Replace the leaf table with the GMod scripted_ents.Get copy so Base
+  // methods are inherited without changing the entity initialization order.
+  if ( lua_istable( L, -1 ) )
+  {
+    const int leaf = lua_gettop( L );
+    lua_getglobal( L, "scripted_ents" );
+    if ( lua_istable( L, -1 ) )
+    {
+      lua_getfield( L, -1, "Get" );
+      if ( lua_isfunction( L, -1 ) )
+      {
+        lua_remove( L, -2 );
+        lua_pushstring( L, pszScriptClass );
+        lua_newtable( L );
+        const int instanceTable = lua_gettop( L );
+        if ( luasrc_pcall( L, 2, 1, 0 ) == 0 && lua_istable( L, -1 ) )
+        {
+          lua_remove( L, leaf );
+        }
+        else
+        {
+          lua_settop( L, instanceTable - 1 );
+        }
+      }
+      else
+      {
+        lua_pop( L, 2 );
+      }
+    }
+    else
+    {
+      lua_pop( L, 1 );
+    }
+  }
 }
 
 static int HL2SB_EntityTableIsValid (lua_State *L)

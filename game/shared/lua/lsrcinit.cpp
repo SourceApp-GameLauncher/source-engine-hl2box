@@ -838,6 +838,7 @@ static const luaL_Reg lua_metatable_funcs[] = {
 void luasrc_register_metatable_globals (lua_State *L) {
   luaL_register(L, "_G", lua_metatable_funcs);
   lua_pop(L, 1);
+
 }
 
 /* Publish registry[gmodName] = the native metatable, so `_R.Entity` resolves. */
@@ -3932,6 +3933,9 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   luasrc_install_type_names(L);
   luasrc_install_animation_methods(L, LUA_BASEPLAYERLIBNAME);
   luasrc_install_animation_methods(L, LUA_BASECOMBATWEAPONLIBNAME);
+  // Player hands and other animating entity families use the same inherited
+  // CBaseAnimating methods as GMod's Entity metatable.
+  luasrc_install_animation_methods(L, LUA_BASEENTITYLIBNAME);
   lua_pushinteger(L, ActivityList_RegisterPrivateActivity("ACT_MP_SWIM_IDLE"));
   lua_setglobal(L, "ACT_MP_SWIM_IDLE");
 

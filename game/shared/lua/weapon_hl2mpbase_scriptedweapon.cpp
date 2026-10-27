@@ -2428,7 +2428,7 @@ static bool ReadNPCWeaponSettings( CHL2MPScriptedWeapon *weapon,
 	}
 	bool valid = true;
 	for ( int i = 0; i < count; ++i )
-		if ( lua_type( L, top + i + 1 ) != LUA_TNUMBER ) valid = false;
+		if ( lua_type( L, top + i + 1 ) != LUA_TNUMBER || !isfinite( (float)lua_tonumber( L, top + i + 1 ) ) ) valid = false;
 	if ( valid )
 		for ( int i = 0; i < count; ++i )
 			values[i] = (float)lua_tonumber( L, top + i + 1 );
@@ -2450,28 +2450,28 @@ int CHL2MPScriptedWeapon::GetMinBurst( void )
 {
 	float settings[3];
 	return ReadNPCWeaponSettings( this, "GetNPCBurstSettings", 3, settings )
-		? (int)settings[0] : 1;
+		? MAX( 1, (int)settings[0] ) : 1;
 }
 
 int CHL2MPScriptedWeapon::GetMaxBurst( void )
 {
 	float settings[3];
 	return ReadNPCWeaponSettings( this, "GetNPCBurstSettings", 3, settings )
-		? (int)settings[1] : 1;
+		? MAX( MAX( 1, (int)settings[0] ), (int)settings[1] ) : 1;
 }
 
 float CHL2MPScriptedWeapon::GetMinRestTime( void )
 {
 	float settings[2];
 	return ReadNPCWeaponSettings( this, "GetNPCRestTimes", 2, settings )
-		? settings[0] : 0.3f;
+		? MAX( 0.0f, settings[0] ) : 0.3f;
 }
 
 float CHL2MPScriptedWeapon::GetMaxRestTime( void )
 {
 	float settings[2];
 	return ReadNPCWeaponSettings( this, "GetNPCRestTimes", 2, settings )
-		? settings[1] : 0.6f;
+		? MAX( MAX( 0.0f, settings[0] ), settings[1] ) : 0.6f;
 }
 
 //-----------------------------------------------------------------------------
