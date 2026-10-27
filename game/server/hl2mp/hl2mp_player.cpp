@@ -931,7 +931,7 @@ void CHL2MP_Player::FireBullets ( const FireBulletsInfo_t &info )
 
 	CWeaponHL2MPBase *pWeapon = dynamic_cast<CWeaponHL2MPBase *>( GetActiveWeapon() );
 
-	if ( pWeapon )
+	if ( pWeapon && !pWeapon->IsScripted() )
 	{
 		modinfo.m_iPlayerDamage = modinfo.m_flDamage = pWeapon->GetHL2MPWpnData().m_iPlayerDamage;
 	}

@@ -1036,6 +1036,10 @@ void CHL2MPRules::ClientDisconnected( edict_t *pClient )
 #if defined ( LUA_SDK )
 float CHL2MPRules::FlPlayerFallDamage( CBasePlayer *pPlayer )
 {
+	if ( pPlayer != NULL && pPlayer->GetActiveWeapon() != NULL &&
+		FClassnameIs( pPlayer->GetActiveWeapon(), "weapon_spiderman" ) )
+		return 0.0f;
+
 	BEGIN_LUA_CALL_HOOK( "FlPlayerFallDamage" );
 		lua_pushplayer( L, pPlayer );
 	END_LUA_CALL_HOOK( 1, 1 );

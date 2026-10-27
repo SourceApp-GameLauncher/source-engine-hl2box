@@ -2837,6 +2837,19 @@ static int CBaseEntity_SetCollisionBounds (lua_State *L) {
   return 0;
 }
 
+static int CBaseEntity_SetCollisionBoundsWS (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  Vector mins = luaL_checkvector( L, 2 ) - pEntity->GetAbsOrigin();
+  Vector maxs = luaL_checkvector( L, 3 ) - pEntity->GetAbsOrigin();
+  Vector localMins, localMaxs;
+  matrix3x4_t transform;
+  AngleMatrix( pEntity->GetAbsAngles(), transform );
+  VectorITransform( mins, transform, localMins );
+  VectorITransform( maxs, transform, localMaxs );
+  pEntity->SetCollisionBounds( localMins, localMaxs );
+  return 0;
+}
+
 static int CBaseEntity_SetCollisionGroup (lua_State *L) {
   luaL_checkentity(L, 1)->SetCollisionGroup(luaL_checkint(L, 2));
   return 0;
@@ -6630,6 +6643,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetCheckUntouch", CBaseEntity_SetCheckUntouch},
   {"SetClassname", CBaseEntity_SetClassname},
   {"SetCollisionBounds", CBaseEntity_SetCollisionBounds},
+  {"SetCollisionBoundsWS", CBaseEntity_SetCollisionBoundsWS},
   {"SetCollisionGroup", CBaseEntity_SetCollisionGroup},
   {"SetEffectEntity", CBaseEntity_SetEffectEntity},
   {"SetEffects", CBaseEntity_SetEffects},

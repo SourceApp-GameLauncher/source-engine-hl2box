@@ -2525,6 +2525,31 @@ static int CBasePlayer_LagCompensation (lua_State *L) {
   return 0;
 }
 
+static int CBasePlayer_SetVelocity (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer( L, 1 );
+  pPlayer->SetBaseVelocity( luaL_checkvector( L, 2 ) );
+  return 0;
+}
+
+// GMod Player:SetAllowFullRotation / GetAllowFullRotation.
+static int CBasePlayer_SetAllowFullRotation (lua_State *L) {
+  CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
+  const bool bAllow = luaL_checkboolean(L, 2);
+  lua_pushboolean( L, bAllow );
+  lua_setfield( L, 1, "__hl2sb_allow_full_rotation" );
+  return 0;
+}
+
+static int CBasePlayer_GetAllowFullRotation (lua_State *L) {
+  lua_getfield( L, 1, "__hl2sb_allow_full_rotation" );
+  if ( lua_isnil( L, -1 ) )
+  {
+    lua_pop( L, 1 );
+    lua_pushboolean( L, true );
+  }
+  return 1;
+}
+
 
 /*
 ** HL2SB GMod compat: Player:KeyDown / KeyPressed / KeyReleased.
@@ -3174,6 +3199,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"IsDrivingEntity", CBasePlayer_IsDrivingEntity},
   {"DrawWorldModel", CBasePlayer_DrawWorldModel},
   {"LagCompensation", CBasePlayer_LagCompensation},
+  {"SetVelocity", CBasePlayer_SetVelocity},
+  {"SetAllowFullRotation", CBasePlayer_SetAllowFullRotation},
+  {"GetAllowFullRotation", CBasePlayer_GetAllowFullRotation},
   {"GetInfo", CBasePlayer_GetInfo},
   {"IsListenServerHost", CBasePlayer_IsListenServerHost},
   {"ConCommand", CBasePlayer_ConCommand},

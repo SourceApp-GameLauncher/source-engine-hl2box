@@ -287,9 +287,7 @@ extern const char *pWeaponSoundCategories[ NUM_SHOOT_SOUND_TYPES ];
 extern ConVar hud_fastswitch;
 #endif
 
-// HL2SB GMod SWEP compat: read a weapon data field that GMod stores nested
-// (Primary.SubKey / Secondary.SubKey) but HL2SB keeps flat.  Prefers the nested
-// value; falls back to the flat key.  ALWAYS leaves exactly one value on the
+	// GMod stores weapon data nested under Primary/Secondary. ALWAYS leaves exactly one value on the
 // Lua stack (the caller must lua_pop it once), so the over/underflow bugs in
 // the old inline getref/getfield/remove sequences are impossible here.
 static int lua_getweaponfield ( lua_State *L, int ref, const char *tblKey, const char *subKey, const char *flatKey )
@@ -444,12 +442,6 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 #endif
 	// Printable name
 	lua_pushweaponfield( L, m_nTableReference, "PrintName" );
-	if ( !lua_isstring( L, -1 ) || lua_tostring( L, -1 )[0] == '\0' )
-	{
-		// HL2SB GMod SWEP compat: fall back to the flat HL2SB printname key.
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "printname" );
-	}
 	if ( lua_isstring( L, -1 ) )
 	{
 		Q_strncpy( m_pLuaWeaponInfo->szPrintName, lua_tostring( L, -1 ), MAX_WEAPON_STRING );
@@ -459,27 +451,14 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 		Q_strncpy( m_pLuaWeaponInfo->szPrintName, WEAPON_PRINTNAME_MISSING, MAX_WEAPON_STRING );
 	}
 	lua_pop( L, 1 );
-	// View model & world model.  HL2SB GMod SWEP compat: GMod SWEPs set the
-	// capitalised ViewModel/WorldModel and inherit the flat lowercase keys from
-	// weapon_hl2mpbase_scriptedweapon (v_357/etc).  Prefer the GMod-style key so
-	// the SWEP's own model wins; fall back to the flat key for HL2SB-era scripts.
+	// View model & world model.
 	lua_pushweaponfield( L, m_nTableReference, "ViewModel" );
-	if ( !lua_isstring( L, -1 ) || lua_tostring( L, -1 )[0] == '\0' )
-	{
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "viewmodel" );
-	}
 	if ( lua_isstring( L, -1 ) )
 	{
 		Q_strncpy( m_pLuaWeaponInfo->szViewModel, lua_tostring( L, -1 ), MAX_WEAPON_STRING );
 	}
 	lua_pop( L, 1 );
 	lua_pushweaponfield( L, m_nTableReference, "WorldModel" );
-	if ( !lua_isstring( L, -1 ) || lua_tostring( L, -1 )[0] == '\0' )
-	{
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "playermodel" );
-	}
 	if ( lua_isstring( L, -1 ) )
 	{
 		Q_strncpy( m_pLuaWeaponInfo->szWorldModel, lua_tostring( L, -1 ), MAX_WEAPON_STRING );
@@ -492,12 +471,6 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 	lua_pushweaponfield( L, m_nTableReference, "Slot" );
-	if ( !lua_isnumber( L, -1 ) )
-	{
-		// HL2SB GMod SWEP compat: fall back to the flat HL2SB bucket key.
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "bucket" );
-	}
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iSlot = lua_tonumber( L, -1 );
@@ -508,12 +481,6 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 	lua_pushweaponfield( L, m_nTableReference, "SlotPos" );
-	if ( !lua_isnumber( L, -1 ) )
-	{
-		// HL2SB GMod SWEP compat: fall back to the flat HL2SB bucket_position.
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "bucket_position" );
-	}
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iPosition = lua_tonumber( L, -1 );
@@ -523,28 +490,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 		m_pLuaWeaponInfo->iPosition = 0;
 	}
 	lua_pop( L, 1 );
-
-	// Use the console (X360) buckets if hud_fastswitch is set to 2.
-#ifdef CLIENT_DLL
-	if ( hud_fastswitch.GetInt() == 2 )
-#else
-	if ( IsX360() )
-#endif
-	{
-		lua_pushweaponfield( L, m_nTableReference, "bucket_360" );
-		if ( lua_isnumber( L, -1 ) )
-		{
-			m_pLuaWeaponInfo->iSlot = lua_tonumber( L, -1 );
-		}
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "bucket_position_360" );
-		if ( lua_isnumber( L, -1 ) )
-		{
-			m_pLuaWeaponInfo->iPosition = lua_tonumber( L, -1 );
-		}
-		lua_pop( L, 1 );
-	}
-	lua_getweaponfield( L, m_nTableReference, "Primary", "ClipSize", "clip_size" );
+	lua_getweaponfield( L, m_nTableReference, "Primary", "ClipSize", "" );
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iMaxClip1 = lua_tonumber( L, -1 );					// Max primary clips gun can hold (assume they don't use clips by default)
@@ -554,7 +500,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 		m_pLuaWeaponInfo->iMaxClip1 = WEAPON_NOCLIP;
 	}
 	lua_pop( L, 1 );
-	lua_getweaponfield( L, m_nTableReference, "Secondary", "ClipSize", "clip2_size" );
+	lua_getweaponfield( L, m_nTableReference, "Secondary", "ClipSize", "" );
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iMaxClip2 = lua_tonumber( L, -1 );					// Max secondary clips gun can hold (assume they don't use clips by default)
@@ -564,7 +510,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 		m_pLuaWeaponInfo->iMaxClip2 = WEAPON_NOCLIP;
 	}
 	lua_pop( L, 1 );
-	lua_getweaponfield( L, m_nTableReference, "Primary", "DefaultClip", "default_clip" );
+	lua_getweaponfield( L, m_nTableReference, "Primary", "DefaultClip", "" );
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iDefaultClip1 = lua_tonumber( L, -1 );		// amount of primary ammo placed in the primary clip when it's picked up
@@ -574,7 +520,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 		m_pLuaWeaponInfo->iDefaultClip1 = m_pLuaWeaponInfo->iMaxClip1;
 	}
 	lua_pop( L, 1 );
-	lua_getweaponfield( L, m_nTableReference, "Secondary", "DefaultClip", "default_clip2" );
+	lua_getweaponfield( L, m_nTableReference, "Secondary", "DefaultClip", "" );
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iDefaultClip2 = lua_tonumber( L, -1 );		// amount of secondary ammo placed in the secondary clip when it's picked up
@@ -585,12 +531,6 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 	lua_pushweaponfield( L, m_nTableReference, "Weight" );
-	if ( !lua_isnumber( L, -1 ) )
-	{
-		// HL2SB GMod SWEP compat: fall back to the flat HL2SB weight key.
-		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "weight" );
-	}
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->iWeight = lua_tonumber( L, -1 );
@@ -636,7 +576,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	if ( lua_isnil( L, -1 ) )
 	{
 		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "autoswitchto" );
+		lua_pushboolean( L, true );
 	}
 	if ( ( lua_isboolean( L, -1 ) && !lua_toboolean( L, -1 ) )
 	     || ( lua_isnumber( L, -1 ) && (int)lua_tointeger( L, -1 ) == 0 ) )
@@ -649,13 +589,12 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 	lua_getref( L, m_nTableReference );
-	// Same contract as AutoSwitchTo above.
 	lua_getfield( L, -1, "AutoSwitchFrom" );
 	lua_remove( L, -2 );
 	if ( lua_isnil( L, -1 ) )
 	{
 		lua_pop( L, 1 );
-		lua_pushweaponfield( L, m_nTableReference, "autoswitchfrom" );
+		lua_pushboolean( L, true );
 	}
 	if ( ( lua_isboolean( L, -1 ) && !lua_toboolean( L, -1 ) )
 	     || ( lua_isnumber( L, -1 ) && (int)lua_tointeger( L, -1 ) == 0 ) )
@@ -707,7 +646,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 
-	lua_getweaponfield( L, m_nTableReference, "Primary", "MeleeWeapon", "MeleeWeapon" );
+	lua_getweaponfield( L, m_nTableReference, "Primary", "MeleeWeapon", "" );
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->m_bMeleeWeapon = (int)lua_tointeger( L, -1 ) != 0 ? true : false;
@@ -718,8 +657,8 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 
-	// Primary ammo used.  GMod SWEPs use Primary.Ammo; helper falls back flat.
-	lua_getweaponfield( L, m_nTableReference, "Primary", "Ammo", "primary_ammo" );
+	// Primary ammo used.
+	lua_getweaponfield( L, m_nTableReference, "Primary", "Ammo", "" );
 	if ( lua_isstring( L, -1 ) )
 	{
 		const char *pAmmo = lua_tostring( L, -1 );
@@ -732,7 +671,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	lua_pop( L, 1 );
 	
 	// Secondary ammo used
-	lua_getweaponfield( L, m_nTableReference, "Secondary", "Ammo", "secondary_ammo" );
+	lua_getweaponfield( L, m_nTableReference, "Secondary", "Ammo", "" );
 	if ( lua_isstring( L, -1 ) )
 	{
 		const char *pAmmo = lua_tostring( L, -1 );
@@ -765,7 +704,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	}
 	lua_pop( L, 1 );
 
-	lua_getweaponfield( L, m_nTableReference, "Primary", "Damage", "damage" );
+	lua_getweaponfield( L, m_nTableReference, "Primary", "Damage", "" );
 	if ( lua_isnumber( L, -1 ) )
 	{
 		m_pLuaWeaponInfo->m_iPlayerDamage = (int)lua_tointeger( L, -1 );
@@ -2271,18 +2210,18 @@ void CHL2MPScriptedWeapon::ItemPostFrame( void )
 			// (clip = min(DefaultClip, ClipSize)); the spare half of
 			// DefaultClip is Weapon_Equip's job, not ours (see comment above
 			// bClipsSeeded - granting it here doubled the reserve).
-			const int nClipSize1 = lua_getweaponint( L, m_nTableReference, "Primary", "ClipSize", "Primary.ClipSize", -1 );
+			const int nClipSize1 = lua_getweaponint( L, m_nTableReference, "Primary", "ClipSize", "", -1 );
 			if ( nClipSize1 != -1 )
 			{
-				const int nDefault1 = lua_getweaponint( L, m_nTableReference, "Primary", "DefaultClip", "Primary.DefaultClip", nClipSize1 );
+				const int nDefault1 = lua_getweaponint( L, m_nTableReference, "Primary", "DefaultClip", "", nClipSize1 );
 				const int nSeed1 = ( nClipSize1 > 0 ) ? MIN( nDefault1, nClipSize1 ) : nDefault1;
 				m_iClip1.GetForModify() = nSeed1;
 			}
 
-			const int nClipSize2 = lua_getweaponint( L, m_nTableReference, "Secondary", "ClipSize", "Secondary.ClipSize", -1 );
+			const int nClipSize2 = lua_getweaponint( L, m_nTableReference, "Secondary", "ClipSize", "", -1 );
 			if ( nClipSize2 != -1 )
 			{
-				const int nDefault2 = lua_getweaponint( L, m_nTableReference, "Secondary", "DefaultClip", "Secondary.DefaultClip", nClipSize2 );
+				const int nDefault2 = lua_getweaponint( L, m_nTableReference, "Secondary", "DefaultClip", "", nClipSize2 );
 				const int nSeed2 = ( nClipSize2 > 0 ) ? MIN( nDefault2, nClipSize2 ) : nDefault2;
 				m_iClip2.GetForModify() = nSeed2;
 			}
@@ -2302,8 +2241,8 @@ void CHL2MPScriptedWeapon::ItemPostFrame( void )
 				GetClassname(), pOwner != NULL ? 1 : 0, (int)m_nTableReference, (int)m_iState );
 		}
 
-		const bool bPrimaryAutomatic = lua_getweaponbool( L, m_nTableReference, "Primary", "Automatic", "Primary.Automatic", false );
-		const bool bSecondaryAutomatic = lua_getweaponbool( L, m_nTableReference, "Secondary", "Automatic", "Secondary.Automatic", false );
+		const bool bPrimaryAutomatic = lua_getweaponbool( L, m_nTableReference, "Primary", "Automatic", "", false );
+		const bool bSecondaryAutomatic = lua_getweaponbool( L, m_nTableReference, "Secondary", "Automatic", "", false );
 
 		const bool bPrimaryWants = ( nButtons & IN_ATTACK ) != 0 &&
 								   ( bPrimaryAutomatic || ( nPressed & IN_ATTACK ) != 0 );
