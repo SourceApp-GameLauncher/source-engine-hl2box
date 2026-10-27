@@ -805,6 +805,14 @@ static int ll_module( lua_State *L )
         lua_pop( L, 1 );
         modinit( L, modname );
     }
+    // Lua 5.4 keeps module chunks on their original environment chain.
+    // GLua's legacy module() requires the module table to inherit globals;
+    // install that fallback explicitly before switching the caller environment.
+    if ( lua_getmetatable( L, -1 ) == 0 )
+        lua_newtable( L );
+    lua_pushglobaltable( L );
+    lua_setfield( L, -2, "__index" );
+    lua_setmetatable( L, -2 );
     lua_pushvalue( L, -1 );
     set_env( L );
     dooptions( L, lastarg );

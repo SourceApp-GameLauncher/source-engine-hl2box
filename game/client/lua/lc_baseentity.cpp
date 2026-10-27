@@ -349,6 +349,11 @@ static int CBaseEntity_HasSpawnFlags (lua_State *L) {
 // and one erroring Filter kills the whole DEntityProperties build, so without
 // this the entire context-menu property list went dead, not just ignite.
 // Extinguish stays server-only -- the reference publishes no client copy.
+static int CBaseEntity_IsWorld (lua_State *L) {
+  lua_pushboolean( L, luaL_checkentity( L, 1 )->IsWorld() );
+  return 1;
+}
+
 static int CBaseEntity_IsOnFire (lua_State *L) {
   C_BaseEntity *pEntity = luaL_checkentity( L, 1 );
   bool bOnFire = ( pEntity->GetFlags() & FL_ONFIRE ) != 0;
@@ -405,6 +410,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetSpawnFlags", CBaseEntity_GetSpawnFlags},
   {"HasSpawnFlags", CBaseEntity_HasSpawnFlags},
   {"IsOnFire", CBaseEntity_IsOnFire},
+  {"IsWorld", CBaseEntity_IsWorld},
   {NULL, NULL}
 };
 

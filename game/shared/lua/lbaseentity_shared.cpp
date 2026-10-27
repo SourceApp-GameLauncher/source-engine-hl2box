@@ -768,6 +768,18 @@ static int CBaseEntity_EyeAngles (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_GetShootPos (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseCombatCharacter *character = entity->MyCombatCharacterPointer();
+#ifdef CLIENT_DLL
+  Vector pos = entity->EyePosition();
+#else
+  Vector pos = character ? character->Weapon_ShootPosition() : entity->EyePosition();
+#endif
+  lua_pushvector( L, pos );
+  return 1;
+}
+
 static int CBaseEntity_EyePosition (lua_State *L) {
   lua_pushvector(L, luaL_checkentity(L, 1)->EyePosition());
   return 1;
@@ -6430,6 +6442,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"EntityToWorldSpace", CBaseEntity_EntityToWorldSpace},
   {"EyeAngles", CBaseEntity_EyeAngles},
   {"EyePosition", CBaseEntity_EyePosition},
+  {"GetShootPos", CBaseEntity_GetShootPos},
   // HL2SB: GMod's public spelling is EyePos (wiki: Entity:EyePos, client and
   // server), and Team Sandbox only ever published the C++ name EyePosition.  So
   // every GMod script that asks an entity for its view position died with
