@@ -131,14 +131,9 @@ static int CBaseEntity_DrawModel (lua_State *L) {
   C_BaseEntity *pEntity = luaL_checkentity(L, 1);
   int nFlags = luaL_optint(L, 2, STUDIO_RENDER);
 
-  // Scripted entities and weapons own their first draw; nested calls draw the model.
-  C_BaseCombatWeapon *pWeapon = dynamic_cast<C_BaseCombatWeapon *>( pEntity );
-  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL ||
-       ( pWeapon != NULL && pWeapon->IsScripted() ) )
-  {
-    lua_pushinteger( L, pEntity->DrawModel( nFlags ) );
-    return 1;
-  }
+  // GMod Entity:DrawModel is a direct native model draw for every entity.
+  // Scripted ENT:Draw and RenderOverride callbacks are dispatched by the
+  // renderer through CBaseScripted::DrawModel, not by this Lua binding.
 
   // Studio drawing cannot consume a brush or sprite model header.
   const model_t *pModel = pEntity->GetModel();
