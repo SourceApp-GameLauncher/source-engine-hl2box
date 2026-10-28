@@ -632,7 +632,7 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 #if defined( LUA_SDK )
 	if ( IsScripted() && L != NULL && lua_isrefvalid( L, m_nTableReference ) )
 	{
-		// ⚠️ recursion latch (2026-09-24): the GMod-documented pattern inside
+		// recursion latch (2026-09-24): the GMod-documented pattern inside
 		// WEAPON:DrawWorldModel is `self:DrawModel( flags )` -- which re-enters
 		// THIS function.  While dispatching, fall straight through to the
 		// default render so that inner call draws the plain model instead of

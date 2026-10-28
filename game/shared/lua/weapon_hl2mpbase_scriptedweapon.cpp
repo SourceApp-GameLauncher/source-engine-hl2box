@@ -357,7 +357,7 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 #if defined ( LUA_SDK )
 #ifndef CLIENT_DLL
 	// Let the instance reinitialize itself for the client.
-	if ( m_nTableReference != LUA_NOREF )
+	if ( m_pLuaWeaponInfo->bParsedScript )
 		return;
 #endif
 
@@ -390,6 +390,8 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	SetClassname( className );
 
 	const int iTopBeforeWeapon = lua_gettop( L );
+	const int iExistingReference = m_nTableReference;
+	bool bReusedInstance = false;
 	lua_getglobal( L, "weapons" );
 	if ( lua_istable( L, -1 ) )
 	{
@@ -398,7 +400,15 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 		{
 			lua_remove( L, -2 );
 			lua_pushstring( L, className );
-			luasrc_pcall( L, 1, 1, 0 );
+			if ( iExistingReference >= 0 && lua_isrefvalid( L, iExistingReference ) )
+			{
+				lua_getref( L, iExistingReference );
+				if ( lua_istable( L, -1 ) )
+					bReusedInstance = true;
+				else
+					lua_pop( L, 1 );
+			}
+			luasrc_pcall( L, bReusedInstance ? 2 : 1, 1, 0 );
 		}
 		else
 		{
@@ -427,6 +437,35 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 			className, entindex() );
 		return;
 	}
+	if ( bReusedInstance )
+	{
+		lua_getref( L, iExistingReference );
+		if ( !lua_rawequal( L, -1, -2 ) )
+		{
+			const int iSource = lua_absindex( L, -2 );
+			const int iInstance = lua_absindex( L, -1 );
+			lua_pushnil( L );
+			while ( lua_next( L, iSource ) != 0 )
+			{
+				lua_pushvalue( L, -2 );
+				lua_rawget( L, iInstance );
+				const bool bMissing = lua_isnil( L, -1 );
+				lua_pop( L, 1 );
+				if ( bMissing )
+				{
+					lua_pushvalue( L, -2 );
+					lua_pushvalue( L, -2 );
+					lua_rawset( L, iInstance );
+				}
+				lua_pop( L, 1 );
+			}
+			lua_remove( L, iSource );
+		}
+		else
+		{
+			lua_pop( L, 1 );
+		}
+	}
 
 	// Legacy self aliases belong to the instance before its setup callbacks.
 	lua_pushweapon( L, this );
@@ -434,7 +473,16 @@ void CHL2MPScriptedWeapon::InitScriptedWeapon( void )
 	lua_pushweapon( L, this );
 	lua_setfield( L, -2, "Entity" );
 
-	m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+	if ( bReusedInstance )
+	{
+		lua_pop( L, 1 );
+	}
+	else
+	{
+		if ( iExistingReference >= 0 && lua_isrefvalid( L, iExistingReference ) )
+			lua_unref( L, iExistingReference );
+		m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+	}
 	// A fresh Lua instance needs its own activity translation table.
 	m_szAppliedHoldType[0] = '\0';
 #ifndef CLIENT_DLL
@@ -2673,14 +2721,11 @@ bool CHL2MPScriptedWeapon::DispatchCustomAmmoDisplay( bool *pbDraw, int *pnPrima
 //-----------------------------------------------------------------------------
 int CHL2MPScriptedWeapon::DrawModel( int flags )
 {
-#if defined ( LUA_SDK )
-	BEGIN_LUA_CALL_WEAPON_METHOD( "DrawModel" );
-		lua_pushinteger( L, flags );
-	END_LUA_CALL_WEAPON_METHOD( 1, 1 );
-
-	RETURN_LUA_INTEGER();
-#endif
-
+	// Entity:DrawModel() is the native model path.  Scripted weapons dispatch
+	// DrawWorldModel and DrawWorldModelTranslucent from C_BaseCombatWeapon;
+	// dispatching a Lua DrawModel method here re-enters Entity:DrawModel from
+	// weapon_base's default DrawWorldModel and recurses until the Lua stack is
+	// exhausted.
 	return BaseClass::DrawModel( flags );
 }
 #endif

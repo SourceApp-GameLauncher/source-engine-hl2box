@@ -498,8 +498,14 @@ static int CBaseAnimating_DrawModel (lua_State *L) {
   // Use the same scripted draw scope as the Entity metatable binding.
   int nFlags = luaL_optint( L, 2, STUDIO_RENDER );
   C_BaseCombatWeapon *pWeapon = dynamic_cast<C_BaseCombatWeapon *>( pEntity );
-  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL ||
-       ( pWeapon != NULL && pWeapon->IsScripted() ) )
+  if ( pWeapon != NULL && pWeapon->IsScripted() )
+  {
+    // GMod Entity:DrawModel from a SWEP world-model callback draws the
+    // model directly. Calling the weapon virtual here would dispatch
+    // DrawWorldModel again and recurse through weapon_base.lua.
+    nResult = pEntity->InternalDrawModel( nFlags );
+  }
+  else if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL )
     nResult = pEntity->DrawModel( nFlags );
   else
     nResult = pEntity->InternalDrawModel( nFlags );
