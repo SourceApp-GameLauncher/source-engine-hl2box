@@ -2205,7 +2205,18 @@ static int CBaseEntity_IsMarkedForDeletion (lua_State *L) {
   return 1;
 }
 
+// GMod's base Entity predicates return false for NULL while still rejecting
+// non-entity arguments. Keep that distinction for the shared metatable.
+static bool CBaseEntity_IsNullSentinel (lua_State *L, int nArg) {
+  return luaL_testudata(L, nArg, "CBaseEntity") != NULL &&
+         lua_toentity(L, nArg) == NULL;
+}
+
 static int CBaseEntity_IsNPC (lua_State *L) {
+  if (CBaseEntity_IsNullSentinel(L, 1)) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
   lua_pushboolean(L, luaL_checkentity(L, 1)->IsNPC());
   return 1;
 }
@@ -2340,6 +2351,10 @@ static int CBaseEntity_SetWeaponModel (lua_State *L) {
 }
 
 static int CBaseEntity_IsPlayer (lua_State *L) {
+  if (CBaseEntity_IsNullSentinel(L, 1)) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
   lua_pushboolean(L, luaL_checkentity(L, 1)->IsPlayer());
   return 1;
 }
