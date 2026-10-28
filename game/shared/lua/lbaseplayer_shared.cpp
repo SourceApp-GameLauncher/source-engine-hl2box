@@ -1548,11 +1548,6 @@ static int CBasePlayer_SetClassID (lua_State *L) {
   return 0;
 }
 
-static int CBasePlayer_InstallDataTable (lua_State *L) {
-  luaL_checkplayer(L, 1);
-  return 0;
-}
-
 // Spawn hooks receive the base Player metatable as well as the HL2MP one.
 // Both must resolve the same replicated hands handle.
 static int CBasePlayer_GetHands (lua_State *L) {
@@ -3419,7 +3414,6 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"IsAlive", CBasePlayer_Alive},
   {"GetClassID", CBasePlayer_GetClassID},
   {"SetClassID", CBasePlayer_SetClassID},
-  {"InstallDataTable", CBasePlayer_InstallDataTable},
   {"GetHands", CBasePlayer_GetHands},
   {"SetHands", CBasePlayer_SetHands},
   {"GetHull", CBasePlayer_GetHull},
