@@ -53,7 +53,7 @@ bool CBaseCombatCharacter::Weapon_Switch( CBaseCombatWeapon *pWeapon, int viewmo
 		return false;
 	}
 
-#if defined( LUA_SDK ) && !defined( CLIENT_DLL )
+#if defined( LUA_SDK )
 	// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerSwitchWeapon", ply, old,
 	// new ) - a truthy answer vetoes the switch (GMod).  Only for players.
 	if ( IsPlayer() )
@@ -135,7 +135,7 @@ void CBaseCombatCharacter::RemoveAmmo( int iCount, int iAmmoIndex )
 	int iOld = m_iAmmo[iAmmoIndex];
 	m_iAmmo.Set( iAmmoIndex, MAX( iOld - iCount, 0 ) );
 
-#if defined( LUA_SDK ) && !defined( CLIENT_DLL )
+#if defined( LUA_SDK )
 	// HL2SB GMod compat (2026-10-13): hook.Run( "PlayerAmmoChanged", ply, type,
 	// old, new ).  Only for players.
 	if ( IsPlayer() )

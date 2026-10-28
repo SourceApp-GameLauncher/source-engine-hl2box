@@ -732,8 +732,13 @@ static int CBaseAnimating_TranslateBoneToPhysBone (lua_State *L) {
 }
 
 static int CBaseAnimating_SetSequence (lua_State *L) {
-  luaL_checkanimating(L, 1)->SetSequence(luaL_checkinteger(L, 2));
-  return 0;
+  CBaseAnimating *entity = luaL_checkanimating(L, 1);
+  const int sequence = lua_type(L, 2) == LUA_TNUMBER
+    ? (int)luaL_checknumber(L, 2)
+    : entity->LookupSequence(luaL_checkstring(L, 2));
+  entity->SetSequence(sequence);
+  lua_pushnumber(L, entity->SequenceDuration(sequence));
+  return 1;
 }
 
 // HL2SB GMod compat: Entity:StartActivity( activity ) and Entity:GetActivity().

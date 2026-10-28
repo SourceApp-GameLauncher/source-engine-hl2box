@@ -34,6 +34,10 @@ public:
 	CWeapon357( void );
 
 	void	PrimaryAttack( void );
+#ifndef CLIENT_DLL
+	int		CapabilitiesGet( void ) { return bits_CAP_WEAPON_RANGE_ATTACK1; }
+	void	Operator_HandleAnimEvent( animevent_t *pEvent, CBaseCombatCharacter *pOperator );
+#endif
 	DECLARE_NETWORKCLASS(); 
 	DECLARE_PREDICTABLE();
 
@@ -106,7 +110,24 @@ acttable_t CWeapon357::m_acttable[] =
 	{ ACT_HL2MP_GESTURE_RANGE_ATTACK,	ACT_HL2MP_GESTURE_RANGE_ATTACK_PISTOL,	false },
 	{ ACT_HL2MP_GESTURE_RELOAD,			ACT_HL2MP_GESTURE_RELOAD_PISTOL,		false },
 	{ ACT_HL2MP_JUMP,					ACT_HL2MP_JUMP_PISTOL,					false },
+#ifndef CLIENT_DLL
+	{ ACT_IDLE, ACT_IDLE_PISTOL, true },
+	{ ACT_IDLE_ANGRY, ACT_IDLE_ANGRY_PISTOL, true },
+	{ ACT_RANGE_ATTACK1, ACT_RANGE_ATTACK_PISTOL, true },
+	{ ACT_RELOAD, ACT_RELOAD_PISTOL, true },
+	{ ACT_WALK_AIM, ACT_WALK_AIM_PISTOL, true },
+	{ ACT_RUN_AIM, ACT_RUN_AIM_PISTOL, true },
+	{ ACT_GESTURE_RANGE_ATTACK1, ACT_GESTURE_RANGE_ATTACK_PISTOL, true },
+	{ ACT_RELOAD_LOW, ACT_RELOAD_PISTOL_LOW, false },
+	{ ACT_RANGE_ATTACK1_LOW, ACT_RANGE_ATTACK_PISTOL_LOW, false },
+	{ ACT_COVER_LOW, ACT_COVER_PISTOL_LOW, false },
+	{ ACT_RANGE_AIM_LOW, ACT_RANGE_AIM_PISTOL_LOW, false },
+	{ ACT_GESTURE_RELOAD, ACT_GESTURE_RELOAD_PISTOL, false },
+	{ ACT_WALK, ACT_WALK_PISTOL, false },
+	{ ACT_RUN, ACT_RUN_PISTOL, false },
+#else
 	{ ACT_RANGE_ATTACK1,				ACT_RANGE_ATTACK_PISTOL,				false },
+#endif
 };
 
 
@@ -116,7 +137,35 @@ IMPLEMENT_ACTTABLE( CWeapon357 );
 //-----------------------------------------------------------------------------
 // Purpose: Constructor
 //-----------------------------------------------------------------------------
+#ifndef CLIENT_DLL
+void CWeapon357::Operator_HandleAnimEvent( animevent_t *pEvent, CBaseCombatCharacter *pOperator )
+{
+	if ( pEvent->event != EVENT_WEAPON_PISTOL_FIRE )
+	{
+		BaseClass::Operator_HandleAnimEvent( pEvent, pOperator );
+		return;
+	}
+
+	CAI_BaseNPC *pNPC = pOperator ? pOperator->MyNPCPointer() : NULL;
+	if ( !pNPC )
+		return;
+
+	const Vector vecSrc = pOperator->Weapon_ShootPosition();
+	const Vector vecDir = pNPC->GetActualShootTrajectory( vecSrc );
+	CSoundEnt::InsertSound( SOUND_COMBAT | SOUND_CONTEXT_GUNFIRE, pOperator->GetAbsOrigin(),
+		SOUNDENT_VOLUME_PISTOL, 0.2f, pOperator, SOUNDENT_CHANNEL_WEAPON, pOperator->GetEnemy() );
+	WeaponSound( SINGLE );
+	FireBulletsInfo_t info( 1, vecSrc, vecDir, Vector( 0.01f, 0.01f, 0.01f ), MAX_TRACE_LENGTH, m_iPrimaryAmmoType );
+	info.m_iTracerFreq = 4;
+	info.m_pAttacker = pOperator;
+	pOperator->FireBullets( info );
+	pOperator->DoMuzzleFlash();
+	--m_iClip1;
+}
+#endif
+
 CWeapon357::CWeapon357( void )
+
 {
 	m_bReloadsSingly	= false;
 	m_bFiresUnderwater	= false;
@@ -165,6 +214,7 @@ void CWeapon357::PrimaryAttack( void )
 	Vector vecAiming	= pPlayer->GetAutoaimVector( AUTOAIM_5DEGREES );	
 
 	FireBulletsInfo_t info( 1, vecSrc, vecAiming, vec3_origin, MAX_TRACE_LENGTH, m_iPrimaryAmmoType );
+	info.m_iTracerFreq = 4;
 	info.m_pAttacker = pPlayer;
 
 	// Fire the bullets, and force the first shot to be perfectly accuracy

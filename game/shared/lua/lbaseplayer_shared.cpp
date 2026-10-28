@@ -72,6 +72,39 @@ extern bool HL2SB_GetWorldClickDirection( Vector &direction, const CViewSetup *s
 /*
 ** access functions (stack -> C)
 */
+#ifdef CLIENT_DLL
+bool HL2SB_LuaPlayerSwitchWeapon( CBasePlayer *pPlayer, CBaseCombatWeapon *pOld, CBaseCombatWeapon *pNew )
+{
+  if ( L == NULL || pPlayer == NULL )
+    return false;
+
+  const int top = lua_gettop( L );
+  BEGIN_LUA_CALL_HOOK( "PlayerSwitchWeapon" );
+    lua_pushplayer( L, pPlayer );
+    if ( pOld ) lua_pushweapon( L, pOld ); else lua_pushnil( L );
+    if ( pNew ) lua_pushweapon( L, pNew ); else lua_pushnil( L );
+  END_LUA_CALL_HOOK( 3, 1 );
+  const bool veto = lua_toboolean( L, -1 ) != 0;
+  lua_settop( L, top );
+  return veto;
+}
+
+void HL2SB_LuaPlayerAmmoChanged( CBasePlayer *pPlayer, int iAmmoType, int iOld, int iNew )
+{
+  if ( L == NULL || pPlayer == NULL || iOld == iNew )
+    return;
+
+  const int top = lua_gettop( L );
+  BEGIN_LUA_CALL_HOOK( "PlayerAmmoChanged" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushinteger( L, iAmmoType );
+    lua_pushinteger( L, iOld );
+    lua_pushinteger( L, iNew );
+  END_LUA_CALL_HOOK( 4, 0 );
+  lua_settop( L, top );
+}
+#endif
+
 
 
 LUA_API lua_CBasePlayer *lua_toplayer (lua_State *L, int idx) {

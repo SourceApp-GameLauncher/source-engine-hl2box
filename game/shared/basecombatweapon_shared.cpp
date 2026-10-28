@@ -1294,6 +1294,10 @@ bool CBaseCombatWeapon::HasPrimaryAmmo( void )
 	CBaseCombatCharacter		*pOwner = GetOwner();
 	if ( pOwner )
 	{
+#ifndef CLIENT_DLL
+		if ( pOwner->IsNPC() && UsesClipsForAmmo1() )
+			return false;
+#endif
 		if ( pOwner->GetAmmoCount( m_iPrimaryAmmoType ) > 0 ) 
 			return true;
 	}
