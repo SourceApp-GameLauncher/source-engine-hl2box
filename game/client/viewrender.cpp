@@ -4905,6 +4905,16 @@ void CRendering3dView::DrawTranslucentRenderables( bool bInSkybox, bool bShadowD
 void CRendering3dView::EnableWorldFog( void )
 {
 	VPROF("CViewRender::EnableWorldFog");
+#ifdef LUA_SDK
+	BEGIN_LUA_CALL_HOOK( "SetupWorldFog" );
+	END_LUA_CALL_HOOK( 0, 1 );
+	if ( lua_toboolean( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+	lua_pop( L, 1 );
+#endif
 	CMatRenderContextPtr pRenderContext( materials );
 
 	fogparams_t *pFogParams = NULL;
@@ -5016,15 +5026,27 @@ void CSkyboxView::Enable3dSkyboxFog( void )
 
 	CMatRenderContextPtr pRenderContext( materials );
 
+	float scale = 1.0f;
+	if ( local->m_skybox3d.scale > 0.0f )
+	{
+		scale = 1.0f / local->m_skybox3d.scale;
+	}
+#ifdef LUA_SDK
+	BEGIN_LUA_CALL_HOOK( "SetupSkyboxFog" );
+		lua_pushnumber( L, scale );
+	END_LUA_CALL_HOOK( 1, 1 );
+	if ( lua_toboolean( L, -1 ) )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
+	lua_pop( L, 1 );
+#endif
+
 	if( GetSkyboxFogEnable() )
 	{
 		float fogColor[3];
 		GetSkyboxFogColor( fogColor );
-		float scale = 1.0f;
-		if ( local->m_skybox3d.scale > 0.0f )
-		{
-			scale = 1.0f / local->m_skybox3d.scale;
-		}
 		pRenderContext->FogMode( MATERIAL_FOG_LINEAR );
 		pRenderContext->FogColor3fv( fogColor );
 		pRenderContext->FogStart( GetSkyboxFogStart() * scale );

@@ -1811,18 +1811,94 @@ LUA_BINDING_BEGIN( Renders, SetBlend, "library", "Set the blend.", "client" )
 }
 LUA_BINDING_END()
 
-LUA_BINDING_BEGIN( Renders, ClearBuffers, "library", "Clear the buffers.", "client" )
+LUA_BINDING_BEGIN( Renders, FogMode, "library", "Set the mode of fog.", "client" )
 {
-    bool bClearColor = LUA_BINDING_ARGUMENT( lua_toboolean, 1, "clearColor" );
-    bool bClearDepth = LUA_BINDING_ARGUMENT( lua_toboolean, 2, "clearDepth" );
-    bool bClearStencil = LUA_BINDING_ARGUMENT( lua_toboolean, 3, "clearStencil" );
-
+    const int nFogMode = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "fogMode" );
     CMatRenderContextPtr pRenderContext( materials );
-    pRenderContext->ClearBuffers( bClearColor, bClearDepth, bClearStencil );
-
+    pRenderContext->FogMode( ( MaterialFogMode_t )nFogMode );
     return 0;
 }
 LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, FogStart, "library", "Set the fog start distance.", "client" )
+{
+    const float flStart = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "start" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogStart( flStart );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, FogEnd, "library", "Set the fog end distance.", "client" )
+{
+    const float flEnd = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "end" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogEnd( flEnd );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SetFogZ, "library", "Set the fog Z distance.", "client" )
+{
+    const float flFogZ = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "fogZ" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->SetFogZ( flFogZ );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, FogColor, "library", "Set the fog color.", "client" )
+{
+    const int nRed = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "red" ) & 0xff;
+    const int nGreen = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "green" ) & 0xff;
+    const int nBlue = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 3, "blue" ) & 0xff;
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogColor3ub( ( unsigned char )nRed, ( unsigned char )nGreen, ( unsigned char )nBlue );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, GetFogColor, "library", "Get the fog color.", "client" )
+{
+    unsigned char rgb[ 3 ] = { 0, 0, 0 };
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->GetFogColor( rgb );
+    lua_pushnumber( L, rgb[ 0 ] );
+    lua_pushnumber( L, rgb[ 1 ] );
+    lua_pushnumber( L, rgb[ 2 ] );
+    return 3;
+}
+LUA_BINDING_END( "number", "Red", "number", "Green", "number", "Blue" )
+
+LUA_BINDING_BEGIN( Renders, GetFogDistances, "library", "Get the fog distances.", "client" )
+{
+    float flStart = 0.0f, flEnd = 0.0f, flFogZ = 0.0f;
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->GetFogDistances( &flStart, &flEnd, &flFogZ );
+    lua_pushnumber( L, flStart );
+    lua_pushnumber( L, flEnd );
+    lua_pushnumber( L, flFogZ );
+    return 3;
+}
+LUA_BINDING_END( "number", "Start", "number", "End", "number", "Fog Z" )
+
+LUA_BINDING_BEGIN( Renders, FogMaxDensity, "library", "Set the maximum fog density.", "client" )
+{
+    const float flDensity = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "density" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogMaxDensity( flDensity );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, GetFogMode, "library", "Get the fog mode.", "client" )
+{
+    CMatRenderContextPtr pRenderContext( materials );
+    lua_pushnumber( L, ( int )pRenderContext->GetFogMode() );
+    return 1;
+}
+LUA_BINDING_END( "number", "Fog mode" )
+
 
 LUA_BINDING_BEGIN( Renders, ClearDepth, "library", "Clears depth and optionally stencil while preserving color.", "client" )
 {
@@ -3121,6 +3197,12 @@ LUALIB_API int luaopen_render( lua_State *L )
         lua_pushinteger(L, i);
         lua_setglobal(L, primitiveNames[i]);
     }
+
+    LUA_SET_ENUM_LIB_BEGIN( L, "MATERIAL_FOG" );
+    lua_pushenum_nobare( L, MATERIAL_FOG_NONE, "NONE" );
+    lua_pushenum_nobare( L, MATERIAL_FOG_LINEAR, "LINEAR" );
+    lua_pushenum_nobare( L, MATERIAL_FOG_LINEAR_BELOW_FOG_Z, "LINEAR_BELOW_FOG_Z" );
+    LUA_SET_ENUM_LIB_END( L );
 
     LUA_SET_ENUM_LIB_BEGIN( L, "CULL_MODE" );
     lua_pushenum( L, MaterialCullMode_t::MATERIAL_CULLMODE_CCW, "COUNTER_CLOCKWISE" );
