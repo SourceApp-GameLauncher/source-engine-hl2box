@@ -52,6 +52,9 @@
 #define HIDEWEAPON_THINK_CONTEXT			"BaseCombatWeapon_HideThink"
 
 extern bool UTIL_ItemCanBeTouchedByPlayer( CBaseEntity *pItem, CBasePlayer *pPlayer );
+#if defined( LUA_SDK )
+extern ConVar sv_defaultdeployspeed;
+#endif
 
 #if defined ( TF_CLIENT_DLL ) || defined ( TF_DLL )
 #ifdef _DEBUG
@@ -1458,6 +1461,13 @@ bool CBaseCombatWeapon::DefaultDeploy( char *szViewModel, char *szWeaponModel, i
 		return false;
 
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+	float flDeploySpeed = MAX( 0.1f, m_flDeploySpeed );
+#if defined( LUA_SDK )
+	if ( !IsScripted() )
+	{
+		flDeploySpeed = MAX( 0.1f, sv_defaultdeployspeed.GetFloat() );
+	}
+#endif
 	if ( pOwner )
 	{
 		// Dead men deploy no weapons
@@ -1469,14 +1479,17 @@ bool CBaseCombatWeapon::DefaultDeploy( char *szViewModel, char *szWeaponModel, i
 		SetViewModel();
 		SendWeaponAnim( iActivity );
 
-		// HL2SB GMod compat: WEAPON:SetDeploySpeed (default 1.0) scales the
-		// deploy stamps the same way it scales GMod's.
-		pOwner->SetNextAttack( gpGlobals->curtime + SequenceDuration() / m_flDeploySpeed );
+		CBaseViewModel *pViewModel = pOwner->GetViewModel( m_nViewModelIndex, false );
+		if ( pViewModel )
+		{
+			pViewModel->SetPlaybackRate( flDeploySpeed );
+		}
+		pOwner->SetNextAttack( gpGlobals->curtime + SequenceDuration() / flDeploySpeed );
 	}
 
 	// Can't shoot again until we've finished deploying
-	m_flNextPrimaryAttack	= gpGlobals->curtime + SequenceDuration() / m_flDeploySpeed;
-	m_flNextSecondaryAttack	= gpGlobals->curtime + SequenceDuration() / m_flDeploySpeed;
+	m_flNextPrimaryAttack	= MAX( m_flNextPrimaryAttack, gpGlobals->curtime + SequenceDuration() / flDeploySpeed );
+	m_flNextSecondaryAttack	= MAX( m_flNextSecondaryAttack, gpGlobals->curtime + SequenceDuration() / flDeploySpeed );
 	m_flHudHintMinDisplayTime = 0;
 
 	m_bAltFireHudHintDisplayed = false;
