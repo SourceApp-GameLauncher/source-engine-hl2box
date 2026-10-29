@@ -2084,10 +2084,7 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 				bFirstTime = false;
 				Msg( "This game has a minimum requirement of DirectX 8.0 to run properly.\n" );
 			}
-			if ( bNestedRenderView )
-			{
-				--s_nNestedRenderViewDepth;
-			}
+			--s_nNestedRenderViewDepth;
 			return;
 		}
 	}
@@ -2614,8 +2611,8 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 		m_CurrentView = savedCurrentView;
 		s_bCanAccessCurrentView = bSavedCanAccessCurrentView;
 		g_bRenderingView = bSavedRenderingView;
-		--s_nNestedRenderViewDepth;
 	}
+	--s_nNestedRenderViewDepth;
 }
 
 //-----------------------------------------------------------------------------

@@ -1180,8 +1180,15 @@ void HL2SB_PanelPaintManual(Panel *panel)
 	s_ManualPaintRoot = previous;
 }
 
+static bool (*s_pScreenshotPanelVisible)(Panel *) = NULL;
+extern "C" void VGUI_SetScreenshotPanelVisibleCallback( bool (*fn)(Panel *) )
+{
+	s_pScreenshotPanelVisible = fn;
+}
+
 void Panel::PaintTraverse( bool repaint, bool allowForce )
 {
+	if ( s_pScreenshotPanelVisible && !s_pScreenshotPanelVisible( this ) ) return;
 	if (this != s_ManualPaintRoot && HL2SB_PanelIsPaintedManually(this)) return;
 
 	if ( m_bWorldPositionCurrentFrame )
@@ -1987,8 +1994,14 @@ bool Panel::ShouldHandleInputMessage()
 // with VGUI_SetOnMousePressAllowed().  The callback answers TRUE when the
 // press must be swallowed.
 //-----------------------------------------------------------------------------
-typedef bool ( *VGUIOnMousePressAllowed_t )( int mouseCode );
+typedef bool ( *VGUIOnMousePressAllowed_t )( Panel *panel, int mouseCode );
 static VGUIOnMousePressAllowed_t g_pVGUIOnMousePressAllowed = NULL;
+static void ( *g_pVGUIOnMouseReleased )( Panel *, int ) = NULL;
+
+extern "C" void VGUI_SetOnMouseReleased( void ( *fn )( Panel *, int ) )
+{
+	g_pVGUIOnMouseReleased = fn;
+}
 
 extern "C" void VGUI_SetOnMousePressAllowed( VGUIOnMousePressAllowed_t fn )
 {
@@ -1997,7 +2010,7 @@ extern "C" void VGUI_SetOnMousePressAllowed( VGUIOnMousePressAllowed_t fn )
 
 void Panel::InternalMousePressed(int code)
 {
-	if ( g_pVGUIOnMousePressAllowed && g_pVGUIOnMousePressAllowed( code ) )
+	if ( g_pVGUIOnMousePressAllowed && g_pVGUIOnMousePressAllowed( this, code ) )
 		return;
 
 	long curtime = system()->GetTimeMillis();
@@ -2075,7 +2088,7 @@ void Panel::InternalMousePressed(int code)
 void Panel::InternalMouseDoublePressed(int code)
 {
 	// The reference client consults the same hook on the double press.
-	if ( g_pVGUIOnMousePressAllowed && g_pVGUIOnMousePressAllowed( code ) )
+	if ( g_pVGUIOnMousePressAllowed && g_pVGUIOnMousePressAllowed( this, code ) )
 		return;
 
 	m_lLastDoublePressTime = system()->GetTimeMillis();
@@ -2164,6 +2177,7 @@ void Panel::InternalMouseTriplePressed( int code )
 
 void Panel::InternalMouseReleased(int code)
 {
+	if ( g_pVGUIOnMouseReleased ) g_pVGUIOnMouseReleased( this, code );
 #if defined( VGUI_USEDRAGDROP )
 	if ( g_DragDropCapture.Get() )
 	{

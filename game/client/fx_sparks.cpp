@@ -1535,3 +1535,51 @@ void ManhackSparkCallback( const CEffectData & data )
 }
 
 DECLARE_CLIENT_EFFECT( "ManhackSparks", ManhackSparkCallback );
+
+//-----------------------------------------------------------------------------
+// HL2SB GMod compat: the four plain spark/muzzle dispatch names.
+//
+// GMod's client registers these four next to every stock effect, so scripts
+// can ask for them by name through util.Effect().  Source 2013 only ships the
+// FX_* functions; without a registration the name falls through the callback
+// list and hits the "effect not found on client" exit, which is a silent no-op
+// for the player.  lua/postprocess/super_dof.lua relies on "Sparks" to mark the
+// terrain point it just measured, so the window measured the distance and drew
+// nothing.
+//
+// Sparks rounds magnitude up and truncates scale; ElectricSpark truncates
+// both values. Magnitude controls particle count and lifetime.
+//-----------------------------------------------------------------------------
+static void SparkEffectCallback( const CEffectData & data )
+{
+	FX_Sparks( data.m_vOrigin,
+		(int)ceilf( data.m_flMagnitude ),
+		(int)data.m_flScale,
+		data.m_vNormal,
+		data.m_flRadius,
+		64.0f,
+		256.0f );
+}
+
+static void ElectricSparkEffectCallback( const CEffectData & data )
+{
+	FX_ElectricSpark( data.m_vOrigin,
+		(int)data.m_flMagnitude,
+		(int)data.m_flScale,
+		&data.m_vNormal );
+}
+
+static void MetalSparkEffectCallback( const CEffectData & data )
+{
+	FX_MetalSpark( data.m_vOrigin, data.m_vNormal, data.m_vNormal, 1 );
+}
+
+static void MuzzleEffectCallback( const CEffectData & data )
+{
+	FX_MuzzleEffect( data.m_vOrigin, data.m_vAngles, data.m_flScale, INVALID_EHANDLE_INDEX );
+}
+
+DECLARE_CLIENT_EFFECT( "Sparks", SparkEffectCallback );
+DECLARE_CLIENT_EFFECT( "ElectricSpark", ElectricSparkEffectCallback );
+DECLARE_CLIENT_EFFECT( "MetalSpark", MetalSparkEffectCallback );
+DECLARE_CLIENT_EFFECT( "MuzzleEffect", MuzzleEffectCallback );

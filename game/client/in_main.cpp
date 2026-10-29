@@ -1365,6 +1365,14 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 
 		luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
 	}
+	if ( L != NULL && vgui::surface()->IsCursorVisible() )
+	{
+		BEGIN_LUA_CALL_HOOK( "PreventScreenClicks" );
+		END_LUA_CALL_HOOK( 0, 1 );
+		const bool preventClicks = lua_toboolean( L, -1 ) != 0;
+		lua_pop( L, 1 );
+		if ( preventClicks ) cmd->buttons &= ~( IN_ATTACK | IN_ATTACK2 );
+	}
 #endif
 
 	// Let the move manager override anything it wants to.

@@ -755,6 +755,32 @@ static int Panel_IsVisible (lua_State *L) {
   return 1;
 }
 
+extern "C" void VGUI_SetScreenshotPanelVisibleCallback( bool (*fn)(Panel *) );
+static std::vector<PHandle> s_screenshotHiddenPanels;
+
+static bool Panel_ShouldRenderInScreenshot( Panel *panel ) {
+  if ( !engine->IsTakingScreenshot() ) return true;
+  for ( size_t i = 0; i < s_screenshotHiddenPanels.size(); ++i )
+    if ( s_screenshotHiddenPanels[i].Get() == panel ) return false;
+  return true;
+}
+
+static int Panel_SetRenderInScreenshots( lua_State *L ) {
+  Panel *panel = luaL_checkpanel( L, 1 );
+  const bool render = lua_toboolean( L, 2 ) != 0;
+  for ( size_t i = 0; i < s_screenshotHiddenPanels.size(); ) {
+    Panel *stored = s_screenshotHiddenPanels[i].Get();
+    if ( !stored || stored == panel ) s_screenshotHiddenPanels.erase( s_screenshotHiddenPanels.begin() + i );
+    else ++i;
+  }
+  if ( !render ) {
+    PHandle handle;
+    handle.Set( panel );
+    s_screenshotHiddenPanels.push_back( handle );
+  }
+  return 0;
+}
+
 static bool Panel_IsWorldClickerValue(lua_State *state, Panel *panel) {
   if (!state || !panel) return false;
   Panel_PushTable(state, panel);
@@ -767,6 +793,12 @@ static bool Panel_IsWorldClickerValue(lua_State *state, Panel *panel) {
   }
   lua_pop(state, 1);
   return result;
+}
+
+bool HL2SB_IsScreenClickPanel(Panel *panel) {
+  return panel && (panel == VGui_GetClientLuaRootPanel() ||
+    panel->GetVPanel() == VGui_GetClientDLLRootPanel() ||
+    Panel_IsWorldClickerValue(::L, panel));
 }
 
 static int Panel_IsWorldClicker (lua_State *L) {
@@ -2631,6 +2663,7 @@ static const luaL_Reg Panelmeta[] = {
   {"IsTriplePressAllowed", Panel_IsTriplePressAllowed},
   {"IsValidKeyBindingsContext", Panel_IsValidKeyBindingsContext},
   {"IsVisible", Panel_IsVisible},
+  {"SetRenderInScreenshots", Panel_SetRenderInScreenshots},
   {"IsWorldClicker", Panel_IsWorldClicker},
   {"SetWorldClicker", Panel_SetWorldClicker},
   {"DrawFilledRect", Panel_DrawFilledRect},
@@ -2772,6 +2805,7 @@ static const luaL_Reg Panel_funcs[] = {
 ** Open Panel object
 */
 LUALIB_API int luaopen_Panel (lua_State *L) {
+  VGUI_SetScreenshotPanelVisibleCallback( Panel_ShouldRenderInScreenshot );
   luaL_newmetatable(L, "Panel");
   luaL_register(L, NULL, Panelmeta);
   lua_pushstring(L, "panel");

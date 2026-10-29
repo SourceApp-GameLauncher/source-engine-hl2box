@@ -40,28 +40,10 @@ CScriptedClientLuaPanel::CScriptedClientLuaPanel() : vgui::EditablePanel( NULL, 
 	// child receive key events.
 	SetKeyBoardInputEnabled( true );
 
-	// HL2SB: MOUSE input has to stay enabled on this panel.
-	//
-	// vgui2/vgui_controls/Panel.cpp::IsWithinTraverse() refuses to recurse into
-	// the children of a panel that does not take mouse input:
-	//
-	//     // also if it doesn't want mouse input its children can't get it either
-	//     if (!IsVisible() || !IsMouseInputEnabled()) return NULL;
-	//
-	// This panel is the parent of every scripted Lua panel.  Measured in game,
-	// the ancestor chain of a vgui.Create( "DFrame" ) is
-	//
-	//     DFrame -> CScriptedClientLuaPanel
-	//
-	// so with mouse input off -- what this constructor used to do -- every Derma
-	// panel drew perfectly and yet nothing inside it could be clicked: the player
-	// model list, its Apply button and every GMod addon panel were dead to the
-	// mouse.
-	//
-	// DisableMouseInputForThisPanel( true ) keeps this panel from ever becoming
-	// the mouse-over target itself, so it stays a pure pass-through container.
+	// Child controls receive input first. Uncovered space belongs to the
+	// world panel so screen-click tools can select a point in the scene.
 	SetMouseInputEnabled( true );
-	DisableMouseInputForThisPanel( true );
+	DisableMouseInputForThisPanel( false );
 
 	SetProportional( true );
 	SetBounds( 0, 0, ScreenWidth(), ScreenHeight() );
@@ -96,7 +78,7 @@ void CScriptedClientLuaPanel::SetParent(vgui::VPANEL parent)
 	// Parenting inherits input flags, but this root must keep its children interactive.
 	SetMouseInputEnabled( true );
 	SetKeyBoardInputEnabled( true );
-	DisableMouseInputForThisPanel( true );
+	DisableMouseInputForThisPanel( false );
 	SetBounds( 0, 0, ScreenWidth(), ScreenHeight() );
 	// force ourselves to be proportional - when we set our parent above, if our new
 	// parent happened to be non-proportional (such as the vgui root panel), we got

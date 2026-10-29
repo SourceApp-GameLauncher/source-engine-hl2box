@@ -79,14 +79,14 @@ C_TEEffectDispatch::~C_TEEffectDispatch( void )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-void DispatchEffectToCallback( const char *pEffectName, const CEffectData &m_EffectData )
+void HL2SB_DispatchLocalEffect( const char *pEffectName, const CEffectData &m_EffectData, bool allowOverride )
 {
 	// HL2SB: GMod's lua/effects/<name>.lua come first.  Every effect name ends up
 	// here -- server-sent ones via TE_DispatchEffect below, client-side ones via
 	// DispatchEffect()/TE_DispatchEffect -- so one hook covers both paths, and a
 	// scripted effect shadows an engine callback of the same name exactly as it
 	// does in GMod.
-	if ( HL2SB_CreateLuaEffect( pEffectName, m_EffectData ) )
+	if ( allowOverride && HL2SB_CreateLuaEffect( pEffectName, m_EffectData ) )
 	{
 		return;
 	}
@@ -128,6 +128,11 @@ void DispatchEffectToCallback( const char *pEffectName, const CEffectData &m_Eff
 //-----------------------------------------------------------------------------
 // Record effects
 //-----------------------------------------------------------------------------
+void DispatchEffectToCallback( const char *pEffectName, const CEffectData &data )
+{
+	HL2SB_DispatchLocalEffect( pEffectName, data, true );
+}
+
 static void RecordEffect( const char *pEffectName, const CEffectData &data )
 {
 	if ( !ToolsEnabled() )

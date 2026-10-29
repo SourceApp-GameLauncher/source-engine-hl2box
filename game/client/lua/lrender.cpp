@@ -51,6 +51,10 @@ class CMatCallQueue;
 #include "tier1/utlbuffer.h"
 #include "tier2/renderutils.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "c_rope.h"
+#if defined( _WIN32 )
+#include <windows.h>
+#endif
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -326,6 +330,24 @@ LUA_BINDING_BEGIN( Renders, GetMoBlurTex1, "library", "Get the second motion blu
     return 1;
 }
 LUA_BINDING_END( "Texture", "The second motion blur texture." )
+
+LUA_BINDING_BEGIN( Renders, Spin, "library", "Presents the current frame and begins another.", "client" )
+{
+    materials->EndFrame();
+    materials->SwapBuffers();
+    RopeManager()->OnRenderStart();
+#if defined( _WIN32 )
+    MSG message;
+    while ( PeekMessage( &message, NULL, 0, 0, PM_REMOVE ) )
+    {
+        TranslateMessage( &message );
+        DispatchMessage( &message );
+    }
+#endif
+    materials->BeginFrame( gpGlobals->frametime );
+    return 0;
+}
+LUA_BINDING_END()
 
 LUA_BINDING_BEGIN( Renders, GetResolvedFullFrameDepth, "library", "Returns the resolved full-frame depth texture.", "client" )
 {
@@ -797,24 +819,21 @@ LUA_BINDING_BEGIN( Renders, Capture, "library", "Captures a render target rectan
 LUA_BINDING_END()
 
 // render.GetSuperFPTex() / render.GetSuperFPTex2() -- GMod's portal-view
-// render targets.  Reference behaviour: two lazily created, name-keyed
-// literal-size render targets ("__rt_SuperTexture1" / "__rt_SuperTexture2",
-// 512x512), handed out as real ITexture userdata; repeat calls return the
-// same texture.  The portalgun renders the view through each portal into one
-// of these (SetRenderTarget -> Clear -> RenderView) and samples it back
-// through an UnlitGeneric $basetexture.
+// render targets. They use full-frame sizing and floating-point pixels.
 static ITexture *HL2SB_GetSuperFPTex( int nIndex )
 {
     static ITexture *s_pSuperFPTex[ 2 ] = { NULL, NULL };
     if ( s_pSuperFPTex[ nIndex ] == NULL )
     {
-        // Lua requests these after the engine's render-target allocation phase.
+        if ( !g_pMaterialSystemHardwareConfig || g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 90 )
+            return NULL;
         s_pSuperFPTex[ nIndex ] = materials->CreateNamedRenderTargetTextureEx(
             nIndex == 0 ? "__rt_SuperTexture1" : "__rt_SuperTexture2",
-            512, 512, RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA8888,
-            MATERIAL_RT_DEPTH_SEPARATE,
-            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD,
-            0 );
+            512, 512, RT_SIZE_FULL_FRAME_BUFFER, IMAGE_FORMAT_RGBA16161616F,
+            MATERIAL_RT_DEPTH_SHARED, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT,
+            CREATERENDERTARGETFLAGS_HDR );
+        if ( s_pSuperFPTex[ nIndex ] && s_pSuperFPTex[ nIndex ]->IsError() )
+            s_pSuperFPTex[ nIndex ] = NULL;
     }
     return s_pSuperFPTex[ nIndex ];
 }
