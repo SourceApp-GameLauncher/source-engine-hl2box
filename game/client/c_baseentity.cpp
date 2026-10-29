@@ -47,6 +47,7 @@
 #include "lbaseentity_shared.h"	// HL2SB: lua_pushentity (the NetworkEntityCreated hook)
 #include "mathlib/lvector.h"
 #include "basescripted.h"	// HL2SB: dynamic_cast for the UpdateVisibility diagnostic
+extern bool HL2SB_LuaDOFMode();
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -6109,6 +6110,11 @@ RenderGroup_t C_BaseEntity::GetRenderGroup()
 	{
 		renderGroup = RENDER_GROUP_TWOPASS;
 	}
+
+#ifdef LUA_SDK
+	if ( HL2SB_LuaDOFMode() && ( renderGroup == RENDER_GROUP_OPAQUE_ENTITY || renderGroup == RENDER_GROUP_TWOPASS ) )
+		renderGroup = RENDER_GROUP_TRANSLUCENT_ENTITY;
+#endif
 
 	return renderGroup;
 }

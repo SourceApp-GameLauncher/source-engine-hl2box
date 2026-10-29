@@ -5663,6 +5663,19 @@ void CBaseWorldView::DrawSetup( float waterHeight, int nSetupFlags, float waterZ
 		render->PopView( GetFrustum() );
 	}
 
+#ifdef LUA_SDK
+	if ( savedViewID == VIEW_MAIN && L != NULL && engine->IsInGame() )
+	{
+		const int nTop = lua_gettop( L );
+		BEGIN_LUA_CALL_HOOK( "NeedsDepthPass" );
+		END_LUA_CALL_HOOK( 0, 1 );
+		const bool bNeedsDepth = lua_toboolean( L, -1 ) != 0;
+		lua_settop( L, nTop );
+		if ( bNeedsDepth )
+			SSAO_DepthPass();
+	}
+#endif
+
 #ifdef TF_CLIENT_DLL
 	bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles
 

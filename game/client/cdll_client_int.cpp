@@ -2075,6 +2075,11 @@ void CHLClient::LevelShutdown( void )
 		return;
 
 	g_bLevelInitialized = false;
+
+#if defined( LUA_SDK )
+	extern void HL2SB_ResetLuaDOFMode();
+	HL2SB_ResetLuaDOFMode();
+#endif
 	
 #if defined ( LUA_SDK )
 	if (g_bLuaInitialized)

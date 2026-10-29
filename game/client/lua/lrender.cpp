@@ -15,6 +15,7 @@ ConVar physgun_halo( "physgun_halo", "1", FCVAR_ARCHIVE, "Draw the physgun halo 
 ConVar physgun_halo_shell( "physgun_halo_shell", "0", FCVAR_ARCHIVE, "Draw the legacy whole-model physgun glow shell" );
 ConVar physgun_drawbeams( "physgun_drawbeams", "1", FCVAR_ARCHIVE, "Draw the physgun beams" );
 #ifdef CLIENT_DLL
+extern int HL2SB_LuaSetDOFMode( lua_State *state );
 #include "rendertexture.h"
 #include "view_scene.h"
 #include <materialsystem/imaterialsystem.h>
@@ -283,30 +284,19 @@ LUA_BINDING_BEGIN( Renders, GetScreenEffectTexture, "library", "Get the screen e
 }
 LUA_BINDING_END( "Texture", "The screen effect texture." )
 
-// HL2SB (2026-10-02) GMod compat: render.GetMoBlurTex0() -- the motion-blur
-// accumulation target lua/postprocess/motion_blur.lua draws with.  GMod's
-// client lazily creates a named 256x256 render target ("s_pMoBlurTex0") on
-// first use; do the same through the same creation call the spawnicon
-// snapshot helper uses, so repeated calls return the same texture.
-// HL2SB (2026-10-02, second pass): the creation must sit inside a render
-// target allocation window -- CMaterialSystem refuses named RT creation
-// outside one (Warning + NULL every call), which meant a per-frame failed
-// attempt + warning once DrawMotionBlur ran from the HUD (213 warnings in
-// one session).  Wrap the one-shot creation in the public allocation APIs.
+// Motion-blur targets use full-frame dimensions and the backbuffer format.
 LUA_BINDING_BEGIN( Renders, GetMoBlurTex0, "library", "Get the motion blur render target texture.", "client" )
 {
     static ITexture *s_pMoBlurTex0 = NULL;
     if ( s_pMoBlurTex0 == NULL )
     {
-        materials->BeginRenderTargetAllocation();
-        s_pMoBlurTex0 = materials->CreateNamedRenderTargetTextureEx2(
-            "s_pMoBlurTex0", 256, 256, RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA8888,
+        s_pMoBlurTex0 = materials->CreateNamedRenderTargetTextureEx(
+            "s_pMoBlurTex0", 256, 256, RT_SIZE_FULL_FRAME_BUFFER, materials->GetBackBufferFormat(),
             MATERIAL_RT_DEPTH_SEPARATE,
-            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD,
-            0 );
-        materials->EndRenderTargetAllocation();
-        if ( s_pMoBlurTex0 == NULL )
+            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, CREATERENDERTARGETFLAGS_HDR );
+        if ( s_pMoBlurTex0 == NULL || s_pMoBlurTex0->IsError() )
         {
+            s_pMoBlurTex0 = NULL;
             lua_pushnil( L );
             return 1;
         }
@@ -315,6 +305,14 @@ LUA_BINDING_BEGIN( Renders, GetMoBlurTex0, "library", "Get the motion blur rende
     return 1;
 }
 LUA_BINDING_END( "Texture", "The motion blur texture." )
+
+LUA_BINDING_BEGIN( Renders, GetResolvedFullFrameDepth, "library", "Returns the resolved full-frame depth texture.", "client" )
+{
+    ITexture *pTexture = materials->FindTexture( "_rt_ResolvedFullFrameDepth", TEXTURE_GROUP_RENDER_TARGET, true, NULL );
+    lua_pushitexture( L, pTexture );
+    return 1;
+}
+LUA_BINDING_END( "Texture", "The resolved full-frame depth texture." )
 
 LUA_BINDING_BEGIN( Renders, EnableClipping, "library", "Enable or disable clipping, returns the previous state.", "client" )
 {
@@ -3176,6 +3174,8 @@ LUALIB_API int luaopen_render( lua_State *L )
     LUA_REGISTRATION_COMMIT_LIBRARY( Renders );
 
 #ifdef CLIENT_DLL
+    lua_pushcfunction( L, HL2SB_LuaSetDOFMode );
+    lua_setglobal( L, "DOFModeHack" );
     lua_getfield(L, -1, "GetViewEntity");
     lua_setglobal(L, "GetViewEntity");
     lua_pushcfunction( L, luasrc_GetRenderTarget );
