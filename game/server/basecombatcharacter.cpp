@@ -1634,12 +1634,12 @@ void CBaseCombatCharacter::Event_Killed( const CTakeDamageInfo &info )
 	CBaseCombatWeapon *pDroppedWeapon = m_hActiveWeapon.Get();
 
 	// Drop any weapon that I own
-	if ( VPhysicsGetObject() )
+	if ( pDroppedWeapon && VPhysicsGetObject() )
 	{
 		Vector weaponForce = forceVector * VPhysicsGetObject()->GetInvMass();
 		Weapon_Drop( m_hActiveWeapon, NULL, &weaponForce );
 	}
-	else
+	else if ( pDroppedWeapon )
 	{
 		Weapon_Drop( m_hActiveWeapon );
 	}

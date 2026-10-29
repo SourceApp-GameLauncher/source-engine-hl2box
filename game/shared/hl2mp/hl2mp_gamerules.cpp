@@ -345,8 +345,8 @@ void CHL2MPRules::PlayerKilled( CBasePlayer *pVictim, const CTakeDamageInfo &inf
 	// be picked up by anyone else.
 	BEGIN_LUA_CALL_HOOK( "PlayerDeath" );
 		lua_pushplayer( L, pVictim );
-		lua_pushentity( L, info.GetInflictor() );
-		lua_pushentity( L, info.GetAttacker() );
+		CBaseEntity::PushLuaInstanceSafe( L, info.GetInflictor() );
+		CBaseEntity::PushLuaInstanceSafe( L, info.GetAttacker() );
 	END_LUA_CALL_HOOK( 3, 0 );
 #endif
 
@@ -2065,7 +2065,7 @@ const char *CHL2MPRules::GetChatFormat( bool bTeamOnly, CBasePlayer *pPlayer )
 	// team only
 	if ( bTeamOnly == TRUE )
 	{
-		if ( pPlayer->GetTeamNumber() == TEAM_SPECTATOR )
+		if ( pPlayer->GetTeamNumber() == TEAM_SPECTATOR || pPlayer->GetTeamNumber() == 1002 )
 		{
 			pszFormat = "HL2MP_Chat_Spec";
 		}
@@ -2085,7 +2085,7 @@ const char *CHL2MPRules::GetChatFormat( bool bTeamOnly, CBasePlayer *pPlayer )
 	// everyone
 	else
 	{
-		if ( pPlayer->GetTeamNumber() != TEAM_SPECTATOR )
+		if ( pPlayer->GetTeamNumber() != TEAM_SPECTATOR && pPlayer->GetTeamNumber() != 1002 )
 		{
 			pszFormat = "HL2MP_Chat_All";	
 		}

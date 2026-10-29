@@ -314,7 +314,7 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropFloat("m_flSpawnEffectCreationTime", 0, sizeof(float), 0, SPROP_NOSCALE, 0, HIGH_DEFAULT, SendProxy_SpawnEffectTime),
 #endif
 	SendPropInt		(SENDINFO(m_clrRender),	32, SPROP_UNSIGNED),
-	SendPropInt		(SENDINFO(m_iTeamNum),		TEAMNUM_NUM_BITS, 0),
+	SendPropInt		(SENDINFO(m_iTeamNum),		16, 0),
 	// HL2SB: GMod networks the spawnflags on every entity -- its shared
 	// Entity:HasSpawnFlags/GetSpawnFlags read a clientside copy.  The map
 	// keyvalue lands server-side only (DEFINE_KEYFIELD above), so without

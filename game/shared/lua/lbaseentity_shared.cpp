@@ -6300,6 +6300,15 @@ void HL2SB_InstallScriptDataTables(lua_State *L, CBaseEntity *entity) {
   lua_settop(L,top);
 }
 
+static int CBaseEntity_NearestPoint( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  const Vector &point = luaL_checkvector( L, 2 );
+  Vector nearest;
+  entity->CollisionProp()->CalcNearestPoint( point, &nearest );
+  lua_pushvector( L, nearest );
+  return 1;
+}
+
 static int CBaseEntity_DropToFloor( lua_State *L ) {
   CBaseEntity *entity = luaL_checkentity( L, 1 );
 #ifdef GAME_DLL
@@ -6780,6 +6789,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetRenderColor", CBaseEntity_SetRenderColor},
   {"SetColor", CBaseEntity_SetColor},
   {"SetPersistent", CBaseEntity_SetPersistent},
+  {"NearestPoint", CBaseEntity_NearestPoint},
   {"DropToFloor", CBaseEntity_DropToFloor},
   {"SetBodyGroups", CBaseEntity_SetBodyGroups},
   {"SetColor4Part", CBaseEntity_SetColor4Part},

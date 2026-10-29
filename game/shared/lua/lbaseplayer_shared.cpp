@@ -499,17 +499,24 @@ static int CBasePlayer_Kill(lua_State *L) {
   return 0;
 }
 
-// HL2SB GMod compat: Player:SetTeam( team ).
-//
-// Straight ChangeTeam wrapper.  The base gamemode's PlayerInitialSpawn and
-// team-selection chain both start from it; without the binding every GMod
-// team gamemode errors on its first join.
 static int CBasePlayer_SetTeam (lua_State *L) {
 #ifndef CLIENT_DLL
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-  int iTeam = (int)luaL_checkinteger(L, 2);
-
-  pPlayer->ChangeTeam(iTeam);
+  const int iTeam = (int)luaL_checknumber(L, 2);
+  // GMod raises PlayerChangedTeam before writing the networked team number.
+  // Lua teams do not require an engine team-manager entry.
+  if ( gpGlobals->maxClients > 1 && ( iTeam < -32768 || iTeam > 32767 ) )
+    Warning( "Out of bounds value %i for networking in range %i to %i\n", iTeam, -32768, 32767 );
+  if ( pPlayer->GetTeamNumber() == iTeam )
+    return 0;
+  const int iTop = lua_gettop( L );
+  BEGIN_LUA_CALL_HOOK( "PlayerChangedTeam" );
+    lua_pushplayer( L, pPlayer );
+    lua_pushinteger( L, pPlayer->GetTeamNumber() );
+    lua_pushinteger( L, iTeam );
+  END_LUA_CALL_HOOK( 3, 0 );
+  lua_settop( L, iTop );
+  pPlayer->CBaseEntity::ChangeTeam( iTeam );
 #else
   (void)L;
 #endif
@@ -2479,11 +2486,14 @@ static int CBasePlayer_AddDeaths (lua_State *L) {
 }
 #endif
 
-// HL2SB GMod compat: Player:Team().  GMod reads its player resource's team
-// number per user id; the networked team number on the player entity is the
-// same value here (server-side member, client-side netvar).
 static int CBasePlayer_Team (lua_State *L) {
-  lua_pushnumber( L, luaL_checkplayer(L, 1)->GetTeamNumber() );
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+#ifdef CLIENT_DLL
+  if (!g_PR) return 0;
+  lua_pushnumber(L, g_PR->GetTeam(player->entindex()));
+#else
+  lua_pushnumber(L, player->GetTeamNumber());
+#endif
   return 1;
 }
 

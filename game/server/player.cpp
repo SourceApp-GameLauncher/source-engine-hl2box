@@ -2626,7 +2626,7 @@ bool CBasePlayer::SetObserverMode(int mode )
 
 
 	// check mp_forcecamera settings for dead players
-	if ( mode > OBS_MODE_FIXED && GetTeamNumber() > TEAM_SPECTATOR )
+	if ( mode > OBS_MODE_FIXED && GetTeamNumber() > TEAM_SPECTATOR && GetTeamNumber() != 1001 && GetTeamNumber() != 1002 )
 	{
 		switch ( mp_forcecamera.GetInt() )
 		{
@@ -2879,7 +2879,7 @@ void CBasePlayer::ObserverUse( bool bIsPressed )
 	if ( !HLTVDirector()->IsActive() )
 		return;
 
-	if ( GetTeamNumber() != TEAM_SPECTATOR )
+	if ( GetTeamNumber() != TEAM_SPECTATOR && GetTeamNumber() != 1002 )
 		return;	// only pure spectators can play cameraman
 
 	if ( !bIsPressed )
@@ -3025,7 +3025,7 @@ bool CBasePlayer::IsValidObserverTarget(CBaseEntity * target)
 	}
 		
 	// check forcecamera settings for active players
-	if ( GetTeamNumber() != TEAM_SPECTATOR )
+	if ( GetTeamNumber() != TEAM_SPECTATOR && GetTeamNumber() != 1002 )
 	{
 		switch ( mp_forcecamera.GetInt() )	
 		{
@@ -5392,7 +5392,7 @@ void CBasePlayer::Spawn( void )
 		LockPlayerInPlace();
 	}
 
-	if ( GetTeamNumber() != TEAM_SPECTATOR )
+	if ( GetTeamNumber() != TEAM_SPECTATOR && GetTeamNumber() != 1002 )
 	{
 		StopObserverMode();
 	}
@@ -6885,7 +6885,7 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 	}
 	else if ( stricmp( cmd, "spectate" ) == 0 ) // join spectator team & start observer mode
 	{
-		if ( GetTeamNumber() == TEAM_SPECTATOR )
+		if ( GetTeamNumber() == TEAM_SPECTATOR || GetTeamNumber() == 1002 )
 			return true;
 
 		ConVarRef mp_allowspectators( "mp_allowspectators" );
@@ -6923,7 +6923,7 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 		// not allowed to change spectator modes when mp_fadetoblack is being used
 		if ( mp_fadetoblack.GetBool() )
 		{
-			if ( GetTeamNumber() > TEAM_SPECTATOR )
+			if ( GetTeamNumber() > TEAM_SPECTATOR && GetTeamNumber() != 1001 && GetTeamNumber() != 1002 )
 				return true;
 		}
 
@@ -7878,7 +7878,7 @@ void CBasePlayer::Weapon_Drop( CBaseCombatWeapon *pWeapon, const Vector *pvecTar
 
 	BaseClass::Weapon_Drop( pWeapon, pvecTarget, pVelocity );
 
-	if ( bWasActiveWeapon )
+	if ( bWasActiveWeapon && IsAlive() )
 	{
 		if (!SwitchToNextBestWeapon( NULL ))
 		{

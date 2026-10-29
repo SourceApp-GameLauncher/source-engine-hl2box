@@ -988,19 +988,9 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 {
 	VPROF("CServerGameDLL::LevelInit");
 
-	// HL2SB: this fork's gamemodes never instantiate the player resource, so
-	// the per-player scoreboard data it networks to every client (ping, score,
-	// deaths, team) never existed; Player:Ping on the client reads that copy,
-	// the same way GMod's player resource feeds its scoreboard.  Recreated
-	// every level: the entity is FCAP_DONT_SAVE, so a save/restore cycle drops
-	// it and a stale pointer must not survive LevelInit.
+	// CreateStandardEntities creates the player resource with the world.
+	// Clear the previous level's pointer without creating a second resource.
 	g_pPlayerResource = NULL;
-	CPlayerResource *pPlayerResource = static_cast< CPlayerResource * >( CreateEntityByName( "player_manager" ) );
-	if ( pPlayerResource )
-	{
-		g_pPlayerResource = pPlayerResource;
-		pPlayerResource->Spawn();
-	}
 
 #ifdef USES_ECON_ITEMS
 	GameItemSchema_t *pItemSchema = ItemSystem()->GetItemSchema();
