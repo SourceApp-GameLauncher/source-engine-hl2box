@@ -306,6 +306,27 @@ LUA_BINDING_BEGIN( Renders, GetMoBlurTex0, "library", "Get the motion blur rende
 }
 LUA_BINDING_END( "Texture", "The motion blur texture." )
 
+LUA_BINDING_BEGIN( Renders, GetMoBlurTex1, "library", "Get the second motion blur render target texture.", "client" )
+{
+    static ITexture *s_pMoBlurTex1 = NULL;
+    if ( !s_pMoBlurTex1 )
+    {
+        s_pMoBlurTex1 = materials->CreateNamedRenderTargetTextureEx(
+            "s_pMoBlurTex1", 256, 256, RT_SIZE_FULL_FRAME_BUFFER, materials->GetBackBufferFormat(),
+            MATERIAL_RT_DEPTH_SEPARATE,
+            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, CREATERENDERTARGETFLAGS_HDR );
+        if ( !s_pMoBlurTex1 || s_pMoBlurTex1->IsError() )
+        {
+            s_pMoBlurTex1 = NULL;
+            lua_pushnil( L );
+            return 1;
+        }
+    }
+    lua_pushitexture( L, s_pMoBlurTex1 );
+    return 1;
+}
+LUA_BINDING_END( "Texture", "The second motion blur texture." )
+
 LUA_BINDING_BEGIN( Renders, GetResolvedFullFrameDepth, "library", "Returns the resolved full-frame depth texture.", "client" )
 {
     ITexture *pTexture = materials->FindTexture( "_rt_ResolvedFullFrameDepth", TEXTURE_GROUP_RENDER_TARGET, true, NULL );
@@ -543,6 +564,29 @@ static int luasrc_GetRenderTarget( lua_State *L )
     ITexture *texture = materials->CreateNamedRenderTargetTextureEx(
         name, width, height, RT_SIZE_NO_CHANGE, materials->GetBackBufferFormat(),
         MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_TRILINEAR | TEXTUREFLAGS_NOMIP, 0 );
+    if ( !texture || texture->IsError() ) return 0;
+    lua_pushitexture( L, texture );
+    return 1;
+}
+
+static int luasrc_GetRenderTargetEx( lua_State *L )
+{
+    const char *name = luaL_checkstring( L, 1 );
+    const int width = (int)luaL_checknumber( L, 2 );
+    const int height = (int)luaL_checknumber( L, 3 );
+    const int sizeMode = clamp( (int)luaL_checknumber( L, 4 ), 0, 9 );
+    const int depthMode = clamp( (int)luaL_checknumber( L, 5 ), 0, 3 );
+    const int textureFlags = (int)luaL_checknumber( L, 6 );
+    const int targetFlags = (int)luaL_checknumber( L, 7 );
+    const int format = (int)luaL_checknumber( L, 8 );
+    if ( format < -1 || format >= NUM_IMAGE_FORMATS ||
+         ( textureFlags & ( TEXTUREFLAGS_PROCEDURAL | TEXTUREFLAGS_ENVMAP ) ) )
+        return 0;
+
+    ITexture *texture = materials->CreateNamedRenderTargetTextureEx(
+        name, width, height, (RenderTargetSizeMode_t)sizeMode,
+        format == -1 ? materials->GetBackBufferFormat() : (ImageFormat)format,
+        (MaterialRenderTargetDepth_t)depthMode, textureFlags, targetFlags );
     if ( !texture || texture->IsError() ) return 0;
     lua_pushitexture( L, texture );
     return 1;
@@ -3180,6 +3224,14 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_setglobal(L, "GetViewEntity");
     lua_pushcfunction( L, luasrc_GetRenderTarget );
     lua_setglobal( L, "GetRenderTarget" );
+    lua_pushcfunction( L, luasrc_GetRenderTargetEx );
+    lua_setglobal( L, "GetRenderTargetEx" );
+    lua_pushinteger( L, RT_SIZE_FULL_FRAME_BUFFER );
+    lua_setglobal( L, "RT_SIZE_FULL_FRAME_BUFFER" );
+    lua_pushinteger( L, MATERIAL_RT_DEPTH_NONE );
+    lua_setglobal( L, "MATERIAL_RT_DEPTH_NONE" );
+    lua_pushinteger( L, -1 );
+    lua_setglobal( L, "IMAGE_FORMAT_DEFAULT" );
 
     // HL2SB: the cam library -- cam.Start( {type="3D"/"2D", ...} ) / cam.End() /
     // cam.IgnoreZ().  The content render.lua shim builds cam.Start3D/Start2D on
