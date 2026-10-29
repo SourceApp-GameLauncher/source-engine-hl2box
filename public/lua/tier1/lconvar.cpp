@@ -767,7 +767,25 @@ static int luasrc_ConVar (lua_State *L) {
   else
     pDefault = luaL_checkstring( L, 2 );  // numbers auto-convert
 
-  ConVar *pConVar = new ConVar(strdup(pName), pDefault, luaL_optint(L, 3, 0), strdup(luaL_optstring(L, 4, 0)), luaL_optboolean(L, 5, 0), luaL_optnumber(L, 6, 0.0), luaL_optboolean(L, 7, 0), luaL_optnumber(L, 8, 0));
+  const int luaClientFlag = 1 << 26;
+  const int luaServerFlag = 1 << 27;
+  int flags = luaL_optint( L, 3, 0 );
+  if ( !( flags & FCVAR_DONTRECORD ) )
+    flags |= FCVAR_DEMO;
+#ifdef CLIENT_DLL
+  if ( flags & FCVAR_REPLICATED )
+    flags &= ~FCVAR_ARCHIVE;
+#endif
+  flags &= ~( FCVAR_CLIENTDLL | FCVAR_GAMEDLL | luaClientFlag | luaServerFlag );
+#ifdef CLIENT_DLL
+  if ( L == LGameUI )
+    flags &= ~FCVAR_ARCHIVE;
+  else
+    flags |= FCVAR_CLIENTDLL | FCVAR_SERVER_CAN_EXECUTE | luaClientFlag;
+#else
+  flags |= FCVAR_GAMEDLL | luaServerFlag;
+#endif
+  ConVar *pConVar = new ConVar(strdup(pName), pDefault, flags, strdup(luaL_optstring(L, 4, 0)), luaL_optboolean(L, 5, 0), luaL_optnumber(L, 6, 0.0), luaL_optboolean(L, 7, 0), luaL_optnumber(L, 8, 0));
 
   // HL2SB (2026-09-24): register with the engine cvar system.  GMod's
   // Lua-created convars ARE console-visible/queryable ("halo_draw" etc.);
