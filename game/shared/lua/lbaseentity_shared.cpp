@@ -3269,7 +3269,65 @@ static int CBaseEntity_SetSimulationTime (lua_State *L) {
 }
 
 static int CBaseEntity_SetSize (lua_State *L) {
-  luaL_checkentity(L, 1)->SetSize(luaL_checkvector(L, 2), luaL_checkvector(L, 3));
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  if ( lua_isnumber( L, 2 ) && lua_isnoneornil( L, 3 ) )
+  {
+    // GMod's widget_base:SetSize(number) is a Lua helper, while this fork's
+    // native Entity:SetSize normally takes two vectors. Keep the original
+    // vector overload and provide the widget contract when the Lua base class
+    // is missing from a runtime registered widget instance.
+    const float size = (float)lua_tonumber( L, 2 );
+    const Vector bounds( size, size, size );
+    entity->SetSolid( SOLID_BBOX );
+    entity->SetCollisionBounds( bounds * -0.5f, bounds * 0.5f );
+
+    if ( entity->m_nTableReference >= 0 && lua_isrefvalid( L, entity->m_nTableReference ) )
+    {
+      lua_getref( L, entity->m_nTableReference );
+      lua_getfield( L, -1, "SetSizeVar" );
+      if ( lua_isfunction( L, -1 ) )
+      {
+        lua_pushvalue( L, 1 );
+        lua_pushnumber( L, size );
+        luasrc_pcall( L, 2, 0, 0 );
+      }
+      else
+      {
+        lua_pop( L, 1 );
+      }
+      lua_pushnumber( L, size );
+      lua_setfield( L, -2, "__hl2sb_widget_size" );
+      lua_pop( L, 1 );
+    }
+    return 0;
+  }
+  entity->SetSize(luaL_checkvector(L, 2), luaL_checkvector(L, 3));
+  return 0;
+}
+
+static int CBaseEntity_GetWidgetSize (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  if ( entity->m_nTableReference >= 0 && lua_isrefvalid( L, entity->m_nTableReference ) )
+  {
+    lua_getref( L, entity->m_nTableReference );
+    lua_getfield( L, -1, "__hl2sb_widget_size" );
+    if ( lua_isnumber( L, -1 ) ) { lua_remove( L, -2 ); return 1; }
+    lua_pop( L, 2 );
+  }
+  lua_pushnumber( L, 0.0f );
+  return 1;
+}
+
+static int CBaseEntity_SetWidgetSize (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  const float size = (float)luaL_checknumber( L, 2 );
+  if ( entity->m_nTableReference >= 0 && lua_isrefvalid( L, entity->m_nTableReference ) )
+  {
+    lua_getref( L, entity->m_nTableReference );
+    lua_pushnumber( L, size );
+    lua_setfield( L, -2, "__hl2sb_widget_size" );
+    lua_pop( L, 1 );
+  }
   return 0;
 }
 
@@ -6802,6 +6860,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetSimulatedEveryTick", CBaseEntity_SetSimulatedEveryTick},
   {"SetSimulationTime", CBaseEntity_SetSimulationTime},
   {"SetSize", CBaseEntity_SetSize},
+  {"GetSizeVar", CBaseEntity_GetWidgetSize},
+  {"SetSizeVar", CBaseEntity_SetWidgetSize},
   {"SetSolid", CBaseEntity_SetSolid},
   {"SetSolidFlags", CBaseEntity_SetSolidFlags},
   {"SetTextureFrameIndex", CBaseEntity_SetTextureFrameIndex},
@@ -6920,9 +6980,38 @@ static int luasrc_CreateEntityByName (lua_State *L) {
 // HL2SB GMod SWEP compat: expose an `ents` library with Create / GetByIndex so
 // GMod scripts calling ents.Create("class") / ents.GetByIndex(i) work.  Create
 // maps to CreateEntityByName; GetByIndex maps to CBaseEntity::Instance.
+static bool HL2SB_EnsureScriptedEntityFactory( lua_State *L, const char *pszClassName )
+{
+  const int top = lua_gettop( L );
+  lua_getglobal( L, "scripted_ents" );
+  if ( !lua_istable( L, -1 ) ) { lua_settop( L, top ); return false; }
+  lua_getfield( L, -1, "GetStored" );
+  if ( !lua_isfunction( L, -1 ) ) { lua_settop( L, top ); return false; }
+  lua_pushstring( L, pszClassName );
+  if ( luasrc_pcall( L, 1, 1, 0 ) != 0 || !lua_istable( L, -1 ) )
+  { lua_settop( L, top ); return false; }
+
+  lua_getfield( L, -1, "type" );
+  const bool bNextBot = lua_isstring( L, -1 ) &&
+    !Q_stricmp( lua_tostring( L, -1 ), "nextbot" );
+  lua_settop( L, top );
+  if ( bNextBot ) return false;
+
+  RegisterScriptedEntity( pszClassName );
+  return true;
+}
+
 static int luasrc_ents_Create (lua_State *L) {
   const char *pszClassName = luaL_checkstring(L, 1);
+  const bool bRuntimeFactory = HL2SB_EnsureScriptedEntityFactory( L, pszClassName );
   CBaseEntity *pEntity = CreateEntityByName(pszClassName);
+
+  // GMod's entity factory falls back to classes registered at runtime through
+  // scripted_ents.Register. The normal loader installs factories for files in
+  // lua/entities, but runtime registrations such as widget subclasses have no
+  // file of their own. Install the generic scripted factory lazily and retry.
+  if ( pEntity == NULL && !bRuntimeFactory && HL2SB_EnsureScriptedEntityFactory( L, pszClassName ) )
+    pEntity = CreateEntityByName( pszClassName );
 
   /* HL2SB (2026-10-07): the push below is a plain lua_pushentity -- see the
   ** comment before it for why this must NOT become PushLuaInstanceSafe.

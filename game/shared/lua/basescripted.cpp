@@ -153,6 +153,59 @@ CBaseScripted::~CBaseScripted( void )
 #endif
 }
 
+static void HL2SB_MergeMissingEntityFields( lua_State *L, int destination, int source )
+{
+  destination = lua_absindex( L, destination );
+  source = lua_absindex( L, source );
+  lua_pushnil( L );
+  while ( lua_next( L, source ) != 0 )
+  {
+    lua_pushvalue( L, -2 );
+    lua_rawget( L, destination );
+    const bool missing = lua_isnil( L, -1 );
+    lua_pop( L, 1 );
+    if ( missing )
+    {
+      lua_pushvalue( L, -2 );
+      lua_pushvalue( L, -2 );
+      lua_rawset( L, destination );
+    }
+    lua_pop( L, 1 );
+  }
+}
+
+static void HL2SB_MergeScriptedBaseChain( lua_State *L, int destination )
+{
+  destination = lua_absindex( L, destination );
+  char current[128] = "";
+  lua_getfield( L, destination, "Base" );
+  if ( lua_isstring( L, -1 ) )
+    Q_strncpy( current, lua_tostring( L, -1 ), sizeof( current ) );
+  lua_pop( L, 1 );
+
+  for ( int depth = 0; current[0] != '\0' && depth < 32; ++depth )
+  {
+    const int top = lua_gettop( L );
+    lua_getglobal( L, "scripted_ents" );
+    if ( !lua_istable( L, -1 ) ) { lua_settop( L, top ); break; }
+    lua_getfield( L, -1, "Get" );
+    if ( !lua_isfunction( L, -1 ) ) { lua_settop( L, top ); break; }
+    lua_remove( L, -2 );
+    lua_pushstring( L, current );
+    if ( luasrc_pcall( L, 1, 1, 0 ) != 0 || !lua_istable( L, -1 ) )
+    { lua_settop( L, top ); break; }
+
+    char next[128] = "";
+    lua_getfield( L, -1, "Base" );
+    if ( lua_isstring( L, -1 ) )
+      Q_strncpy( next, lua_tostring( L, -1 ), sizeof( next ) );
+    lua_pop( L, 1 );
+    HL2SB_MergeMissingEntityFields( L, destination, -1 );
+    lua_settop( L, top );
+    Q_strncpy( current, next, sizeof( current ) );
+  }
+}
+
 void CBaseScripted::LoadScriptedEntity( void )
 {
   const char *pszScriptClass = NULL;
@@ -190,6 +243,7 @@ void CBaseScripted::LoadScriptedEntity( void )
   if ( lua_istable( L, -1 ) )
   {
     const int leaf = lua_gettop( L );
+
     lua_getglobal( L, "scripted_ents" );
     if ( lua_istable( L, -1 ) )
     {
@@ -202,6 +256,10 @@ void CBaseScripted::LoadScriptedEntity( void )
         const int instanceTable = lua_gettop( L );
         if ( luasrc_pcall( L, 2, 1, 0 ) == 0 && lua_istable( L, -1 ) )
         {
+          // Keep runtime scripted_ents overrides while filling any missing
+          // methods from the file-backed entity table and its base chain.
+          HL2SB_MergeMissingEntityFields( L, -1, leaf );
+          HL2SB_MergeScriptedBaseChain( L, -1 );
           lua_remove( L, leaf );
         }
         else
