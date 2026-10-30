@@ -919,6 +919,13 @@ static int IPhysicsObject_GetName (lua_State *L) {
   return 1;
 }
 
+static int IPhysicsObject_GetAngles (lua_State *L) {
+  QAngle angles;
+  luaL_checkphysicsobject(L, 1)->GetPosition(NULL, &angles);
+  lua_pushangle(L, angles);
+  return 1;
+}
+
 static int IPhysicsObject_GetPosition (lua_State *L) {
   Vector worldPosition;
   QAngle angles;
@@ -1334,6 +1341,7 @@ static const luaL_Reg IPhysicsObjectmeta[] = {
   {"EnableGravity", IPhysicsObject_EnableGravity},
   {"EnableMotion", IPhysicsObject_EnableMotion},
   {"GetAngleVelocity", IPhysicsObject_GetAngleVelocity},
+  {"GetAngles", IPhysicsObject_GetAngles},
   {"GetCallbackFlags", IPhysicsObject_GetCallbackFlags},
   {"GetContactPoint", IPhysicsObject_GetContactPoint},
   {"GetContents", IPhysicsObject_GetContents},

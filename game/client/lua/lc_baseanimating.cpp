@@ -7,6 +7,8 @@
 #define lc_baseanimating_cpp
 
 #include "cbase.h"
+#include "basecombatweapon_shared.h"
+#include "activitylist.h"
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lc_baseanimating.h"
@@ -24,6 +26,8 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "lua/hl2sb_flexmanipulator.h"
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 // ===== HL2SB GMod compat (2026-09-24): Entity callbacks =====================
@@ -493,7 +497,15 @@ static int CBaseAnimating_DrawModel (lua_State *L) {
 
   // Use the same scripted draw scope as the Entity metatable binding.
   int nFlags = luaL_optint( L, 2, STUDIO_RENDER );
-  if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL )
+  C_BaseCombatWeapon *pWeapon = dynamic_cast<C_BaseCombatWeapon *>( pEntity );
+  if ( pWeapon != NULL && pWeapon->IsScripted() )
+  {
+    // GMod Entity:DrawModel from a SWEP world-model callback draws the
+    // model directly. Calling the weapon virtual here would dispatch
+    // DrawWorldModel again and recurse through weapon_base.lua.
+    nResult = pEntity->InternalDrawModel( nFlags );
+  }
+  else if ( dynamic_cast<CBaseScripted *>( pEntity ) != NULL )
     nResult = pEntity->DrawModel( nFlags );
   else
     nResult = pEntity->InternalDrawModel( nFlags );
@@ -920,6 +932,90 @@ static int CBaseAnimating_GetBodygroupCount (lua_State *L) {
 
 static int CBaseAnimating_GetBodygroupName (lua_State *L) {
   lua_pushstring(L, luaL_checkanimating(L, 1)->GetBodygroupName(luaL_checkint(L, 2)));
+  return 1;
+}
+
+// HL2SB: the bodygroup list the reference publishes as Entity:GetBodyGroups --
+// an array of { name, id (0-based part index), num (model count),
+// submodels = { model names } }, one entry per studio bodypart.  A self with
+// no studio model (or dormant) answers an EMPTY table.  The bodygroups
+// property Filter runs this on the CLIENT, so without it that context-menu
+// entry errored and vanished.
+static int CBaseAnimating_GetBodyGroups (lua_State *L) {
+  C_BaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+
+  lua_newtable( L );
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 1;
+
+  int nParts = pStudioHdr->numbodyparts();
+  for ( int i = 0; i < nParts; ++i ) {
+    mstudiobodyparts_t *pPart = pStudioHdr->pBodypart( i );
+    if ( pPart == NULL )
+      continue;
+
+    lua_newtable( L );
+      lua_pushstring( L, pPart->pszName() );   lua_setfield( L, -2, "name" );
+      lua_pushinteger( L, i );                 lua_setfield( L, -2, "id" );
+      lua_pushinteger( L, pPart->nummodels );  lua_setfield( L, -2, "num" );
+      lua_newtable( L );
+      for ( int j = 0; j < pPart->nummodels; ++j ) {
+        lua_pushstring( L, pPart->pModel( j )->pszName() );
+        lua_rawseti( L, -2, j + 1 );
+      }
+      lua_setfield( L, -2, "submodels" );
+    lua_rawseti( L, -2, i + 1 );
+  }
+  return 1;
+}
+
+// HL2SB: Entity:SkinCount -- no studio model means NO return values (nil),
+// matching the reference; the skin property Filter compares with > directly.
+static int CBaseAnimating_SkinCount (lua_State *L) {
+  C_BaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 0;
+  lua_pushinteger( L, pStudioHdr->numskinfamilies() );
+  return 1;
+}
+
+// HL2SB: Entity:GetBoneParent -- parent bone index, or -1 for an out-of-range
+// bone / no model (the reference pushes -1 in those cases, never errors).
+static int CBaseAnimating_GetBoneParent (lua_State *L) {
+  CStudioHdr *pStudioHdr = luaL_checkanimating( L, 1 )->GetModelPtr();
+  if ( pStudioHdr == NULL ) {
+    lua_pushnumber( L, -1 );
+    return 1;
+  }
+  int iBone = luaL_checkint( L, 2 );
+  if ( iBone < 0 || iBone >= pStudioHdr->numbones() ) {
+    lua_pushnumber( L, -1 );
+    return 1;
+  }
+  lua_pushinteger( L, pStudioHdr->pBone( iBone )->parent );
+  return 1;
+}
+
+// HL2SB: Entity:BoneHasFlag( bone, flag ) -- the studio bone-flag reader the
+// bone tool's Setup uses to skip non-deform bones (the reference carries this
+// natively on both realms, server.dll 0x18018a200).  No model / dormant /
+// out-of-range answers false.
+static int CBaseAnimating_BoneHasFlag (lua_State *L) {
+  C_BaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 0;
+
+  const int iBone = (int)luaL_checknumber( L, 2 );
+  const int iFlag = (int)luaL_checknumber( L, 3 );
+  if ( iBone < 0 || iBone >= pStudioHdr->numbones() )
+  {
+    lua_pushboolean( L, 0 );
+    return 1;
+  }
+  lua_pushboolean( L, ( pStudioHdr->pBone( iBone )->flags & iFlag ) != 0 );
   return 1;
 }
 
@@ -1557,7 +1653,15 @@ static int CBaseAnimating_RetrieveRagdollInfo (lua_State *L) {
 }
 
 static int CBaseAnimating_SelectWeightedSequence (lua_State *L) {
-  lua_pushinteger(L, luaL_checkanimating(L, 1)->SelectWeightedSequence(luaL_checkint(L, 2)));
+  CBaseAnimating *entity = luaL_checkanimating(L, 1);
+  const int activity = luaL_checkint(L, 2);
+  const char *name = NULL;
+  if ( activity == ACT_GMOD_SIT_ROLLERCOASTER ) name = "sit_rollercoaster";
+  else if ( activity == ACT_HL2MP_SIT ) name = "sit";
+  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_JEEP") ) name = "drive_jeep";
+  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_AIRBOAT") ) name = "drive_airboat";
+  int sequence = name ? entity->LookupSequence(name) : -1;
+  lua_pushinteger(L, sequence >= 0 ? sequence : entity->SelectWeightedSequence((Activity)activity));
   return 1;
 }
 
@@ -2021,6 +2125,7 @@ static int CBaseAnimating___newindex (lua_State *L) {
           // heal merges the class table over it (SCP173_Coroutine on every
           // entity is its render-group loop running before the hands bind).
           // Info line, not an error - GMod has no pre-bind window at all.
+          if ( hl2sb_dev_msgs.GetBool() )
           Msg( "[HL2SB] pre-bind field write '%s' on scripted entity ent=%d (class '%s') - kept in an auto-table, healed at OnDataChanged\n",
                field, pEntity->entindex(), pScripted->GetScriptedClassname() );
         }
@@ -2135,6 +2240,10 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetBodygroups", CBaseAnimating_GetBodygroups},
   {"GetBodygroupCount", CBaseAnimating_GetBodygroupCount},
   {"GetBodygroupName", CBaseAnimating_GetBodygroupName},
+  {"GetBodyGroups", CBaseAnimating_GetBodyGroups},
+  {"SkinCount", CBaseAnimating_SkinCount},
+  {"GetBoneParent", CBaseAnimating_GetBoneParent},
+  {"BoneHasFlag", CBaseAnimating_BoneHasFlag},
   {"GetBoneControllers", CBaseAnimating_GetBoneControllers},
   {"GetBonePosition", CBaseAnimating_GetBonePosition},
   {"GetClientSideFade", CBaseAnimating_GetClientSideFade},

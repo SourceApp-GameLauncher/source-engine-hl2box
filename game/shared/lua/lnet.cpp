@@ -42,9 +42,33 @@
 #include "lobject.h"
 #include "luamanager.h"
 #include "mathlib/lvector.h"
+#include "mathlib/vmatrix.h"
+#include "mathlib/lvmatrix.h"
 #include <lColor.h>
 #include "usermessages.h"
 #include "tier1/bitbuf.h"
+
+static void HL2SB_RegisterNetConstants( lua_State *L )
+{
+    static const struct { const char *name; int value; } types[] = {
+        { "TYPE_NIL", 0 }, { "TYPE_BOOL", 1 }, { "TYPE_LIGHTUSERDATA", 2 },
+        { "TYPE_NUMBER", 3 }, { "TYPE_STRING", 4 }, { "TYPE_TABLE", 5 },
+        { "TYPE_FUNCTION", 6 }, { "TYPE_USERDATA", 7 }, { "TYPE_THREAD", 8 },
+        { "TYPE_ENTITY", 9 }, { "TYPE_VECTOR", 10 }, { "TYPE_ANGLE", 11 },
+        { "TYPE_MATRIX", 29 }, { "TYPE_COLOR", 255 }
+    };
+    for ( int i = 0; i < ARRAYSIZE( types ); ++i )
+    {
+        lua_pushinteger( L, types[i].value );
+        lua_setglobal( L, types[i].name );
+    }
+    lua_pushinteger( L, MAX_EDICT_BITS );
+    lua_setglobal( L, "MAX_EDICT_BITS" );
+    int playerBits = 0;
+    for ( unsigned int limit = ABSOLUTE_PLAYER_LIMIT; limit; limit >>= 1 ) ++playerBits;
+    lua_pushinteger( L, playerBits );
+    lua_setglobal( L, "MAX_PLAYER_BITS" );
+}
 
 // HL2SB GMod compat: color support for net.WriteColor
 // HL2SB GMod compat (2026-09-25): net.WriteTable / net.ReadTable reuse the
@@ -293,11 +317,26 @@ static int net_ReadFloat( lua_State *L )
 static int net_ReadDouble( lua_State *L )
 {
 	bf_read *pRead = Net_GetRead();
-	lua_pushnumber( L, pRead ? pRead->ReadLongLong() : 0.0f );
+	if ( !pRead ) return 0;
+	double value = 0.0;
+	pRead->ReadBits( &value, 64 );
+	lua_pushnumber( L, value );
 	return 1;
 }
 
 // net.ReadVector() -> Vector
+static int net_ReadMatrix( lua_State *L )
+{
+    bf_read *reader = Net_GetRead();
+    if ( !reader ) return 0;
+    VMatrix matrix;
+    for ( int row = 0; row < 4; ++row )
+        for ( int col = 0; col < 4; ++col )
+            matrix[row][col] = reader->ReadFloat();
+    lua_pushvmatrix( L, matrix );
+    return 1;
+}
+
 static int net_ReadVector( lua_State *L )
 {
 	Vector v;
@@ -514,8 +553,19 @@ static int net_WriteDouble( lua_State *L )
 {
 	if ( !g_cnetActive )
 		return 0;
-	g_cnetWrite.WriteLongLong( (int64)luaL_checknumber( L, 1 ) );
+	const double value = luaL_checknumber( L, 1 );
+	g_cnetWrite.WriteBits( &value, 64 );
 	return 0;
+}
+
+static int net_WriteMatrix( lua_State *L )
+{
+    if ( !g_cnetActive ) return 0;
+    const VMatrix &matrix = luaL_checkvmatrix( L, 1 );
+    for ( int row = 0; row < 4; ++row )
+        for ( int col = 0; col < 4; ++col )
+            g_cnetWrite.WriteFloat( matrix[row][col] );
+    return 0;
 }
 
 static int net_WriteVector( lua_State *L )
@@ -636,7 +686,13 @@ static int net_SendToServer( lua_State *L )
 		luasrc_LuaWarnMsgF( "Trying to send an overflowed net message!\n" );
 	}
 
-	engine->SendLuaNetMessage( g_cnetWrite.GetData(), g_cnetWrite.GetNumBitsWritten(), g_cnetReliable );
+	// A refused send used to be silently dropped; every property action rides
+	// this path, so report it instead of leaving a dead click with no trace.
+	if ( !engine->SendLuaNetMessage( g_cnetWrite.GetData(), g_cnetWrite.GetNumBitsWritten(), g_cnetReliable ) )
+	{
+		luasrc_LuaWarnMsgF( "net.SendToServer: engine refused message '%s' (%d bits)\n",
+			g_cnetName.Get(), g_cnetWrite.GetNumBitsWritten() );
+	}
 	return 0;
 }
 
@@ -649,6 +705,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "WriteString",  net_WriteString },
 	{ "WriteFloat",   net_WriteFloat },
 	{ "WriteDouble",  net_WriteDouble },
+	{ "WriteMatrix",  net_WriteMatrix },
 	{ "WriteVector",  net_WriteVector },
 	{ "WriteNormal",  net_WriteNormal },
 	{ "WriteAngle",   net_WriteAngle },
@@ -671,6 +728,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "ReadString",   net_ReadString },
 	{ "ReadFloat",    net_ReadFloat },
 	{ "ReadDouble",   net_ReadDouble },
+	{ "ReadMatrix",   net_ReadMatrix },
 	{ "ReadVector",   net_ReadVector },
 	{ "ReadNormal",   net_ReadNormal },
 	{ "ReadAngle",    net_ReadAngle },
@@ -680,6 +738,7 @@ static const luaL_Reg net_funcs[] = {
 
 LUALIB_API int luaopen_net( lua_State *L )
 {
+	HL2SB_RegisterNetConstants( L );
 	// net.Receive / net.Receivers / net.Incoming are created by the Lua
 	// extension (includes/extensions/net.lua), like the reference library.
 	// The client also arms the "LuaNet" usermessage hook here: nothing else
@@ -946,8 +1005,19 @@ static int net_WriteDouble( lua_State *L )
 {
 	if ( !g_netActive )
 		return 0;
-	g_netWrite.WriteLongLong( (int64)luaL_checknumber( L, 1 ) );
+	const double value = luaL_checknumber( L, 1 );
+	g_netWrite.WriteBits( &value, 64 );
 	return 0;
+}
+
+static int net_WriteMatrix( lua_State *L )
+{
+    if ( !g_netActive ) return 0;
+    const VMatrix &matrix = luaL_checkvmatrix( L, 1 );
+    for ( int row = 0; row < 4; ++row )
+        for ( int col = 0; col < 4; ++col )
+            g_netWrite.WriteFloat( matrix[row][col] );
+    return 0;
 }
 
 static int net_WriteVector( lua_State *L )
@@ -1223,6 +1293,14 @@ void HL2SB_LuaNetMessageReceived( edict_t *pEdict, bf_read &msg )
 		else
 		{
 			lua_pop( L, 1 );
+			// A dropped dispatch used to be silent; report it once so a dead
+			// client->server action leaves a trace instead of nothing.
+			static bool s_bReportedNoIncoming = false;
+			if ( !s_bReportedNoIncoming )
+			{
+				s_bReportedNoIncoming = true;
+				luasrc_LuaWarnMsgF( "LuaNetMessage: net.Incoming is not a function -- every Lua net message from clients is being dropped\n" );
+			}
 		}
 	}
 	lua_pop( L, 1 );
@@ -1280,8 +1358,23 @@ static int net_ReadFloat( lua_State *L )
 static int net_ReadDouble( lua_State *L )
 {
 	bf_read *pRead = Net_GetRead();
-	lua_pushnumber( L, pRead ? pRead->ReadLongLong() : 0.0 );
+	if ( !pRead ) return 0;
+	double value = 0.0;
+	pRead->ReadBits( &value, 64 );
+	lua_pushnumber( L, value );
 	return 1;
+}
+
+static int net_ReadMatrix( lua_State *L )
+{
+    bf_read *reader = Net_GetRead();
+    if ( !reader ) return 0;
+    VMatrix matrix;
+    for ( int row = 0; row < 4; ++row )
+        for ( int col = 0; col < 4; ++col )
+            matrix[row][col] = reader->ReadFloat();
+    lua_pushvmatrix( L, matrix );
+    return 1;
 }
 
 static int net_ReadVector( lua_State *L )
@@ -1429,6 +1522,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "WriteString",  net_WriteString },
 	{ "WriteFloat",   net_WriteFloat },
 	{ "WriteDouble",  net_WriteDouble },
+	{ "WriteMatrix",  net_WriteMatrix },
 	{ "WriteVector",  net_WriteVector },
 	{ "WriteNormal",  net_WriteNormal },
 	{ "WriteAngle",   net_WriteAngle },
@@ -1456,6 +1550,7 @@ static const luaL_Reg net_funcs[] = {
 	{ "ReadString",   net_ReadString },
 	{ "ReadFloat",    net_ReadFloat },
 	{ "ReadDouble",   net_ReadDouble },
+	{ "ReadMatrix",   net_ReadMatrix },
 	{ "ReadVector",   net_ReadVector },
 	{ "ReadNormal",   net_ReadNormal },
 	{ "ReadAngle",    net_ReadAngle },
@@ -1465,6 +1560,7 @@ static const luaL_Reg net_funcs[] = {
 
 LUALIB_API int luaopen_net( lua_State *L )
 {
+	HL2SB_RegisterNetConstants( L );
 	// net.Receive / net.Receivers / net.Incoming are created by the Lua
 	// extension (includes/extensions/net.lua), like the reference library.
 	luaL_register( L, "net", net_funcs );

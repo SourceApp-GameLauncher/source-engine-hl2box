@@ -15,6 +15,7 @@ ConVar physgun_halo( "physgun_halo", "1", FCVAR_ARCHIVE, "Draw the physgun halo 
 ConVar physgun_halo_shell( "physgun_halo_shell", "0", FCVAR_ARCHIVE, "Draw the legacy whole-model physgun glow shell" );
 ConVar physgun_drawbeams( "physgun_drawbeams", "1", FCVAR_ARCHIVE, "Draw the physgun beams" );
 #ifdef CLIENT_DLL
+extern int HL2SB_LuaSetDOFMode( lua_State *state );
 #include "rendertexture.h"
 #include "view_scene.h"
 #include <materialsystem/imaterialsystem.h>
@@ -48,6 +49,8 @@ class CMatCallQueue;
 #define STBI_WRITE_NO_STDIO
 #include "../../../thirdparty/stb/stb_image_write.h"
 #include "tier1/utlbuffer.h"
+#include "tier2/renderutils.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -281,30 +284,19 @@ LUA_BINDING_BEGIN( Renders, GetScreenEffectTexture, "library", "Get the screen e
 }
 LUA_BINDING_END( "Texture", "The screen effect texture." )
 
-// HL2SB (2026-10-02) GMod compat: render.GetMoBlurTex0() -- the motion-blur
-// accumulation target lua/postprocess/motion_blur.lua draws with.  GMod's
-// client lazily creates a named 256x256 render target ("s_pMoBlurTex0") on
-// first use; do the same through the same creation call the spawnicon
-// snapshot helper uses, so repeated calls return the same texture.
-// HL2SB (2026-10-02, second pass): the creation must sit inside a render
-// target allocation window -- CMaterialSystem refuses named RT creation
-// outside one (Warning + NULL every call), which meant a per-frame failed
-// attempt + warning once DrawMotionBlur ran from the HUD (213 warnings in
-// one session).  Wrap the one-shot creation in the public allocation APIs.
+// Motion-blur targets use full-frame dimensions and the backbuffer format.
 LUA_BINDING_BEGIN( Renders, GetMoBlurTex0, "library", "Get the motion blur render target texture.", "client" )
 {
     static ITexture *s_pMoBlurTex0 = NULL;
     if ( s_pMoBlurTex0 == NULL )
     {
-        materials->BeginRenderTargetAllocation();
-        s_pMoBlurTex0 = materials->CreateNamedRenderTargetTextureEx2(
-            "s_pMoBlurTex0", 256, 256, RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA8888,
+        s_pMoBlurTex0 = materials->CreateNamedRenderTargetTextureEx(
+            "s_pMoBlurTex0", 256, 256, RT_SIZE_FULL_FRAME_BUFFER, materials->GetBackBufferFormat(),
             MATERIAL_RT_DEPTH_SEPARATE,
-            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD,
-            0 );
-        materials->EndRenderTargetAllocation();
-        if ( s_pMoBlurTex0 == NULL )
+            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, CREATERENDERTARGETFLAGS_HDR );
+        if ( s_pMoBlurTex0 == NULL || s_pMoBlurTex0->IsError() )
         {
+            s_pMoBlurTex0 = NULL;
             lua_pushnil( L );
             return 1;
         }
@@ -313,6 +305,14 @@ LUA_BINDING_BEGIN( Renders, GetMoBlurTex0, "library", "Get the motion blur rende
     return 1;
 }
 LUA_BINDING_END( "Texture", "The motion blur texture." )
+
+LUA_BINDING_BEGIN( Renders, GetResolvedFullFrameDepth, "library", "Returns the resolved full-frame depth texture.", "client" )
+{
+    ITexture *pTexture = materials->FindTexture( "_rt_ResolvedFullFrameDepth", TEXTURE_GROUP_RENDER_TARGET, true, NULL );
+    lua_pushitexture( L, pTexture );
+    return 1;
+}
+LUA_BINDING_END( "Texture", "The resolved full-frame depth texture." )
 
 LUA_BINDING_BEGIN( Renders, EnableClipping, "library", "Enable or disable clipping, returns the previous state.", "client" )
 {
@@ -512,6 +512,41 @@ LUA_BINDING_END()
 // (this render context has no GetBoundMaterial).  Defined here so the
 // DrawScreenQuad binding below sees it; SetMaterial (further down) writes it.
 static IMaterial *s_pRendersLastSetMaterial = NULL;
+
+LUA_BINDING_BEGIN( Renders, DrawBox, "library", "Draws an oriented box with the current material.", "client" )
+{
+    const Vector origin = luaL_checkvector( L, 1 );
+    const QAngle angles = luaL_checkangle( L, 2 );
+    const Vector mins = luaL_checkvector( L, 3 );
+    const Vector maxs = luaL_checkvector( L, 4 );
+    const lua_Color color = luaL_checkcolor( L, 5 );
+    if ( s_pRendersLastSetMaterial )
+        RenderBox( origin, angles, mins, maxs,
+            Color( color.r(), color.g(), color.b(), color.a() ), s_pRendersLastSetMaterial, false );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SupportsPixelShaders_2_0, "library", "Queries pixel shader 2.0 support.", "client" )
+{
+    lua_pushboolean( L, g_pMaterialSystemHardwareConfig &&
+        g_pMaterialSystemHardwareConfig->SupportsPixelShaders_2_0() );
+    return 1;
+}
+LUA_BINDING_END()
+
+static int luasrc_GetRenderTarget( lua_State *L )
+{
+    const char *name = luaL_checkstring( L, 1 );
+    const int width = (int)luaL_checknumber( L, 2 );
+    const int height = (int)luaL_checknumber( L, 3 );
+    ITexture *texture = materials->CreateNamedRenderTargetTextureEx(
+        name, width, height, RT_SIZE_NO_CHANGE, materials->GetBackBufferFormat(),
+        MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_TRILINEAR | TEXTUREFLAGS_NOMIP, 0 );
+    if ( !texture || texture->IsError() ) return 0;
+    lua_pushitexture( L, texture );
+    return 1;
+}
 
 //-----------------------------------------------------------------------------
 // HL2SB (2026-09-22): the primitives GMod's halo.lua and the client render.lua
@@ -1774,18 +1809,94 @@ LUA_BINDING_BEGIN( Renders, SetBlend, "library", "Set the blend.", "client" )
 }
 LUA_BINDING_END()
 
-LUA_BINDING_BEGIN( Renders, ClearBuffers, "library", "Clear the buffers.", "client" )
+LUA_BINDING_BEGIN( Renders, FogMode, "library", "Set the mode of fog.", "client" )
 {
-    bool bClearColor = LUA_BINDING_ARGUMENT( lua_toboolean, 1, "clearColor" );
-    bool bClearDepth = LUA_BINDING_ARGUMENT( lua_toboolean, 2, "clearDepth" );
-    bool bClearStencil = LUA_BINDING_ARGUMENT( lua_toboolean, 3, "clearStencil" );
-
+    const int nFogMode = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "fogMode" );
     CMatRenderContextPtr pRenderContext( materials );
-    pRenderContext->ClearBuffers( bClearColor, bClearDepth, bClearStencil );
-
+    pRenderContext->FogMode( ( MaterialFogMode_t )nFogMode );
     return 0;
 }
 LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, FogStart, "library", "Set the fog start distance.", "client" )
+{
+    const float flStart = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "start" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogStart( flStart );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, FogEnd, "library", "Set the fog end distance.", "client" )
+{
+    const float flEnd = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "end" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogEnd( flEnd );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SetFogZ, "library", "Set the fog Z distance.", "client" )
+{
+    const float flFogZ = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "fogZ" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->SetFogZ( flFogZ );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, FogColor, "library", "Set the fog color.", "client" )
+{
+    const int nRed = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "red" ) & 0xff;
+    const int nGreen = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "green" ) & 0xff;
+    const int nBlue = ( int )LUA_BINDING_ARGUMENT( luaL_checknumber, 3, "blue" ) & 0xff;
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogColor3ub( ( unsigned char )nRed, ( unsigned char )nGreen, ( unsigned char )nBlue );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, GetFogColor, "library", "Get the fog color.", "client" )
+{
+    unsigned char rgb[ 3 ] = { 0, 0, 0 };
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->GetFogColor( rgb );
+    lua_pushnumber( L, rgb[ 0 ] );
+    lua_pushnumber( L, rgb[ 1 ] );
+    lua_pushnumber( L, rgb[ 2 ] );
+    return 3;
+}
+LUA_BINDING_END( "number", "Red", "number", "Green", "number", "Blue" )
+
+LUA_BINDING_BEGIN( Renders, GetFogDistances, "library", "Get the fog distances.", "client" )
+{
+    float flStart = 0.0f, flEnd = 0.0f, flFogZ = 0.0f;
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->GetFogDistances( &flStart, &flEnd, &flFogZ );
+    lua_pushnumber( L, flStart );
+    lua_pushnumber( L, flEnd );
+    lua_pushnumber( L, flFogZ );
+    return 3;
+}
+LUA_BINDING_END( "number", "Start", "number", "End", "number", "Fog Z" )
+
+LUA_BINDING_BEGIN( Renders, FogMaxDensity, "library", "Set the maximum fog density.", "client" )
+{
+    const float flDensity = ( float )LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "density" );
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->FogMaxDensity( flDensity );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, GetFogMode, "library", "Get the fog mode.", "client" )
+{
+    CMatRenderContextPtr pRenderContext( materials );
+    lua_pushnumber( L, ( int )pRenderContext->GetFogMode() );
+    return 1;
+}
+LUA_BINDING_END( "number", "Fog mode" )
+
 
 LUA_BINDING_BEGIN( Renders, ClearDepth, "library", "Clears depth and optionally stencil while preserving color.", "client" )
 {
@@ -3063,8 +3174,12 @@ LUALIB_API int luaopen_render( lua_State *L )
     LUA_REGISTRATION_COMMIT_LIBRARY( Renders );
 
 #ifdef CLIENT_DLL
+    lua_pushcfunction( L, HL2SB_LuaSetDOFMode );
+    lua_setglobal( L, "DOFModeHack" );
     lua_getfield(L, -1, "GetViewEntity");
     lua_setglobal(L, "GetViewEntity");
+    lua_pushcfunction( L, luasrc_GetRenderTarget );
+    lua_setglobal( L, "GetRenderTarget" );
 
     // HL2SB: the cam library -- cam.Start( {type="3D"/"2D", ...} ) / cam.End() /
     // cam.IgnoreZ().  The content render.lua shim builds cam.Start3D/Start2D on
@@ -3082,6 +3197,12 @@ LUALIB_API int luaopen_render( lua_State *L )
         lua_pushinteger(L, i);
         lua_setglobal(L, primitiveNames[i]);
     }
+
+    LUA_SET_ENUM_LIB_BEGIN( L, "MATERIAL_FOG" );
+    lua_pushenum_nobare( L, MATERIAL_FOG_NONE, "NONE" );
+    lua_pushenum_nobare( L, MATERIAL_FOG_LINEAR, "LINEAR" );
+    lua_pushenum_nobare( L, MATERIAL_FOG_LINEAR_BELOW_FOG_Z, "LINEAR_BELOW_FOG_Z" );
+    LUA_SET_ENUM_LIB_END( L );
 
     LUA_SET_ENUM_LIB_BEGIN( L, "CULL_MODE" );
     lua_pushenum( L, MaterialCullMode_t::MATERIAL_CULLMODE_CCW, "COUNTER_CLOCKWISE" );

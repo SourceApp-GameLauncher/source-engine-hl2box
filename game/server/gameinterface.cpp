@@ -962,23 +962,35 @@ bool CServerGameDLL::IsRestoring()
 }
 
 // Called any time a new level is started (after GameInit() also on level transitions within a game)
+// Apply launch values after the gamemode has registered its ConVars. Parse
+// KeyValues natively so empty strings and quoted persistence names survive.
+static void ApplyMenuLaunchSettings()
+{
+ if(engine->IsDedicatedServer())return;
+ KeyValues *saved=new KeyValues("ServerConfig");
+ KeyValues *definition=new KeyValues("Gamemode");
+ char path[256];Q_snprintf(path,sizeof(path),"gamemodes/%s/%s.txt",gamemode.GetString(),gamemode.GetString());
+ if(saved->LoadFromFile(filesystem,"ServerConfig.vdf","GAME")&&definition->LoadFromFile(filesystem,path,"GAME"))
+ {
+  KeyValues *settings=definition->FindKey("settings");
+  if(settings)FOR_EACH_SUBKEY(settings,setting)
+  {
+   const char *name=setting->GetString("name");
+   if(!name[0]||!saved->FindKey(name))continue;
+   ConVar *cv=g_pCVar->FindVar(name);
+   if(cv&&Q_strcmp(cv->GetString(),saved->GetString(name)))cv->SetValue(saved->GetString(name));
+  }
+ }
+ definition->deleteThis();saved->deleteThis();
+}
+
 bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, char const *pOldLevel, char const *pLandmarkName, bool loadGame, bool background )
 {
 	VPROF("CServerGameDLL::LevelInit");
 
-	// HL2SB: this fork's gamemodes never instantiate the player resource, so
-	// the per-player scoreboard data it networks to every client (ping, score,
-	// deaths, team) never existed; Player:Ping on the client reads that copy,
-	// the same way GMod's player resource feeds its scoreboard.  Recreated
-	// every level: the entity is FCAP_DONT_SAVE, so a save/restore cycle drops
-	// it and a stale pointer must not survive LevelInit.
+	// CreateStandardEntities creates the player resource with the world.
+	// Clear the previous level's pointer without creating a second resource.
 	g_pPlayerResource = NULL;
-	CPlayerResource *pPlayerResource = static_cast< CPlayerResource * >( CreateEntityByName( "player_manager" ) );
-	if ( pPlayerResource )
-	{
-		g_pPlayerResource = pPlayerResource;
-		pPlayerResource->Spawn();
-	}
 
 #ifdef USES_ECON_ITEMS
 	GameItemSchema_t *pItemSchema = ItemSystem()->GetItemSchema();
@@ -1001,10 +1013,7 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	// the same function; the .hl2sb_gma marker makes the second call cheap.
 	HL2SB_MountGMAAddons();
 
-	// HL2SB: see the client call site -- extensions/ is scanned before modules/,
-	// and extensions/util/worldpicker.lua:40 indexes `hook` at load time, so the
-	// hook module has to exist first.  The modules pass skips it again.
-	luasrc_dofile_includes( L, "modules/hook.lua" );
+	// The native state bootstrap prepares type helpers and dispatch before extensions.
 
 	luasrc_dofolder( L, LUA_PATH_EXTENSIONS );
 	luasrc_dofolder( L, LUA_PATH_MODULES );
@@ -1033,11 +1042,11 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN, false );
 	luasrc_dofolder_sorted( L, LUA_PATH_AUTORUN_SERVER, true );
 
-	// HL2SB (2026-10-08) GMod compat: lua/matproxy/*.lua on the server realm
-	// too (see the client call site) -- GMod loads the folder on both realms
-	// and the registration is a plain table entry here, keeping the realms in
-	// step for lua_reloadents.
-	luasrc_dofolder( L, LUA_ROOT "/matproxy" );
+	// HL2SB: lua/drive/*.lua -- GMod's drive types, registered on BOTH realms;
+	// the sandbox "drive" property runs drive.PlayerStartDriving on the SERVER,
+	// so the mode tables must exist here too or the action dies on
+	// "Unknown drive type".
+	luasrc_dofolder_sorted( L, LUA_ROOT "/drive", false );
 
 	// GMod's loading order (wiki: Lua Loading Order): weapons, entities and
 	// effects are loaded AFTER the gamemode files, so a gamemode can register its
@@ -1065,6 +1074,7 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 
 	BEGIN_LUA_CALL_HOOK( "PostGamemodeLoaded" );
 	END_LUA_CALL_HOOK( 0, 0 );
+	ApplyMenuLaunchSettings();
 
 	luasrc_LoadWeapons();
 	luasrc_LoadEntities();

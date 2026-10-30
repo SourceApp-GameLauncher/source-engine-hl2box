@@ -147,7 +147,6 @@ public:
 	void	HL2SB_SetCameraDistance( float flDistance ) { m_flCameraDistance = flDistance; }
 	const char *HL2SB_GetVehicleClass( void ) const { return m_szVehicleClass; }
 	void	HL2SB_SetVehicleClass( const char *pszClass );
-	void	HL2SB_UpdateCameraState( CBasePlayer *pDriver );
 
 	// CBaseAnimating
 	void HandleAnimEvent( animevent_t *pEvent );
@@ -727,6 +726,8 @@ void CPropVehiclePrisonerPod::InputUnlock( inputdata_t &inputdata )
 void CPropVehiclePrisonerPod::InputVehicleClass( inputdata_t &inputdata )
 {
 	HL2SB_SetVehicleClass( inputdata.value.String() );
+	Q_memset(m_GMOD_String3.GetForModify(),0,512);
+	Q_strncpy(m_GMOD_String3.GetForModify(),inputdata.value.String(),512);
 }
 
 void CPropVehiclePrisonerPod::HL2SB_SetVehicleClass( const char *pszClass )
@@ -734,26 +735,7 @@ void CPropVehiclePrisonerPod::HL2SB_SetVehicleClass( const char *pszClass )
 	Q_strncpy( m_szVehicleClass.GetForModify(), pszClass ? pszClass : "", 64 );
 }
 
-void CPropVehiclePrisonerPod::HL2SB_UpdateCameraState( CBasePlayer *pDriver )
-{
-	if ( pDriver == NULL )
-		return;
 
-	const bool bDuckHeld = ( pDriver->m_nButtons & IN_DUCK ) != 0;
-	if ( bDuckHeld && !m_bHL2SBDuckHeld )
-	{
-		m_bThirdPersonMode = !m_bThirdPersonMode;
-	}
-	m_bHL2SBDuckHeld = bDuckHeld;
-
-	const int iWheel = pDriver->HL2SB_GetUserCmdMouseWheel();
-	if ( iWheel != 0 )
-	{
-		float flDistance = m_flCameraDistance;
-		flDistance = clamp( flDistance - iWheel * 0.03f * ( 1.1f + flDistance ), -1.0f, 10.0f );
-		m_flCameraDistance = flDistance;
-	}
-}
 
 bool HL2SB_IsPrisonerPodEntity( CBaseEntity *pEntity )
 {
@@ -924,12 +906,7 @@ void CPrisonerPodServerVehicle::ItemPostFrame( CBasePlayer *player )
 		}
 	}
 
-	// HL2SB (sbrust): this pod overrides ItemPostFrame entirely, so the third
-	// person camera state writer that the generic CBaseServerVehicle::ItemPostFrame
-	// runs for driveables must fire here too (GMod lets you CTRL-toggle and
-	// wheel-zoom the seat camera; the seat is a driveable in GMod because the
-	// pod class inherits it -- here it carries the state itself).
-	GetPod()->HL2SB_UpdateCameraState( player );
+
 }
 
 

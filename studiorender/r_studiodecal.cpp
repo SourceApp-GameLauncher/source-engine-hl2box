@@ -38,6 +38,7 @@ enum
 
 
 #define MAX_DECAL_INDICES_PER_MODEL 2048
+#define MAX_DECAL_INDICES_PER_DECAL 16384
 
 
 //-----------------------------------------------------------------------------
@@ -1302,12 +1303,31 @@ void CStudioRender::AddDecal( StudioDecalHandle_t hDecal, const StudioRenderCont
 		if ( k != m_pStudioHdr->numbodyparts )
 			continue;
 
+		const int decalIndexCount = buildInfo.m_pDecalMaterial->m_Indices.Count() - prevIndexCount;
+		if ( decalIndexCount > MAX_DECAL_INDICES_PER_DECAL )
+		{
+			Warning( "Decal has more than %d indices (%d); not adding to %s.\n",
+				MAX_DECAL_INDICES_PER_DECAL, decalIndexCount, m_pStudioHdr->pszName() );
+			// A projection can exceed the limit even when all older decals fit.
+			// Remove only this uncommitted tail, leaving history and prior decals intact.
+			DecalVertexList_t &vertices = buildInfo.m_pDecalMaterial->m_Vertices;
+			DecalVertexList_t::IndexType_t vertex = buildInfo.m_FirstVertex;
+			while ( vertex != vertices.InvalidIndex() )
+			{
+				DecalVertexList_t::IndexType_t next = vertices.Next( vertex );
+				vertices.Remove( vertex );
+				--g_nTotalDecalVerts;
+				vertex = next;
+			}
+			buildInfo.m_pDecalMaterial->m_Indices.SetCountNonDestructively( prevIndexCount );
+			continue;
+		}
+
 		// Add this to the list of decals in this material
 		if ( buildInfo.m_VertexCount )
 		{
 			bAddedDecals = true;
 
-			int decalIndexCount = buildInfo.m_pDecalMaterial->m_Indices.Count() - prevIndexCount;
 			Assert(decalIndexCount > 0);
 
 			int decalIndex = AddDecalToMaterialList( buildInfo.m_pDecalMaterial );

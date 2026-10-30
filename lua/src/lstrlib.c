@@ -830,7 +830,6 @@ static int str_match (lua_State *L) {
 typedef struct GMatchState {
   const char *src;  /* current position */
   const char *p;  /* pattern */
-  const char *lastmatch;  /* end of last match */
   MatchState ms;  /* match state */
 } GMatchState;
 
@@ -838,12 +837,18 @@ typedef struct GMatchState {
 static int gmatch_aux (lua_State *L) {
   GMatchState *gm = (GMatchState *)lua_touserdata(L, lua_upvalueindex(3));
   const char *src;
+  if (gm->p == NULL)
+    return 0;
   gm->ms.L = L;
   for (src = gm->src; src <= gm->ms.src_end; src++) {
     const char *e;
     reprepstate(&gm->ms);
-    if ((e = match(&gm->ms, src, gm->p)) != NULL && e != gm->lastmatch) {
-    gm->src = gm->lastmatch = e;
+    if ((e = match(&gm->ms, src, gm->p)) != NULL) {
+    /* Preserve adjacent empty captures used by the original drawing helpers. */
+    if (e == src && src == gm->ms.src_end)
+      gm->p = NULL;
+    else
+      gm->src = e == src ? e + 1 : e;
     return push_captures(&gm->ms, src, e);
     }
   }
@@ -862,7 +867,7 @@ static int gmatch (lua_State *L) {
   if (init > ls)  /* start after string's end? */
     init = ls + 1;  /* avoid overflows in 's + init' */
   prepstate(&gm->ms, L, s, ls, p, lp);
-  gm->src = s + init; gm->p = p; gm->lastmatch = NULL;
+  gm->src = s + init; gm->p = p;
   lua_pushcclosure(L, gmatch_aux, 3);
   return 1;
 }

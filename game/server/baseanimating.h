@@ -289,7 +289,7 @@ public:
 	virtual void IgniteLifetime( float flFlameLifetime );
 	virtual void IgniteNumHitboxFires( int iNumHitBoxFires );
 	virtual void IgniteHitboxFireScale( float flHitboxFireScale );
-	virtual void Extinguish() { RemoveFlag( FL_ONFIRE ); }
+	virtual void Extinguish();
 	bool IsOnFire() { return ( (GetFlags() & FL_ONFIRE) != 0 ); }
 	void Scorch( int rate, int floor );
 	void InputIgnite( inputdata_t &inputdata );

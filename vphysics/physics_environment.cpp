@@ -1167,7 +1167,11 @@ CPhysicsEnvironment::CPhysicsEnvironment( void )
 
 CPhysicsEnvironment::~CPhysicsEnvironment( void )
 {
-	// no callbacks during shutdown
+	// Keep listeners alive until every object and deferred deletion is gone.
+	m_enableConstraintNotify = false;
+	m_pConstraintListener->SetHandler( NULL );
+	m_pCollisionListener->SetHandler( NULL );
+	m_pSleepEvents->SetHandler( NULL );
 	SetCollisionSolver( NULL );
 	m_pPhysEnv->remove_listener_object_global( m_pSleepEvents );
 
@@ -1176,9 +1180,7 @@ CPhysicsEnvironment::~CPhysicsEnvironment( void )
 
 	// delete/remove the listeners
 	m_pPhysEnv->remove_listener_collision_global( m_pCollisionListener );
-	delete m_pCollisionListener;
 	m_pPhysEnv->remove_listener_constraint_global( m_pConstraintListener );
-	delete m_pConstraintListener;
 
 	// Clean out the list of physics objects
 	for ( int i = m_objects.Count()-1; i >= 0; --i )
@@ -1197,6 +1199,8 @@ CPhysicsEnvironment::~CPhysicsEnvironment( void )
 	delete m_pSleepEvents;
 	delete m_pDragController;
 	delete m_pPhysEnv;
+	delete m_pCollisionListener;
+	delete m_pConstraintListener;
 	delete m_pDeleteQueue;
 
 	// must be deleted after the environment (calls back in destructor)

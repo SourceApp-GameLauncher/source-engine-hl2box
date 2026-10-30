@@ -1599,6 +1599,7 @@ void CWeaponRPG::Operator_HandleAnimEvent(animevent_t *pEvent, CBaseCombatCharac
 
 		CMissile *pMissile = CMissile::Create(muzzlePoint, vecAngles, GetOwner()->edict());
 		pMissile->m_hOwner = this;
+		m_hMissile = pMissile;
 
 		// NPCs always get a grace period
 		pMissile->SetGracePeriod(0.5);

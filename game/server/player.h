@@ -602,6 +602,12 @@ public:
 	void					HL2SB_AddUserCmdMouseWheel( int iDelta ) { m_iHL2SBTickMouseWheel += iDelta; }
 	int						HL2SB_GetUserCmdMouseWheel( void ) const { return m_iHL2SBTickMouseWheel; }
 	void					HL2SB_ResetUserCmdMouseWheel( void ) { m_iHL2SBTickMouseWheel = 0; }
+	// HL2SB (sbrust): GMod's Lua Player:SetObserverMode is a plain networked
+	// int write -- the stock CBasePlayer::SetObserverMode cascade forces
+	// MOVETYPE_OBSERVER on OBS_MODE_CHASE, which the Lua drive system (which
+	// sets CHASE every StartMove) must not inherit.  The lbaseplayer binding
+	// uses this direct write instead of the cascade.
+	void					HL2SB_SetObserverModeRaw( int iMode ) { m_iObserverMode = iMode; }
 
 	// Team Handling
 	virtual void			ChangeTeam( int iTeamNum ) { ChangeTeam(iTeamNum,false, false); }

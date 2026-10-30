@@ -75,6 +75,7 @@
 
 #if defined( HL2SB )
 #include "hl2sb_undo.h"
+#include "basescripted.h"	// HL2SB: ENTITY:CalcAbsolutePosition dispatch (widgets)
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -281,6 +282,18 @@ static void SendProxy_SpawnEffectTime(const SendProp *, const void *entity, cons
 
 // This table encodes the CBaseEntity data.
 IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
+#ifdef LUA_SDK
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_bool), SendPropInt(SENDINFO_ARRAY(m_GMOD_bool), 1, SPROP_UNSIGNED)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_float), SendPropFloat(SENDINFO_ARRAY(m_GMOD_float), 0, SPROP_NOSCALE)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_int), SendPropInt(SENDINFO_ARRAY(m_GMOD_int), 32, 0)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_vector), SendPropVector(SENDINFO_ARRAY(m_GMOD_vector), 0, SPROP_NOSCALE)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_angle), SendPropVector(SENDINFO_ARRAY(m_GMOD_angle), 0, SPROP_NOSCALE)),
+	SendPropArray3(SENDINFO_ARRAY3(m_GMOD_entity), SendPropEHandle(SENDINFO_ARRAY(m_GMOD_entity))),
+	SendPropString(SENDINFO(m_GMOD_String0)),
+	SendPropString(SENDINFO(m_GMOD_String1)),
+	SendPropString(SENDINFO(m_GMOD_String2)),
+	SendPropString(SENDINFO(m_GMOD_String3)),
+#endif
 	SendPropDataTable( "AnimTimeMustBeFirst", 0, &REFERENCE_SEND_TABLE(DT_AnimTimeMustBeFirst), SendProxy_ClientSideAnimation ),
 	SendPropInt			(SENDINFO(m_flSimulationTime),	SIMULATION_TIME_WINDOW_BITS, SPROP_UNSIGNED|SPROP_CHANGES_OFTEN|SPROP_ENCODED_AGAINST_TICKCOUNT, SendProxy_SimulationTime),
 
@@ -301,7 +314,12 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropFloat("m_flSpawnEffectCreationTime", 0, sizeof(float), 0, SPROP_NOSCALE, 0, HIGH_DEFAULT, SendProxy_SpawnEffectTime),
 #endif
 	SendPropInt		(SENDINFO(m_clrRender),	32, SPROP_UNSIGNED),
-	SendPropInt		(SENDINFO(m_iTeamNum),		TEAMNUM_NUM_BITS, 0),
+	SendPropInt		(SENDINFO(m_iTeamNum),		16, 0),
+	// HL2SB: GMod networks the spawnflags on every entity -- its shared
+	// Entity:HasSpawnFlags/GetSpawnFlags read a clientside copy.  The map
+	// keyvalue lands server-side only (DEFINE_KEYFIELD above), so without
+	// this prop the client copy would always answer 0.
+	SendPropInt		(SENDINFO(m_spawnflags),	32, SPROP_UNSIGNED),
 	SendPropInt		(SENDINFO(m_CollisionGroup), 5, SPROP_UNSIGNED),
 	SendPropFloat	(SENDINFO(m_flElasticity), 0, SPROP_COORD),
 	SendPropFloat	(SENDINFO(m_flShadowCastDistance), 12, SPROP_UNSIGNED ),
@@ -444,6 +462,11 @@ CBaseEntity::CBaseEntity( bool bServerOnly )
 
 #if defined( LUA_SDK )
 	m_nTableReference = LUA_NOREF;
+	Q_memset(m_GMOD_String0.GetForModify(),0,512);
+	Q_memset(m_GMOD_String1.GetForModify(),0,512);
+	Q_memset(m_GMOD_String2.GetForModify(),0,512);
+	Q_memset(m_GMOD_String3.GetForModify(),0,512);
+
 #endif
 }
 
@@ -1947,6 +1970,18 @@ BEGIN_SIMPLE_DATADESC( ResponseContext_t )
 END_DATADESC()
 
 BEGIN_DATADESC_NO_BASE( CBaseEntity )
+#ifdef LUA_SDK
+	DEFINE_ARRAY(m_GMOD_bool, FIELD_BOOLEAN, 32),
+	DEFINE_ARRAY(m_GMOD_float, FIELD_FLOAT, 32),
+	DEFINE_ARRAY(m_GMOD_int, FIELD_INTEGER, 32),
+	DEFINE_ARRAY(m_GMOD_vector, FIELD_VECTOR, 32),
+	DEFINE_ARRAY(m_GMOD_angle, FIELD_VECTOR, 32),
+	DEFINE_ARRAY(m_GMOD_entity, FIELD_EHANDLE, 32),
+	DEFINE_ARRAY(m_GMOD_String0, FIELD_CHARACTER, 512),
+	DEFINE_ARRAY(m_GMOD_String1, FIELD_CHARACTER, 512),
+	DEFINE_ARRAY(m_GMOD_String2, FIELD_CHARACTER, 512),
+	DEFINE_ARRAY(m_GMOD_String3, FIELD_CHARACTER, 512),
+#endif
 
 	DEFINE_KEYFIELD( m_iClassname, FIELD_STRING, "classname" ),
 	DEFINE_GLOBAL_KEYFIELD( m_iGlobalname, FIELD_STRING, "globalname" ),
@@ -2176,6 +2211,8 @@ void CBaseEntity::UpdateOnRemove( void )
 #ifdef LUA_SDK
 	extern void HL2SB_StopMotionController(CBaseEntity *entity);
 	HL2SB_StopMotionController(this);
+	extern void HL2SB_DriveEntityRemoved(CBaseEntity *entity);
+	HL2SB_DriveEntityRemoved(this);
 #endif
 #ifdef LUA_SDK
 	HL2SB_ClearSpawnEffect(this);
@@ -3766,6 +3803,14 @@ int CBaseEntity::DispatchUpdateTransmitState()
 //-----------------------------------------------------------------------------
 int CBaseEntity::ShouldTransmit( const CCheckTransmitInfo *pInfo )
 {
+	if ( IsEFlagSet( EFL_TRANSMIT_WITH_PARENT ) )
+	{
+		CBaseEntity *pParent = GetMoveParent();
+		if ( !pParent || ( pParent->DispatchUpdateTransmitState() & FL_EDICT_DONTSEND ) )
+			return FL_EDICT_DONTSEND;
+		return pParent->ShouldTransmit( pInfo );
+	}
+
 	int fFlags = DispatchUpdateTransmitState();
 
 	if ( fFlags & FL_EDICT_PVSCHECK )
@@ -5926,6 +5971,23 @@ void CBaseEntity::CalcAbsolutePosition( void )
 
 	RemoveEFlags( EFL_DIRTY_ABSTRANSFORM );
 
+#if defined( LUA_SDK )
+	const auto applyScriptPosition = [this]()
+	{
+		extern bool HL2SB_ScriptedCalcAbsolutePosition( CBaseEntity *, Vector &, QAngle & );
+		Vector origin = m_vecAbsOrigin;
+		QAngle angles = m_angAbsRotation;
+		if ( HL2SB_ScriptedCalcAbsolutePosition( this, origin, angles ) )
+		{
+			m_vecAbsOrigin = origin;
+			m_angAbsRotation = angles;
+			AngleMatrix( angles, origin, m_rgflCoordinateFrame );
+		}
+	};
+#endif
+
+
+
 	// Plop the entity->parent matrix into m_rgflCoordinateFrame
 	AngleMatrix( m_angRotation, m_vecOrigin, m_rgflCoordinateFrame );
 
@@ -5935,6 +5997,9 @@ void CBaseEntity::CalcAbsolutePosition( void )
 		// no move parent, so just copy existing values
 		m_vecAbsOrigin = m_vecOrigin;
 		m_angAbsRotation = m_angRotation;
+		#if defined( LUA_SDK )
+		applyScriptPosition();
+		#endif
 		if ( HasDataObjectType( POSITIONWATCHER ) )
 		{
 			ReportPositionChanged( this );
@@ -5951,7 +6016,7 @@ void CBaseEntity::CalcAbsolutePosition( void )
 	MatrixGetColumn( m_rgflCoordinateFrame, 3, m_vecAbsOrigin ); 
 
 	// if we have any angles, we have to extract our absolute angles from our matrix
-	if (( m_angRotation == vec3_angle ) && ( m_iParentAttachment == 0 ))
+	if (( m_angRotation == vec3_angle ) && ( m_iParentAttachment == 0 ) && !IsEffectActive( EF_FOLLOWBONE ))
 	{
 		// just copy our parent's absolute angles
 		VectorCopy( pMoveParent->GetAbsAngles(), m_angAbsRotation );
@@ -5960,6 +6025,10 @@ void CBaseEntity::CalcAbsolutePosition( void )
 	{
 		MatrixAngles( m_rgflCoordinateFrame, m_angAbsRotation );
 	}
+#if defined( LUA_SDK )
+	applyScriptPosition();
+#endif
+
 	if ( HasDataObjectType( POSITIONWATCHER ) )
 	{
 		ReportPositionChanged( this );
@@ -6056,17 +6125,38 @@ matrix3x4_t& CBaseEntity::GetParentToWorldTransform( matrix3x4_t &tempMatrix )
 		return tempMatrix;
 	}
 
-	if ( m_iParentAttachment != 0 )
+	if ( IsEffectActive( EF_FOLLOWBONE ) || m_iParentAttachment != 0 )
 	{
 		MDLCACHE_CRITICAL_SECTION();
 
 		CBaseAnimating *pAnimating = pMoveParent->GetBaseAnimating();
-		if ( pAnimating && pAnimating->GetAttachment( m_iParentAttachment, tempMatrix ) )
+		if ( pAnimating )
 		{
-			return tempMatrix;
+			// HL2SB: EF_FOLLOWBONE makes the attachment byte a BONE index --
+			// the reference Entity:FollowBone parents through the parent's
+			// bone matrix instead of an attachment (archived contract).
+			// Bone indices are ZERO-based (bone 0 is valid, unlike attachment
+			// 0 = "no attachment"), so the flag is tested BEFORE the
+			// != 0 gate and the index is validated against the model's real
+			// bone count before the matrix write.
+			if ( IsEffectActive( EF_FOLLOWBONE ) )
+			{
+				CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+				if ( pStudioHdr != NULL &&
+					m_iParentAttachment >= 0 && m_iParentAttachment < pStudioHdr->numbones() )
+				{
+					// The parent cache includes vertex bones while it has bone followers.
+					pAnimating->GetBoneTransform( m_iParentAttachment, tempMatrix );
+					return tempMatrix;
+				}
+			}
+			else if ( pAnimating->GetAttachment( m_iParentAttachment, tempMatrix ) )
+			{
+				return tempMatrix;
+			}
 		}
 	}
-	
+
 	// If we fall through to here, then just use the move parent's abs origin and angles.
 	return pMoveParent->EntityToWorldTransform();
 }

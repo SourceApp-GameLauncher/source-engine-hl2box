@@ -783,6 +783,11 @@ void CHL2MP_Player::PreThink( void )
 #endif
 }
 
+const QAngle &CHL2MP_Player::GetRenderAngles()
+{
+	return m_PlayerAnimState.GetRenderAngles();
+}
+
 void CHL2MP_Player::PostThink( void )
 {
 	BaseClass::PostThink();
@@ -926,7 +931,7 @@ void CHL2MP_Player::FireBullets ( const FireBulletsInfo_t &info )
 
 	CWeaponHL2MPBase *pWeapon = dynamic_cast<CWeaponHL2MPBase *>( GetActiveWeapon() );
 
-	if ( pWeapon )
+	if ( pWeapon && !pWeapon->IsScripted() )
 	{
 		modinfo.m_iPlayerDamage = modinfo.m_flDamage = pWeapon->GetHL2MPWpnData().m_iPlayerDamage;
 	}
@@ -1786,6 +1791,7 @@ void CHL2MP_Player::Event_Killed( const CTakeDamageInfo &info )
 	DetonateTripmines();
 
 #if defined( LUA_SDK )
+	m_lifeState = LIFE_DYING;
 	// HL2SB GMod compat (2026-10-10): hook.Run( "DoPlayerDeath", victim, attacker, dmginfo )
 	// - fired at the same point in GMod's death pipeline (before the death
 	// hooks like PlayerDeath run their UI); the portalgun fizzles the dead
@@ -1796,9 +1802,38 @@ void CHL2MP_Player::Event_Killed( const CTakeDamageInfo &info )
 	{
 		BEGIN_LUA_CALL_HOOK( "DoPlayerDeath" );
 			lua_pushplayer( L, this );
-			lua_pushentity( L, info.GetAttacker() );
+			CBaseEntity::PushLuaInstanceSafe( L, info.GetAttacker() );
 			lua_pushdamageinfo( L, subinfo );
 		END_LUA_CALL_HOOK( 3, 0 );
+	}
+
+	CBaseCombatWeapon *pDeathWeapon = GetActiveWeapon();
+	if ( pDeathWeapon )
+	{
+		bool bDropWeapon = false;
+		if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
+		{
+			lua_getref( L, m_nTableReference );
+			if ( lua_istable( L, -1 ) )
+			{
+				lua_pushliteral( L, "__hl2sbDropWeaponOnDeath" );
+				lua_rawget( L, -2 );
+				bDropWeapon = lua_toboolean( L, -1 ) != 0;
+				lua_pop( L, 1 );
+			}
+			lua_pop( L, 1 );
+		}
+		if ( bDropWeapon && pDeathWeapon->IsScripted() )
+		{
+			extern int HL2SB_WeaponShouldDropOnDieVote( CBaseCombatWeapon *pWeapon );
+			bDropWeapon = HL2SB_WeaponShouldDropOnDieVote( pDeathWeapon ) != 0;
+		}
+		if ( !bDropWeapon )
+		{
+			pDeathWeapon->Holster();
+			UTIL_Remove( pDeathWeapon );
+			SetActiveWeapon( NULL );
+		}
 	}
 #endif
 
@@ -1823,7 +1858,9 @@ void CHL2MP_Player::Event_Killed( const CTakeDamageInfo &info )
 			iScoreToAdd = -1;
 		}
 
-		GetGlobalTeam( pAttacker->GetTeamNumber() )->AddScore( iScoreToAdd );
+		CTeam *pAttackerTeam = GetGlobalTeam( pAttacker->GetTeamNumber() );
+		if ( pAttackerTeam )
+			pAttackerTeam->AddScore( iScoreToAdd );
 	}
 
 	// Reference behavior: scoring lives in the gamemode's GM:DoPlayerDeath Lua

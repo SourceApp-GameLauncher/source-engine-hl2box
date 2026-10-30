@@ -251,6 +251,12 @@ static int CTakeDamageInfo_IsExplosionDamage (lua_State *L) {
   return 1;
 }
 
+static int CTakeDamageInfo_IsFallDamage (lua_State *L) {
+  CTakeDamageInfo &pInfo = luaL_checkdamageinfo( L, 1 );
+  lua_pushboolean( L, ( pInfo.GetDamageType() & DMG_FALL ) != 0 );
+  return 1;
+}
+
 // HL2SB GMod compat (2026-09-24): DamageInfo:IsDamageType( dmgType ) -- wiki
 // CTakeDamageInfo:IsDamageType, shared realm.  Bit test against the DMG mask;
 // GMod's own example spells it bit.band(GetDamageType(), dmgType) ~= 0.
@@ -281,6 +287,7 @@ static const luaL_Reg CTakeDamageInfometa[] = {
   {"GetDamageType", CTakeDamageInfo_GetDamageType},
   {"IsBulletDamage", CTakeDamageInfo_IsBulletDamage},
   {"IsExplosionDamage", CTakeDamageInfo_IsExplosionDamage},
+  {"IsFallDamage", CTakeDamageInfo_IsFallDamage},
   {"IsDamageType", CTakeDamageInfo_IsDamageType},
   {"GetInflictor", CTakeDamageInfo_GetInflictor},
   {"GetMaxDamage", CTakeDamageInfo_GetMaxDamage},

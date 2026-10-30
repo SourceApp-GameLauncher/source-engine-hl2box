@@ -36,8 +36,11 @@ LUA_API lua_FireBulletsInfo_t lua_tofirebulletsinfo (lua_State *L, int idx) {
   // pAmmoDef->Flags( ... ), which are plain array reads -- an out-of-range access.
   // 0 is the engine's own "None" ammo type, which is also GMod's fallback.
   info.m_iAmmoType = 0;
+  info.m_flDamage = 1.0f;
+  info.m_iPlayerDamage = 0;
   info.m_vecSrc.Init();
   info.m_vecDirShooting.Init();
+
 
   lua_getfield(L, idx, "m_bPrimaryAttack");
   if (!lua_isnil(L, -1))
@@ -121,6 +124,11 @@ LUA_API lua_FireBulletsInfo_t lua_tofirebulletsinfo (lua_State *L, int idx) {
   if (!lua_isnil(L, -1))
     info.m_flDamage = luaL_checknumber(L, -1);
   lua_pop(L, 1);
+
+  // A Lua FireBullets Damage value is authoritative for both players and NPCs.
+  // Keep the explicit value separate from the ammo-definition fallback below.
+  if ( info.m_flDamage > 0.0f )
+    info.m_iPlayerDamage = 0;
   lua_getfield(L, idx, "Force");   // -> m_flDamageForceScale
   if (!lua_isnil(L, -1))
     info.m_flDamageForceScale = luaL_checknumber(L, -1);

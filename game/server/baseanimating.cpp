@@ -2603,6 +2603,14 @@ CBoneCache *CBaseAnimating::GetBoneCache( void )
 
 	CBoneCache *pcache = Studio_GetBoneCache( m_boneCacheHandle );
 	int boneMask = BONE_USED_BY_HITBOX | BONE_USED_BY_ATTACHMENT;
+	for ( CBaseEntity *pChild = FirstMoveChild(); pChild; pChild = pChild->NextMovePeer() )
+	{
+		if ( pChild->IsEffectActive( EF_FOLLOWBONE ) )
+		{
+			boneMask |= BONE_USED_BY_ANYTHING;
+			break;
+		}
+	}
 
 	// TF queries these bones to position weapons when players are killed
 #if defined( TF_DLL )
@@ -3409,6 +3417,17 @@ void CBaseAnimating::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize,
 	}
 
 	m_OnIgnite.FireOutput( this, this );
+}
+
+void CBaseAnimating::Extinguish()
+{
+	CEntityFlame *pFlame = dynamic_cast<CEntityFlame *>( GetEffectEntity() );
+	if ( pFlame )
+	{
+		UTIL_Remove( pFlame );
+		SetEffectEntity( NULL );
+	}
+	RemoveFlag( FL_ONFIRE );
 }
 
 void CBaseAnimating::IgniteLifetime( float flFlameLifetime )

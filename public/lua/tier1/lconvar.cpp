@@ -277,15 +277,100 @@ void CC_ConCommand( const CCommand& args )
 	}
 }
 
+static int HL2SB_CompleteLuaCommand( lua_State *state, const char *partial,
+    char commands[ COMMAND_COMPLETION_MAXITEMS ][ COMMAND_COMPLETION_ITEM_LENGTH ] )
+{
+  if ( !state || !partial )
+    return 0;
+  lua_checkstack( state, 12 );
+  const int top = lua_gettop( state );
+  lua_getglobal( state, "concommand" );
+  if ( !lua_istable( state, -1 ) )
+  {
+    lua_settop( state, top );
+    return 0;
+  }
+  lua_getfield( state, -1, "AutoComplete" );
+  lua_remove( state, -2 );
+  if ( !lua_isfunction( state, -1 ) )
+  {
+    lua_settop( state, top );
+    return 0;
+  }
+
+  char name[128];
+  Q_strncpy( name, partial, sizeof( name ) );
+  char *space = Q_strstr( name, " " );
+  if ( space )
+    *space = '\0';
+  CCommand arguments;
+  arguments.Tokenize( partial );
+  lua_pushstring( state, name );
+  lua_pushstring( state, partial + Q_strlen( name ) );
+  lua_pushcommandarguments( state, arguments );
+  int count = 0;
+  if ( luasrc_pcall( state, 3, 1, 0 ) == 0 && lua_istable( state, -1 ) )
+  {
+    // This engine's completion buffer uses its own fixed ABI dimensions.
+    for ( int i = 1; i <= COMMAND_COMPLETION_MAXITEMS; ++i )
+    {
+      lua_rawgeti( state, -1, i );
+      const char *suggestion = lua_tostring( state, -1 );
+      if ( !suggestion )
+      {
+        lua_pop( state, 1 );
+        break;
+      }
+      Q_strncpy( commands[count++], suggestion, COMMAND_COMPLETION_ITEM_LENGTH );
+      lua_pop( state, 1 );
+    }
+  }
+  lua_settop( state, top );
+  return count;
+}
+
+static int CC_ConCommandCompletion( const char *partial,
+    char commands[ COMMAND_COMPLETION_MAXITEMS ][ COMMAND_COMPLETION_ITEM_LENGTH ] )
+{
+  return HL2SB_CompleteLuaCommand( L, partial, commands );
+}
+
+#ifdef CLIENT_DLL
+static int CC_GameUIConCommandCompletion( const char *partial,
+    char commands[ COMMAND_COMPLETION_MAXITEMS ][ COMMAND_COMPLETION_ITEM_LENGTH ] )
+{
+  return HL2SB_CompleteLuaCommand( LGameUI, partial, commands );
+}
+#endif
+
+static int HL2SB_CommandFlags( lua_State *state, int index )
+{
+  if ( lua_isnoneornil( state, index ) )
+    return 0;
+  if ( !lua_istable( state, index ) )
+    return luaL_checkint( state, index );
+
+  int flags = 0;
+  lua_pushnil( state );
+  while ( lua_next( state, index ) != 0 )
+  {
+    flags |= luaL_checkint( state, -1 );
+    lua_pop( state, 1 );
+  }
+  return flags;
+}
+
 static int luasrc_ConCommand (lua_State *L) {
   const char *pName = luaL_checkstring(L, 1);
+  const char *pHelp = luaL_optstring( L, 2, "" );
+  const int requestedFlags = HL2SB_CommandFlags( L, 3 );
 #ifdef CLIENT_DLL
   bool bIsGameUI = false;
   unsigned short lookup;
   lua_getglobal(L, "_GAMEUI");
-  if (!lua_isnoneornil(L, -1) && lua_toboolean(L, -1)) {
-    bIsGameUI = true;
-
+  bIsGameUI = lua_toboolean( L, -1 ) != 0;
+  lua_pop( L, 1 );
+  if (bIsGameUI) {
     // Complain about duplicately defined ConCommand names...
     lookup = m_GameUIConCommandDatabase.Find( pName );
     if ( lookup != m_GameUIConCommandDatabase.InvalidIndex() )
@@ -325,24 +410,14 @@ static int luasrc_ConCommand (lua_State *L) {
 #ifdef CLIENT_DLL
   }
 #endif
-  lua_pop(L, 1);
-
   ConCommand *pConCommand;
 #ifdef CLIENT_DLL
   if (bIsGameUI)
-#if 0
-    pConCommand = new ConCommand(strdup(pName), CC_GameUIConCommand, strdup(luaL_optstring(L, 2, 0)), luaL_optint(L, 3, 0), NULL);
-#else
-    pConCommand = new ConCommand(strdup(pName), CC_GameUIConCommand, strdup(luaL_optstring(L, 2, 0)), 0, NULL);
-#endif
+    pConCommand = new ConCommand(strdup(pName), CC_GameUIConCommand, strdup(pHelp), requestedFlags, CC_GameUIConCommandCompletion);
   else
-    pConCommand = new ConCommand(strdup(pName), CC_ConCommand, strdup(luaL_optstring(L, 2, 0)), FCVAR_CLIENTDLL | FCVAR_CLIENTCMD_CAN_EXECUTE | FCVAR_SERVER_CAN_EXECUTE, NULL);
+    pConCommand = new ConCommand(strdup(pName), CC_ConCommand, strdup(pHelp), requestedFlags | FCVAR_CLIENTDLL | FCVAR_CLIENTCMD_CAN_EXECUTE | FCVAR_SERVER_CAN_EXECUTE, CC_ConCommandCompletion);
 #else
-#if 0
-    pConCommand = new ConCommand(strdup(pName), CC_ConCommand, strdup(luaL_optstring(L, 2, 0)), luaL_optint(L, 3, 0), NULL);
-#else
-    pConCommand = new ConCommand(strdup(pName), CC_ConCommand, strdup(luaL_optstring(L, 2, 0)), FCVAR_GAMEDLL | FCVAR_CLIENTCMD_CAN_EXECUTE, NULL);
-#endif
+    pConCommand = new ConCommand(strdup(pName), CC_ConCommand, strdup(pHelp), requestedFlags | FCVAR_GAMEDLL | FCVAR_CLIENTCMD_CAN_EXECUTE, CC_ConCommandCompletion);
 #endif
 
 #ifdef CLIENT_DLL
@@ -358,6 +433,39 @@ static int luasrc_ConCommand (lua_State *L) {
 #endif
   lua_pushconcommand(L, pConCommand);
   return 1;
+}
+
+// The original concommand module owns callbacks; native code only registers the name.
+static int luasrc_AddConsoleCommand( lua_State *state )
+{
+  const char *name = luaL_checkstring( state, 1 );
+  for ( const char *p = name; *p; ++p )
+    if ( *p == ';' || *p < '!' )
+      return luaL_error( state, "AddConsoleCommand: Invalid command name! (%s)", name );
+
+  // Use the same native command policy as the command execution entry point.
+  const int top = lua_gettop( state );
+  lua_getglobal( state, "IsConCommandBlocked" );
+  if ( lua_isfunction( state, -1 ) )
+  {
+    lua_pushstring( state, name );
+    lua_call( state, 1, 1 );
+    const bool blocked = lua_toboolean( state, -1 ) != 0;
+    lua_settop( state, top );
+    if ( blocked && Q_stricmp( name, "lua_cookieclear" ) )
+    {
+      Warning( "AddConsoleCommand: Command name is blocked! (%s)\n", name );
+      return 0;
+    }
+  }
+  else
+    lua_settop( state, top );
+
+  if ( cvar->FindCommand( name ) )
+    return 0;
+
+  luasrc_ConCommand( state );
+  return 0;
 }
 
 #ifdef CLIENT_DLL
@@ -387,6 +495,7 @@ void ResetConCommandDatabase( void )
 
 static const luaL_Reg ConCommand_funcs[] = {
   {"ConCommand", luasrc_ConCommand},
+  {"AddConsoleCommand", luasrc_AddConsoleCommand},
   {NULL, NULL}
 };
 
@@ -564,6 +673,22 @@ static const luaL_Reg ConVarmeta[] = {
 
 
 static CUtlDict< ConVar*, unsigned short > m_ConVarDatabase;
+#ifdef CLIENT_DLL
+static CUtlDict< ConVar*, unsigned short > m_GameUIConVarDatabase;
+
+// A menu control may retain a variable across every gameplay state.
+static void HL2SB_RetainMenuConVar( lua_State *state, const char *name )
+{
+    if ( state != LGameUI )
+        return;
+    unsigned short index = m_ConVarDatabase.Find( name );
+    if ( index != m_ConVarDatabase.InvalidIndex() )
+    {
+        m_GameUIConVarDatabase.Insert( name, m_ConVarDatabase[index] );
+        m_ConVarDatabase.RemoveAt( index );
+    }
+}
+#endif
 
 // HL2SB (2026-10-03): name -> ConVar* lookup accelerator for the read form
 // of ConVar(name) / GetConVar_Internal.  cvar->FindVar walks the whole
@@ -581,6 +706,9 @@ static CUtlDict< ConVar*, unsigned short > m_ConVarLookupCache;
 
 static int luasrc_ConVar (lua_State *L) {
   const char *pName = luaL_checkstring(L, 1);
+#ifdef CLIENT_DLL
+  HL2SB_RetainMenuConVar( L, pName );
+#endif
 
   // HL2SB: GMod's global ConVar( name ) is a LOOKUP when called with one
   // argument.  ConVarExists() (extensions/gmod_globals.lua) builds on exactly
@@ -654,7 +782,12 @@ static int luasrc_ConVar (lua_State *L) {
   if ( cachedEntry != m_ConVarLookupCache.InvalidIndex() )
     m_ConVarLookupCache[ cachedEntry ] = pConVar;
 
-  lookup = m_ConVarDatabase.Insert( pName, pConVar );
+#ifdef CLIENT_DLL
+  if ( L == LGameUI )
+    lookup = m_GameUIConVarDatabase.Insert( pName, pConVar );
+  else
+#endif
+    lookup = m_ConVarDatabase.Insert( pName, pConVar );
   Assert( lookup != m_ConVarDatabase.InvalidIndex() );
   lua_pushconvar(L, pConVar);
   return 1;
@@ -675,6 +808,9 @@ static int luasrc_ConVar (lua_State *L) {
 //     luasrc_ConVar() does not go through cvar->RegisterConCommand().
 static int luasrc_GetConVar_Internal (lua_State *L) {
   const char *pName = luaL_checkstring(L, 1);
+#ifdef CLIENT_DLL
+  HL2SB_RetainMenuConVar( L, pName );
+#endif
 
   HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_CONVAR_LOOKUP );
 
@@ -723,6 +859,29 @@ void ResetConVarDatabase( void )
 	m_ConVarDatabase.RemoveAll();
 }
 
+
+#ifdef CLIENT_DLL
+void ResetGameUIConVarDatabase( void )
+{
+    m_ConVarLookupCache.RemoveAll();
+    for ( int i = m_GameUIConVarDatabase.First(); i != m_GameUIConVarDatabase.InvalidIndex();
+          i = m_GameUIConVarDatabase.Next( i ) )
+    {
+        ConVar *variable = m_GameUIConVarDatabase[i];
+        if ( ::L != NULL )
+        {
+            // A menu reload must preserve values still referenced by gameplay.
+            m_ConVarDatabase.Insert( m_GameUIConVarDatabase.GetElementName( i ), variable );
+        }
+        else
+        {
+            cvar->UnregisterConCommand( variable );
+            delete variable;
+        }
+    }
+    m_GameUIConVarDatabase.RemoveAll();
+}
+#endif
 
 static const luaL_Reg ConVar_funcs[] = {
   {"ConVar", luasrc_ConVar},

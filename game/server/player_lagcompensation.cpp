@@ -326,8 +326,10 @@ void CLagCompensationManager::StartLagCompensation( CBasePlayer *player, CUserCm
 	//IF YOU'RE HITTING THIS THEN IT MEANS THERES A CODE BUG
 	if ( m_pCurrentPlayer )
 	{
-		Assert( m_pCurrentPlayer == NULL );
-		Warning( "Trying to start a new lag compensation session while one is already active!\n" );
+		// A scripted weapon may request lag compensation around a FireBullets
+		// call, while the player weapon path already owns the active session.
+		// Keep the outer session intact; restarting it would discard its restore
+		// state and a matching Finish call could restore the wrong frame.
 		return;
 	}
 
@@ -386,7 +388,12 @@ void CLagCompensationManager::StartLagCompensation( CBasePlayer *player, CUserCm
 	}
 	
 	// Iterate all active players
-	const CBitVec<MAX_EDICTS> *pEntityTransmitBits = engine->GetEntityTransmitBitsForClient( player->entindex() - 1 );
+	// The transmit set is unavailable during early connection and teardown.
+	// WantsLagCompensationOnEntity treats a null set as no visibility filter,
+	// which is the safe reference behavior for this transient state.
+	const CBitVec<MAX_EDICTS> *pEntityTransmitBits = NULL;
+	if ( player->entindex() > 0 && player->entindex() <= gpGlobals->maxClients )
+		pEntityTransmitBits = engine->GetEntityTransmitBitsForClient( player->entindex() - 1 );
 	for ( int i = 1; i <= gpGlobals->maxClients; i++ )
 	{
 		CBasePlayer *pPlayer = UTIL_PlayerByIndex( i );

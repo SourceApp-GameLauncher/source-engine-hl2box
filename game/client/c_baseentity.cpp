@@ -6,6 +6,7 @@
 //===========================================================================//
 #include "cbase.h"
 #include "c_baseentity.h"
+#include "c_baseanimating.h"	// HL2SB: EF_FOLLOWBONE parent transform (GetBoneTransform)
 #include "prediction.h"
 #include "model_types.h"
 #include "gamestringpool.h"
@@ -46,10 +47,13 @@
 #include "lbaseentity_shared.h"	// HL2SB: lua_pushentity (the NetworkEntityCreated hook)
 #include "mathlib/lvector.h"
 #include "basescripted.h"	// HL2SB: dynamic_cast for the UpdateVisibility diagnostic
+extern bool HL2SB_LuaDOFMode();
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "lua/hl2sb_flexmanipulator.h"
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 
@@ -448,7 +452,84 @@ END_RECV_TABLE()
 #endif
 
 
+#ifdef LUA_SDK
+extern void HL2SB_ReceiveDTVar(CBaseEntity *, const char *, int, const void *);
+
+static void HL2SB_RecvDT_bool(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_bool));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(bool);
+  const bool value = data->m_Value.m_Int != 0;
+  if (value != *(bool *)out) HL2SB_ReceiveDTVar(entity,"Bool",index,&value);
+  *(bool *)out = value;
+}
+
+static void HL2SB_RecvDT_float(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_float));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(float);
+  const float value = data->m_Value.m_Float;
+  if (value != *(float *)out) HL2SB_ReceiveDTVar(entity,"Float",index,&value);
+  *(float *)out = value;
+}
+
+static void HL2SB_RecvDT_int(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_int));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(int);
+  const int value = data->m_Value.m_Int;
+  if (value != *(int *)out) HL2SB_ReceiveDTVar(entity,"Int",index,&value);
+  *(int *)out = value;
+}
+
+static void HL2SB_RecvDT_vector(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_vector));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(Vector);
+  const Vector value = Vector(data->m_Value.m_Vector[0],data->m_Value.m_Vector[1],data->m_Value.m_Vector[2]);
+  if (value != *(Vector *)out) HL2SB_ReceiveDTVar(entity,"Vector",index,&value);
+  *(Vector *)out = value;
+}
+
+static void HL2SB_RecvDT_angle(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_angle));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(QAngle);
+  const QAngle value = QAngle(data->m_Value.m_Vector[0],data->m_Value.m_Vector[1],data->m_Value.m_Vector[2]);
+  if (value != *(QAngle *)out) HL2SB_ReceiveDTVar(entity,"Angle",index,&value);
+  *(QAngle *)out = value;
+}
+
+static void HL2SB_RecvDT_entity(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)((char *)base - offsetof(C_BaseEntity,m_GMOD_entity));
+  const int index = data->m_pRecvProp->GetOffset() / sizeof(EHANDLE);
+  EHANDLE value;
+  RecvProxy_IntToEHandle(data,base,&value);
+  if (value.Get() != ((EHANDLE *)out)->Get()) HL2SB_ReceiveDTVar(entity,"Entity",index,&value);
+  *(EHANDLE *)out = value;
+}
+
+static void HL2SB_RecvDT_String(const CRecvProxyData *data, void *base, void *out) {
+  C_BaseEntity *entity = (C_BaseEntity *)base;
+  int index = 0;
+  const int offset = data->m_pRecvProp->GetOffset();
+  if (offset == offsetof(C_BaseEntity,m_GMOD_String1)) index = 1;
+  else if (offset == offsetof(C_BaseEntity,m_GMOD_String2)) index = 2;
+  else if (offset == offsetof(C_BaseEntity,m_GMOD_String3)) index = 3;
+  const char *value = data->m_Value.m_pString;
+  if (Q_strcmp((const char *)out,value)) HL2SB_ReceiveDTVar(entity,"String",index,value);
+  Q_strncpy((char *)out,value,512);
+}
+#endif
+
 BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
+#ifdef LUA_SDK
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_bool), RecvPropInt(RECVINFO(m_GMOD_bool[0]), 0, HL2SB_RecvDT_bool)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_float), RecvPropFloat(RECVINFO(m_GMOD_float[0]), 0, HL2SB_RecvDT_float)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_int), RecvPropInt(RECVINFO(m_GMOD_int[0]), 0, HL2SB_RecvDT_int)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_vector), RecvPropVector(RECVINFO(m_GMOD_vector[0]), 0, HL2SB_RecvDT_vector)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_angle), RecvPropVector(RECVINFO(m_GMOD_angle[0]), 0, HL2SB_RecvDT_angle)),
+	RecvPropArray3(RECVINFO_ARRAY(m_GMOD_entity), RecvPropEHandle(RECVINFO(m_GMOD_entity[0]), HL2SB_RecvDT_entity)),
+	RecvPropString(RECVINFO(m_GMOD_String0),0,HL2SB_RecvDT_String),
+	RecvPropString(RECVINFO(m_GMOD_String1),0,HL2SB_RecvDT_String),
+	RecvPropString(RECVINFO(m_GMOD_String2),0,HL2SB_RecvDT_String),
+	RecvPropString(RECVINFO(m_GMOD_String3),0,HL2SB_RecvDT_String),
+#endif
 	RecvPropDataTable( "AnimTimeMustBeFirst", 0, 0, &REFERENCE_RECV_TABLE(DT_AnimTimeMustBeFirst) ),
 	RecvPropInt( RECVINFO(m_flSimulationTime), 0, RecvProxy_SimulationTime ),
 	RecvPropInt( RECVINFO( m_ubInterpolationFrame ) ),
@@ -475,6 +556,9 @@ BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
 	RecvPropInt(RECVINFO(m_nRenderFX)),
 	RecvPropInt(RECVINFO(m_clrRender)),
 	RecvPropInt(RECVINFO(m_iTeamNum)),
+	// HL2SB: matches the m_spawnflags send prop in DT_BaseEntity (inserted at
+	// the same position -- table order must stay aligned).
+	RecvPropInt(RECVINFO(m_spawnflags)),
 	RecvPropInt(RECVINFO(m_CollisionGroup)),
 	RecvPropFloat(RECVINFO(m_flElasticity)),
 	RecvPropFloat(RECVINFO(m_flShadowCastDistance)),
@@ -505,6 +589,18 @@ END_RECV_TABLE()
 const float coordTolerance = 2.0f / (float)( 1 << COORD_FRACTIONAL_BITS );
 
 BEGIN_PREDICTION_DATA_NO_BASE( C_BaseEntity )
+#ifdef LUA_SDK
+	DEFINE_PRED_ARRAY(m_GMOD_bool, FIELD_BOOLEAN, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_float, FIELD_FLOAT, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_int, FIELD_INTEGER, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_vector, FIELD_VECTOR, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_angle, FIELD_VECTOR, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_entity, FIELD_EHANDLE, 32, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String0, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String1, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String2, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+	DEFINE_PRED_ARRAY(m_GMOD_String3, FIELD_CHARACTER, 512, FTYPEDESC_INSENDTABLE),
+#endif
 
 	// These have a special proxy to handle send/receive
 	DEFINE_PRED_TYPEDESCRIPTION( m_Collision, CCollisionProperty ),
@@ -941,6 +1037,11 @@ C_BaseEntity::C_BaseEntity() :
 	// fired on the client and produced no impact effects), GetPlayerLocalData()
 	// (footstep sounds), GetAimVector(), ViewPunch(), and so on.
 	m_nTableReference = LUA_NOREF;
+	Q_memset(m_GMOD_String0.GetForModify(),0,512);
+	Q_memset(m_GMOD_String1.GetForModify(),0,512);
+	Q_memset(m_GMOD_String2.GetForModify(),0,512);
+	Q_memset(m_GMOD_String3.GetForModify(),0,512);
+
 #endif
 
 	m_iParentAttachment = 0;
@@ -2378,9 +2479,16 @@ void C_BaseEntity::MarkAimEntsDirty()
 	{
 		C_BaseEntity *pEnt = g_AimEntsList[ i ];
 		Assert( pEnt && pEnt->GetMoveParent() );
-		if ( pEnt->IsEffectActive(EF_BONEMERGE | EF_PARENT_ANIMATES) )
+		// HL2SB: EF_FOLLOWBONE children ride the parent's BONE animation --
+		// an NPC animating in place moves its bones without any entity
+		// origin change, so the follow-bone child must be dirtied every
+		// frame exactly like the bonemerge family.
+		if ( pEnt->IsEffectActive(EF_BONEMERGE | EF_PARENT_ANIMATES | EF_FOLLOWBONE) )
 		{
-			pEnt->AddEFlags( EFL_DIRTY_ABSTRANSFORM );
+			if ( pEnt->IsEffectActive( EF_FOLLOWBONE ) )
+				pEnt->InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
+			else
+				pEnt->AddEFlags( EFL_DIRTY_ABSTRANSFORM );
 		}
 	}
 }
@@ -2396,7 +2504,7 @@ void C_BaseEntity::CalcAimEntPositions()
 		C_BaseEntity *pEnt = g_AimEntsList[ i ];
 		Assert( pEnt );
 		Assert( pEnt->GetMoveParent() );
-		if ( pEnt->IsEffectActive(EF_BONEMERGE) )
+		if ( pEnt->IsEffectActive(EF_BONEMERGE | EF_FOLLOWBONE) )
 		{
 			pEnt->CalcAbsolutePosition( );
 		}
@@ -2648,6 +2756,7 @@ void C_BaseEntity::PostDataUpdate( DataUpdateType_t updateType )
 		if ( updateType == DATA_UPDATE_CREATED && ( s_nPostDataReports < 8 || bInteresting ) )
 		{
 			++s_nPostDataReports;
+			if ( hl2sb_dev_msgs.GetBool() )
 			luasrc_LuaWarnMsgF( "[HL2SB] CLIENT entity class='%s' updateType=%d entindex=%d",
 				( pszClass != NULL ) ? pszClass : "(null)", (int)updateType, entindex() );
 		}
@@ -4446,7 +4555,32 @@ matrix3x4_t& C_BaseEntity::GetParentToWorldTransform( matrix3x4_t &tempMatrix )
 		return tempMatrix;
 	}
 
-	if ( m_iParentAttachment != 0 )
+	// HL2SB: EF_FOLLOWBONE makes the attachment byte a BONE index -- the
+	// reference Entity:FollowBone parents through the parent's bone matrix
+	// instead of an attachment (archived contract).  Bone indices are
+	// ZERO-based (bone 0 is valid, unlike attachment 0 = "no attachment"),
+	// so the flag is tested BEFORE the != 0 gate and the index is validated
+	// against the model's real bone count.
+	if ( IsEffectActive( EF_FOLLOWBONE ) )
+	{
+		C_BaseAnimating *pAnimating = pMoveParent->GetBaseAnimating();
+		CStudioHdr *pStudioHdr = pAnimating ? pAnimating->GetModelPtr() : NULL;
+		if ( pStudioHdr != NULL &&
+			m_iParentAttachment >= 0 && m_iParentAttachment < pStudioHdr->numbones() )
+		{
+			// The parent cache includes vertex bones while it has bone followers.
+			if ( !pAnimating->IsEFlagSet( EFL_SETTING_UP_BONES ) )
+			{
+				pAnimating->GetBoneTransform( m_iParentAttachment, tempMatrix );
+				return tempMatrix;
+			}
+			if ( !pAnimating->IsBoneMatrixAvailable( m_iParentAttachment, false ) )
+				return pMoveParent->EntityToWorldTransform();
+			MatrixCopy( pAnimating->GetBone( m_iParentAttachment ), tempMatrix );
+			return tempMatrix;
+		}
+	}
+	else if ( m_iParentAttachment != 0 )
 	{
 		Vector vOrigin;
 		QAngle vAngles;
@@ -4456,7 +4590,7 @@ matrix3x4_t& C_BaseEntity::GetParentToWorldTransform( matrix3x4_t &tempMatrix )
 			return tempMatrix;
 		}
 	}
-	
+
 	// If we fall through to here, then just use the move parent's abs origin and angles.
 	return pMoveParent->EntityToWorldTransform();
 }
@@ -4475,6 +4609,7 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	if (!s_bAbsRecomputationEnabled)
 		return;
 
+
 	// FIXME: Recompute absbox!!!
 	if ((m_iEFlags & EFL_DIRTY_ABSTRANSFORM) == 0)
 	{
@@ -4491,6 +4626,23 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	}
 
 	RemoveEFlags( EFL_DIRTY_ABSTRANSFORM );
+
+#if defined( LUA_SDK )
+	const auto applyScriptPosition = [this]()
+	{
+		extern bool HL2SB_ScriptedCalcAbsolutePosition( CBaseEntity *, Vector &, QAngle & );
+		Vector origin = m_vecAbsOrigin;
+		QAngle angles = m_angAbsRotation;
+		if ( HL2SB_ScriptedCalcAbsolutePosition( this, origin, angles ) )
+		{
+			m_vecAbsOrigin = origin;
+			m_angAbsRotation = angles;
+			AngleMatrix( angles, origin, m_rgflCoordinateFrame );
+			MarkRenderHandleDirty();
+		}
+	};
+#endif
+
 
 	// HL2SB (2026-09-21, the "spawned entities have no model" sessions): the
 	// leaf system's contract is "call this when the renderable moves"
@@ -4515,12 +4667,18 @@ void C_BaseEntity::CalcAbsolutePosition( )
 		m_vecAbsOrigin = GetLocalOrigin();
 		m_angAbsRotation = GetLocalAngles();
 		NormalizeAngles( m_angAbsRotation );
+#if defined( LUA_SDK )
+		applyScriptPosition();
+#endif
 		return;
 	}
 	
 	if ( IsEffectActive(EF_BONEMERGE) )
 	{
 		MoveToAimEnt();
+#if defined( LUA_SDK )
+		applyScriptPosition();
+#endif
 		return;
 	}
 
@@ -4538,7 +4696,7 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	MatrixGetColumn( m_rgflCoordinateFrame, 3, m_vecAbsOrigin );
 
 	// if we have any angles, we have to extract our absolute angles from our matrix
-	if ( m_angRotation == vec3_angle && m_iParentAttachment == 0 )
+	if ( m_angRotation == vec3_angle && m_iParentAttachment == 0 && !IsEffectActive( EF_FOLLOWBONE ) )
 	{
 		// just copy our parent's absolute angles
 		VectorCopy( m_pMoveParent->GetAbsAngles(), m_angAbsRotation );
@@ -4554,10 +4712,14 @@ void C_BaseEntity::CalcAbsolutePosition( )
 	//
 	// So here, we keep our absorigin invalidated. It means we're returning an origin that is a frame old to CalculateIKLocks,
 	// but we'll still render with the right origin.
-	if ( m_iParentAttachment != 0 && (m_pMoveParent->GetEFlags() & EFL_SETTING_UP_BONES) )
+	if ( (m_iParentAttachment != 0 || IsEffectActive( EF_FOLLOWBONE )) && (m_pMoveParent->GetEFlags() & EFL_SETTING_UP_BONES) )
 	{
 		m_iEFlags |= EFL_DIRTY_ABSTRANSFORM;
 	}
+#if defined( LUA_SDK )
+	applyScriptPosition();
+#endif
+
 }
 
 void C_BaseEntity::CalcAbsoluteVelocity()
@@ -5948,6 +6110,11 @@ RenderGroup_t C_BaseEntity::GetRenderGroup()
 	{
 		renderGroup = RENDER_GROUP_TWOPASS;
 	}
+
+#ifdef LUA_SDK
+	if ( HL2SB_LuaDOFMode() && ( renderGroup == RENDER_GROUP_OPAQUE_ENTITY || renderGroup == RENDER_GROUP_TWOPASS ) )
+		renderGroup = RENDER_GROUP_TRANSLUCENT_ENTITY;
+#endif
 
 	return renderGroup;
 }

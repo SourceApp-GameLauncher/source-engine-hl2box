@@ -52,6 +52,8 @@ LUALIB_API lua_FileHandle_t &luaL_checkfilehandle (lua_State *L, int narg) {
 }
 
 
+extern void HL2SB_RefreshGameContentPaths();
+
 static int filesystem_AddPackFile (lua_State *L) {
   lua_pushboolean(L, filesystem->AddPackFile(luaL_checkstring(L, 1), luaL_checkstring(L, 2)));
   return 1;
@@ -73,6 +75,7 @@ static int filesystem_AddSearchPath (lua_State *L) {
   filesystem->AddSearchPath(luaL_checkstring(L, 1), luaL_checkstring(L, 2), (SearchPathAdd_t)luaL_optint(L, 3, PATH_ADD_TO_TAIL));
   if ( bGetCurrentDirectory )
 	  V_SetCurrentDirectory( fullpath );
+  if ( !Q_stricmp( luaL_checkstring(L, 2), "GAME" ) ) HL2SB_RefreshGameContentPaths();
   return 0;
 }
 
@@ -264,6 +267,7 @@ static int filesystem_Read (lua_State *L) {
 
 static int filesystem_RemoveAllSearchPaths (lua_State *L) {
   filesystem->RemoveAllSearchPaths();
+  HL2SB_RefreshGameContentPaths();
   return 0;
 }
 
@@ -273,12 +277,16 @@ static int filesystem_RemoveFile (lua_State *L) {
 }
 
 static int filesystem_RemoveSearchPath (lua_State *L) {
-  lua_pushboolean(L, filesystem->RemoveSearchPath(luaL_checkstring(L, 1), luaL_optstring(L, 2, 0)));
+  const char *pathID = luaL_optstring(L, 2, NULL);
+  const bool removed = filesystem->RemoveSearchPath(luaL_checkstring(L, 1), pathID);
+  if ( !pathID || !Q_stricmp(pathID, "GAME") ) HL2SB_RefreshGameContentPaths();
+  lua_pushboolean(L, removed);
   return 1;
 }
 
 static int filesystem_RemoveSearchPaths (lua_State *L) {
   filesystem->RemoveSearchPaths(luaL_checkstring(L, 1));
+  if ( !Q_stricmp(luaL_checkstring(L, 1), "GAME") ) HL2SB_RefreshGameContentPaths();
   return 0;
 }
 

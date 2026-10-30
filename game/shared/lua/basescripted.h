@@ -56,11 +56,19 @@ public:
 
 	// GMod ENT contract: OnRemove is called before the entity is deleted.
 	virtual void	UpdateOnRemove( void );
+	virtual bool TestCollision( const Ray_t &ray, unsigned int mask, trace_t &trace );
 
 #ifdef CLIENT_DLL
 	// model specific
 	virtual int DrawModel( int flags );
 
+	// HL2SB: the stock C_BaseEntity::ShouldDraw rejects any entity with no
+	// model ((model != 0) term).  GMod's widget classes (widget_base and its
+	// children) spawn with NO model on purpose and render entirely through
+	// ENT:Draw -> widgets.RenderMe -> OverlayRender (render.DrawBeam /
+	// DrawQuadEasy), so a modelless scripted entity whose script draws itself
+	// must still pass the renderable filter or its ENT:Draw never runs.
+	virtual bool ShouldDraw( void );
 
 	// HL2SB GMod compat: answers the script's ENT.RenderGroup, which is what picks
 	// between ENTITY:Draw and ENTITY:DrawTranslucent (and sorts the entity

@@ -49,6 +49,8 @@
 #include <string>
 #include <vector>
 
+extern ConVar hl2sb_dev_msgs;
+
 using namespace vgui;
 
 extern FocusNavGroup *HL2SB_LuaPanelFocusGroup(Panel *panel);
@@ -782,6 +784,19 @@ static int Panel_SetWorldClicker (lua_State *L) {
   return 0;
 }
 
+// Use the player view for screen input, independently of offscreen rendering.
+bool HL2SB_GetScreenClickDirection(Vector &direction, int x, int y, const CViewSetup *setup) {
+  const CViewSetup *camera = setup ? setup : (view ? view->GetPlayerViewSetup() : NULL);
+  if (!camera || camera->width <= 0 || camera->height <= 0 || camera->fov <= 0.0f) return false;
+  Vector forward, right, up;
+  AngleVectors(camera->angles, &forward, &right, &up);
+  const float halfWidth = camera->width * 0.5f;
+  const float halfHeight = camera->height * 0.5f;
+  direction = forward * (halfWidth / tanf(DEG2RAD(camera->fov) * 0.5f)) +
+    right * (x - camera->x - halfWidth) + up * (camera->y + halfHeight - y);
+  return VectorNormalize(direction) > 0.0f;
+}
+
 // Use the actual input target; a button or captured control blocks world aiming.
 bool HL2SB_GetWorldClickDirection(Vector &direction, const CViewSetup *setup) {
   if (!::L || !input() || !surface() || !ipanel() || !surface()->IsCursorVisible()) return false;
@@ -790,17 +805,9 @@ bool HL2SB_GetWorldClickDirection(Vector &direction, const CViewSetup *setup) {
   if (!target) target = input()->GetMouseOver();
   Panel *panel = target ? ipanel()->GetPanel(target, GetControlsModuleName()) : NULL;
   if (!panel || !panel->IsVisible() || !Panel_IsWorldClickerValue(::L, panel)) return false;
-  const CViewSetup *camera = setup ? setup : (view ? view->GetViewSetup() : NULL);
-  if (!camera || camera->width <= 0 || camera->height <= 0 || camera->fov <= 0.0f) return false;
   int x, y;
   input()->GetCursorPos(x, y);
-  Vector forward, right, up;
-  AngleVectors(camera->angles, &forward, &right, &up);
-  const float halfWidth = camera->width * 0.5f;
-  const float halfHeight = camera->height * 0.5f;
-  direction = forward * (halfWidth / tanf(DEG2RAD(camera->fov) * 0.5f)) +
-    right * (x - camera->x - halfWidth) + up * (camera->y + halfHeight - y);
-  return VectorNormalize(direction) > 0.0f;
+  return HL2SB_GetScreenClickDirection(direction, x, y, setup);
 }
 
 static int Panel_IsWithin (lua_State *L) {
@@ -1608,6 +1615,7 @@ static int Panel___gc (lua_State *L) {
       static int s_nParentedGc = 0;
       if (s_nParentedGc < 12) {
         ++s_nParentedGc;
+        if ( hl2sb_dev_msgs.GetBool() )
         Msg("[HL2SB] panel gc: '%s' (%p) was still parented (handles left=%d) - kept alive\n",
           plPanel->GetName(), (void *)plPanel, plPanel->m_nRefCount);
       }

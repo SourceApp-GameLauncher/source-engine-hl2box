@@ -1634,12 +1634,12 @@ void CBaseCombatCharacter::Event_Killed( const CTakeDamageInfo &info )
 	CBaseCombatWeapon *pDroppedWeapon = m_hActiveWeapon.Get();
 
 	// Drop any weapon that I own
-	if ( VPhysicsGetObject() )
+	if ( pDroppedWeapon && VPhysicsGetObject() )
 	{
 		Vector weaponForce = forceVector * VPhysicsGetObject()->GetInvMass();
 		Weapon_Drop( m_hActiveWeapon, NULL, &weaponForce );
 	}
-	else
+	else if ( pDroppedWeapon )
 	{
 		Weapon_Drop( m_hActiveWeapon );
 	}
@@ -2238,33 +2238,30 @@ bool CBaseCombatCharacter::Weapon_EquipAmmoOnly( CBaseCombatWeapon *pWeapon )
 			}
 
 #ifdef HL2SB
-			// HL2SB: report the ammo picked up from a duplicate weapon (the
-			// player already owned the weapon, so it's an ammo pickup).
-			// amount = how much ammo the player actually received.
-			//
-			// Fired for EVERY player touch, not only when ammo was actually
-			// taken: GiveAmmo answers 0 once the reserve is full, and with the
-			// old taken>0 gate walking over your own dropped weapon a second
-			// time was completely silent on the HUD (2026-09-26 report).  GMod
-			// pops the notice on every touch too.
-			// Gated on taken>0 (2026-09-26): firing unconditionally also fired on
-			// a full reserve, and re-spawning an owned weapon from the spawnmenu
-			// then popped a "ghost" strip for ammo the player never received.
-			// GMod notifies only when something was actually given.
+			// Pickup names identify the received ammo type, independently of the weapon.
 			if ( this && this->IsPlayer() && ( takenPrimary > 0 || takenSecondary > 0 ) )
 			{
 				CBasePlayer *pPlayer = (CBasePlayer *)this;
-				// HL2SB: Player:SetSuppressPickupNotices mutes this touch's
-				// ammo-strip toast too - same event, same HUD line.
 				if ( !HL2SB_IsPickupNoticeSuppressed( pPlayer ) )
 				{
-					IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
-					if ( event )
+					const int types[2] = { pWeapon->m_iPrimaryAmmoType, pWeapon->m_iSecondaryAmmoType };
+					const int amounts[2] = { takenPrimary, takenSecondary };
+					for ( int ammo = 0; ammo < 2; ++ammo )
 					{
-						event->SetInt( "userid", pPlayer->GetUserID() );
-						event->SetString( "item", UTIL_VarArgs( "%s_ammo", pWeapon->GetClassname() ) );
-						event->SetInt( "amount", takenPrimary > 0 ? takenPrimary : takenSecondary );
-						gameeventmanager->FireEvent( event );
+						if ( ammo == 1 && types[0] == types[1] ) continue;
+						const int amount = amounts[ammo] +
+							( ammo == 0 && types[0] == types[1] ? amounts[1] : 0 );
+						if ( amount <= 0 || types[ammo] < 0 ) continue;
+						Ammo_t *definition = GetAmmoDef()->GetAmmoOfIndex( types[ammo] );
+						if ( !definition || !definition->pName ) continue;
+						IGameEvent *event = gameeventmanager->CreateEvent( "item_pickup" );
+						if ( event )
+						{
+							event->SetInt( "userid", pPlayer->GetUserID() );
+							event->SetString( "item", UTIL_VarArgs( "%s_ammo", definition->pName ) );
+							event->SetInt( "amount", amount );
+							gameeventmanager->FireEvent( event );
+						}
 					}
 				}
 			}

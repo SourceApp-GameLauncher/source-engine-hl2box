@@ -555,6 +555,14 @@ bool CClientTools::IsValidHandle( HTOOLHANDLE handle )
 
 void CClientTools::OnEntityDeleted( CBaseEntity *pEntity )
 {
+#if defined ( LUA_SDK )
+	if ( L != NULL && pEntity != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "EntityRemoved" );
+			CBaseEntity::PushLuaInstanceSafe( L, pEntity );
+		END_LUA_CALL_HOOK( 1, 0 );
+	}
+#endif
 	HTOOLHANDLE handle = pEntity ? pEntity->GetToolHandle() : (HTOOLHANDLE)0;
 	if ( handle == (HTOOLHANDLE)0 )
 		return;

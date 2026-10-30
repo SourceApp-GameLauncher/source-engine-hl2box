@@ -7,6 +7,7 @@
 #define lbaseanimating_cpp
 
 #include "cbase.h"
+#include "activitylist.h"
 #include "luamanager.h"
 #include "lbaseanimating.h"
 #include "lua/hl2sb_bonemanipulator.h"
@@ -144,6 +145,98 @@ static int CBaseAnimating_GetBodygroupCount (lua_State *L) {
 static int CBaseAnimating_GetBodygroupName (lua_State *L) {
   lua_pushstring(L, luaL_checkanimating(L, 1)->GetBodygroupName(luaL_checkinteger(L, 2)));
   return 1;
+}
+
+// HL2SB: the bodygroup list the reference publishes as Entity:GetBodyGroups --
+// an array of { name, id (0-based part index), num (model count),
+// submodels = { model names } }, one entry per studio bodypart.  A self with
+// no studio model answers an EMPTY table (the reference builds a zero-size
+// table in that case), which is what the bodygroups property Filter expects:
+// it just finds no part with num > 1 and hides itself.
+static int CBaseAnimating_GetBodyGroups (lua_State *L) {
+  CBaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+
+  lua_newtable( L );
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 1;
+
+  int nParts = pStudioHdr->numbodyparts();
+  for ( int i = 0; i < nParts; ++i ) {
+    mstudiobodyparts_t *pPart = pStudioHdr->pBodypart( i );
+    if ( pPart == NULL )
+      continue;
+
+    lua_newtable( L );
+      lua_pushstring( L, pPart->pszName() );   lua_setfield( L, -2, "name" );
+      lua_pushinteger( L, i );                 lua_setfield( L, -2, "id" );
+      lua_pushinteger( L, pPart->nummodels );  lua_setfield( L, -2, "num" );
+      lua_newtable( L );
+      for ( int j = 0; j < pPart->nummodels; ++j ) {
+        lua_pushstring( L, pPart->pModel( j )->pszName() );
+        lua_rawseti( L, -2, j + 1 );
+      }
+      lua_setfield( L, -2, "submodels" );
+    lua_rawseti( L, -2, i + 1 );
+  }
+  return 1;
+}
+
+// HL2SB: Entity:SkinCount.  The reference pushes NO values when the self has
+// no studio model (nil to Lua), and the skin count otherwise -- keep that
+// exact shape, the skin property Filter compares it with > directly.
+static int CBaseAnimating_SkinCount (lua_State *L) {
+  CBaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 0;
+  lua_pushinteger( L, pStudioHdr->numskinfamilies() );
+  return 1;
+}
+
+// HL2SB: Entity:GetBoneParent -- parent bone index, or -1 for an out-of-range
+// bone / no model (the reference pushes -1.0 in those cases, never errors).
+static int CBaseAnimating_GetBoneParent (lua_State *L) {
+  CStudioHdr *pStudioHdr = luaL_checkanimating( L, 1 )->GetModelPtr();
+  if ( pStudioHdr == NULL ) {
+    lua_pushnumber( L, -1 );
+    return 1;
+  }
+  int iBone = luaL_checkinteger( L, 2 );
+  if ( iBone < 0 || iBone >= pStudioHdr->numbones() ) {
+    lua_pushnumber( L, -1 );
+    return 1;
+  }
+  lua_pushinteger( L, pStudioHdr->pBone( iBone )->parent );
+  return 1;
+}
+
+// HL2SB: Entity:BoneHasFlag( bone, flag ) -- the studio bone-flag reader the
+// bone tool's Setup uses to skip non-deform bones (reference server.dll
+// 0x18018a200: entity-gated, no model / out-of-range bone answers false).
+static int CBaseAnimating_BoneHasFlag (lua_State *L) {
+  CBaseAnimating *pAnimating = luaL_checkanimating( L, 1 );
+  CStudioHdr *pStudioHdr = pAnimating->GetModelPtr();
+  if ( pStudioHdr == NULL || pAnimating->IsDormant() )
+    return 0;
+
+  const int iBone = (int)luaL_checknumber( L, 2 );
+  const int iFlag = (int)luaL_checknumber( L, 3 );
+  if ( iBone < 0 || iBone >= pStudioHdr->numbones() )
+  {
+    lua_pushboolean( L, 0 );
+    return 1;
+  }
+  lua_pushboolean( L, ( pStudioHdr->pBone( iBone )->flags & iFlag ) != 0 );
+  return 1;
+}
+
+// HL2SB: the server half of Entity:SetBodygroup (the client table already has
+// it).  Plain engine setter, no return values -- the reference only guards
+// the pending-dynamic-model case the engine itself warns about.
+static int CBaseAnimating_SetBodygroup (lua_State *L) {
+  luaL_checkanimating( L, 1 )->SetBodygroup( luaL_checkinteger( L, 2 ), luaL_checkinteger( L, 3 ) );
+  return 0;
 }
 
 static int CBaseAnimating_GetBonePosition (lua_State *L) {
@@ -509,7 +602,15 @@ static int CBaseAnimating_ResetSequenceInfo (lua_State *L) {
 }
 
 static int CBaseAnimating_SelectWeightedSequence (lua_State *L) {
-  lua_pushinteger(L, luaL_checkanimating(L, 1)->SelectWeightedSequence((Activity)luaL_checkinteger(L, 2)));
+  CBaseAnimating *entity = luaL_checkanimating(L, 1);
+  const int activity = luaL_checkint(L, 2);
+  const char *name = NULL;
+  if ( activity == ACT_GMOD_SIT_ROLLERCOASTER ) name = "sit_rollercoaster";
+  else if ( activity == ACT_HL2MP_SIT ) name = "sit";
+  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_JEEP") ) name = "drive_jeep";
+  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_AIRBOAT") ) name = "drive_airboat";
+  int sequence = name ? entity->LookupSequence(name) : -1;
+  lua_pushinteger(L, sequence >= 0 ? sequence : entity->SelectWeightedSequence((Activity)activity));
   return 1;
 }
 
@@ -631,8 +732,13 @@ static int CBaseAnimating_TranslateBoneToPhysBone (lua_State *L) {
 }
 
 static int CBaseAnimating_SetSequence (lua_State *L) {
-  luaL_checkanimating(L, 1)->SetSequence(luaL_checkinteger(L, 2));
-  return 0;
+  CBaseAnimating *entity = luaL_checkanimating(L, 1);
+  const int sequence = lua_type(L, 2) == LUA_TNUMBER
+    ? (int)luaL_checknumber(L, 2)
+    : entity->LookupSequence(luaL_checkstring(L, 2));
+  entity->SetSequence(sequence);
+  lua_pushnumber(L, entity->SequenceDuration(sequence));
+  return 1;
 }
 
 // HL2SB GMod compat: Entity:StartActivity( activity ) and Entity:GetActivity().
@@ -990,15 +1096,14 @@ static int CBaseAnimating_RestartGesture (lua_State *L) {
   return 0;
 }
 
-// HL2SB GMod compat: Entity:Ignite( duration ) -- catch fire.  npc_scp_049-2
-// lights its victims on fire (scp0492base.lua:798).  CBaseAnimating::Ignite
-// spawns the engine's EntityFlame child, same as GMod's engine side.
+// Entity:Ignite( duration, radius ) shares the Entity binding's argument contract.
 static int CBaseAnimating_Ignite (lua_State *L) {
   CBaseAnimating *pAnim = luaL_checkanimating( L, 1 );
   if ( pAnim == NULL )
     return 0;
-  const float flDuration = (float)luaL_optnumber( L, 2, 10.0f );
-  pAnim->Ignite( flDuration, pAnim->IsNPC(), 0.0f, false );
+  const float flDuration = (float)luaL_checknumber( L, 2 );
+  const float flRadius = lua_type( L, 3 ) == LUA_TNUMBER ? (float)lua_tonumber( L, 3 ) : 0.0f;
+  pAnim->Ignite( flDuration, false, flRadius, false );
   return 0;
 }
 
@@ -1068,6 +1173,11 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetBodygroup", CBaseAnimating_GetBodygroup},
   {"GetBodygroupCount", CBaseAnimating_GetBodygroupCount},
   {"GetBodygroupName", CBaseAnimating_GetBodygroupName},
+  {"GetBodyGroups", CBaseAnimating_GetBodyGroups},
+  {"SkinCount", CBaseAnimating_SkinCount},
+  {"GetBoneParent", CBaseAnimating_GetBoneParent},
+  {"BoneHasFlag", CBaseAnimating_BoneHasFlag},
+  {"SetBodygroup", CBaseAnimating_SetBodygroup},
   {"GetBoneCount", CBaseAnimating_GetBoneCount},
   {"GetBoneName", CBaseAnimating_GetBoneName},
   {"GetBonePosition", CBaseAnimating_GetBonePosition},

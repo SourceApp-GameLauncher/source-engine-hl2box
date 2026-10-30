@@ -212,22 +212,7 @@ void CBaseProp::Spawn( void )
 			if ( FClassnameIs( this, "prop_physics" ) )
 			{
 				
-#if HL2SB
-				// HL2SB: convert THIS entity in place instead of spawning a
-				// replacement and deleting this one.  The replacement orphaned
-				// every existing handle: cod_c4 spawns a prop_physics with
-				// w_c4.mdl purely to read its collision bounds and :Remove()s it
-				// -- the replacement survived that Remove(), so every throw left
-				// a phantom C4 at the throw origin and the real C4 spent its
-				// whole life colliding with it (bouncing "like a metal block",
-				// never sticking; hl2sb_physicscollide_debug showed the thrown
-				// C4 hitting 'prop_physics' five times per throw).  GMod simply
-				// lets a no-propdata prop_physics work, which is exactly the
-				// override behaviour; converting in place also keeps keyvalues
-				// (angles, skin, ...) that the copy only dropped.
-				SetClassname( "prop_physics_override" );
-				Msg( "prop_physics without propdata converted to prop_physics_override in place (no orphan entity)\n" );
-#else					
+#if !HL2SB
 				DevWarning( "%s at %.0f %.0f %0.f uses model %s, which has no propdata which means it must be used on a prop_static. DELETED.\n", GetClassname(), GetAbsOrigin().x, GetAbsOrigin().y, GetAbsOrigin().z, szModel );
 				UTIL_Remove( this );
 				return;
@@ -460,12 +445,9 @@ void CBreakableProp::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize,
 	if( IsOnFire() )
 		return;
 
-	if( !HasInteraction( PROPINTER_FIRE_FLAMMABLE ) )
-		return;
-
 	BaseClass::Ignite( flFlameLifetime, bNPCOnly, flSize, bCalledByLevelDesigner );
 
-	if ( g_pGameRules->ShouldBurningPropsEmitLight() )
+	if ( g_pGameRules->ShouldBurningPropsEmitLight() && GetEffectEntity() )
 	{
 		GetEffectEntity()->AddEffects( EF_DIMLIGHT );
 	}
@@ -1157,7 +1139,7 @@ int CBreakableProp::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	}
 	else if( !bDeadly && (info.GetDamageType() & DMG_BURN) )
 	{
-		// Ignite if burned, and flammable (the Ignite() function takes care of all of this).
+		// Ignite from fire damage.
 		Ignite( random->RandomFloat( 10, 15 ), false );
 	}
 	else if( !bDeadly && (info.GetDamageType() & DMG_BULLET) )

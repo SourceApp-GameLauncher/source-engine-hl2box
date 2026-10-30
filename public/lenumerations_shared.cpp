@@ -1166,5 +1166,65 @@ LUALIB_API int luaopen_FL_EDICT( lua_State *L )
     lua_pushenum( L, FL_EDICT_PENDING_DORMANT_CHECK, "PENDING_DORMANT_CHECK" );
     lua_pushenum( L, FL_EDICT_DIRTY_PVS_INFORMATION, "DIRTY_PVS_INFORMATION" );
     LUA_SET_ENUM_LIB_END( L );
+
+    //---------------------------------------------------------------------
+    // HL2SB: GMod's SF_* spawnflag globals -- the constants Entity:HasSpawnFlags
+    // (a SHARED binding) takes.  The reference's client surface is only the
+    // physics/weapon subset while its server carries the full NPC/citizen set;
+    // the ifdef split below mirrors that per-realm surface (its current server
+    // binary has no SF_NPC_ALTCOLLISION, so neither does this one).  Client
+    // values are the archived reference capture; the server-only NPC/citizen
+    // values are the wiki/FGD constants (both spellings cross-check on every
+    // name the archive covers).  nobare: the flat SF_<name> global is what
+    // scripts read; the bare shortname must not leak (TEMPLATE, FOLLOW, GAG).
+    //---------------------------------------------------------------------
+    LUA_SET_ENUM_LIB_BEGIN( L, "SF" );
+#ifdef CLIENT_DLL
+    lua_pushenum_nobare( L, 8,        "PHYSPROP_MOTIONDISABLED" );
+    lua_pushenum_nobare( L, 512,      "PHYSPROP_PREVENT_PICKUP" );
+    lua_pushenum_nobare( L, 4194304,  "PHYSPROP_IS_GIB" );
+    lua_pushenum_nobare( L, 32768,    "PHYSBOX_MOTIONDISABLED" );
+    lua_pushenum_nobare( L, 1048576,  "PHYSBOX_ALWAYS_PICK_UP" );
+    lua_pushenum_nobare( L, 2097152,  "PHYSBOX_NEVER_PICK_UP" );
+    lua_pushenum_nobare( L, 4194304,  "PHYSBOX_NEVER_PUNT" );
+    lua_pushenum_nobare( L, 1,        "WEAPON_START_CONSTRAINED" );
+    lua_pushenum_nobare( L, 2,        "WEAPON_NO_PLAYER_PICKUP" );
+    lua_pushenum_nobare( L, 4,        "WEAPON_NO_PHYSCANNON_PUNT" );
+#else
+    lua_pushenum_nobare( L, 8,        "PHYSPROP_MOTIONDISABLED" );
+    lua_pushenum_nobare( L, 512,      "PHYSPROP_PREVENT_PICKUP" );
+    lua_pushenum_nobare( L, 4194304,  "PHYSPROP_IS_GIB" );
+    lua_pushenum_nobare( L, 32768,    "PHYSBOX_MOTIONDISABLED" );
+    lua_pushenum_nobare( L, 1048576,  "PHYSBOX_ALWAYS_PICK_UP" );
+    lua_pushenum_nobare( L, 2097152,  "PHYSBOX_NEVER_PICK_UP" );
+    lua_pushenum_nobare( L, 4194304,  "PHYSBOX_NEVER_PUNT" );
+    lua_pushenum_nobare( L, 1,        "WEAPON_START_CONSTRAINED" );
+    lua_pushenum_nobare( L, 2,        "WEAPON_NO_PLAYER_PICKUP" );
+    lua_pushenum_nobare( L, 4,        "WEAPON_NO_PHYSCANNON_PUNT" );
+    lua_pushenum_nobare( L, 1,        "NPC_WAIT_TILL_SEEN" );
+    lua_pushenum_nobare( L, 2,        "NPC_GAG" );
+    lua_pushenum_nobare( L, 4,        "NPC_FALL_TO_GROUND" );
+    lua_pushenum_nobare( L, 8,        "NPC_DROP_HEALTHKIT" );
+    lua_pushenum_nobare( L, 16,       "NPC_START_EFFICIENT" );
+    lua_pushenum_nobare( L, 128,      "NPC_WAIT_FOR_SCRIPT" );
+    lua_pushenum_nobare( L, 256,      "NPC_LONG_RANGE" );
+    lua_pushenum_nobare( L, 512,      "NPC_FADE_CORPSE" );
+    lua_pushenum_nobare( L, 1024,     "NPC_ALWAYSTHINK" );
+    lua_pushenum_nobare( L, 2048,     "NPC_TEMPLATE" );
+    lua_pushenum_nobare( L, 8192,     "NPC_NO_WEAPON_DROP" );
+    lua_pushenum_nobare( L, 16384,    "NPC_NO_PLAYER_PUSHAWAY" );
+    lua_pushenum_nobare( L, 65536,    "CITIZEN_FOLLOW" );
+    lua_pushenum_nobare( L, 131072,   "CITIZEN_MEDIC" );
+    lua_pushenum_nobare( L, 262144,   "CITIZEN_RANDOM_HEAD" );
+    lua_pushenum_nobare( L, 524288,   "CITIZEN_AMMORESUPPLIER" );
+    lua_pushenum_nobare( L, 1048576,  "CITIZEN_NOT_COMMANDABLE" );
+    lua_pushenum_nobare( L, 2097152,  "CITIZEN_IGNORE_SEMAPHORE" );
+    lua_pushenum_nobare( L, 4194304,  "CITIZEN_RANDOM_HEAD_MALE" );
+    lua_pushenum_nobare( L, 8388608,  "CITIZEN_RANDOM_HEAD_FEMALE" );
+    lua_pushenum_nobare( L, 16777216, "CITIZEN_USE_RENDER_BOUNDS" );
+    lua_pushenum_nobare( L, 512,      "FLOOR_TURRET_CITIZEN" );
+    lua_pushenum_nobare( L, 65536,    "ROLLERMINE_FRIENDLY" );
+#endif
+    LUA_SET_ENUM_LIB_END( L );
     return 0;
 }

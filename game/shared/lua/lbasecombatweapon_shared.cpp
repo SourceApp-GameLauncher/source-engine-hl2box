@@ -13,8 +13,13 @@
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
 #include "basescripted.h"
+#include "weapon_hl2mpbase_scriptedweapon.h"
 #include "activitylist.h"
 #include "mathlib/lvector.h"
+#include "usermessages.h"
+#ifndef CLIENT_DLL
+#include "recipientfilter.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -427,20 +432,21 @@ static int CBaseCombatWeapon_GetPrimaryAttackActivity (lua_State *L) {
   return 1;
 }
 
+static int CBaseCombatWeapon_SetHoldType (lua_State *L) {
+  CBaseCombatWeapon *weapon = luaL_checkweapon(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  if (weapon->IsScripted()) {
+    CHL2MPScriptedWeapon *scripted = static_cast<CHL2MPScriptedWeapon *>(weapon);
+    scripted->SetNativeHoldType(name);
+    scripted->UpdateHoldType();
+  }
+  return 0;
+}
+
 static int CBaseCombatWeapon_GetHoldType (lua_State *L) {
   CBaseCombatWeapon *pWeapon = luaL_checkweapon(L, 1);
   if ( pWeapon->IsScripted() ) {
-    lua_getref( L, pWeapon->m_nTableReference );
-    if ( lua_istable( L, -1 ) ) {
-      lua_getfield( L, -1, "HoldType" );
-      if ( lua_type( L, -1 ) == LUA_TSTRING ) {
-        lua_remove( L, -2 );
-        return 1;
-      }
-      lua_pop( L, 1 );
-    }
-    lua_pop( L, 1 );
-    lua_pushliteral( L, "normal" );
+    lua_pushstring(L, static_cast<CHL2MPScriptedWeapon *>(pWeapon)->GetNativeHoldType());
     return 1;
   }
   const Activity activity = pWeapon->ActivityOverride( ACT_MP_STAND_IDLE, NULL );
@@ -815,10 +821,6 @@ static int CBaseCombatWeapon_Precache (lua_State *L) {
   return 0;
 }
 
-static int CBaseCombatWeapon_PrimaryAttack (lua_State *L) {
-  luaL_checkweapon(L, 1)->PrimaryAttack();
-  return 0;
-}
 
 static int CBaseCombatWeapon_Ready (lua_State *L) {
   lua_pushboolean(L, luaL_checkweapon(L, 1)->Ready());
@@ -845,10 +847,6 @@ static int CBaseCombatWeapon_RescindReloadHudHint (lua_State *L) {
   return 0;
 }
 
-static int CBaseCombatWeapon_SecondaryAttack (lua_State *L) {
-  luaL_checkweapon(L, 1)->SecondaryAttack();
-  return 0;
-}
 
 static int CBaseCombatWeapon_SendViewModelAnim (lua_State *L) {
   luaL_checkweapon(L, 1)->SendViewModelAnim(luaL_checkint(L, 2));
@@ -1217,7 +1215,46 @@ static int CBaseCombatWeapon___tostring (lua_State *L) {
 }
 
 
+static int CBaseCombatWeapon_LastShootTime(lua_State *L) {
+  lua_pushnumber(L,luaL_checkweapon(L,1)->m_flLastShootTime);
+  return 1;
+}
+
+static int CBaseCombatWeapon_SetLastShootTime(lua_State *L) {
+  CBaseCombatWeapon *weapon = luaL_checkweapon(L,1);
+  weapon->m_flLastShootTime = lua_type(L,2) == LUA_TNUMBER ? lua_tonumber(L,2) : gpGlobals->curtime;
+  return 0;
+}
+
+static int CBaseCombatWeapon_CallOnClient(lua_State *L) {
+#ifndef CLIENT_DLL
+  CBaseCombatWeapon *weapon = luaL_checkweapon(L,1);
+  CBasePlayer *owner = ToBasePlayer(weapon->GetOwner());
+  if (!owner) {
+    DevMsg("ERROR! CallOnClient called on weapon without an owner!\n");
+    return 0;
+  }
+  const char *method = luaL_checkstring(L,2);
+  const char *data = lua_type(L,3) == LUA_TSTRING ? lua_tostring(L,3) : "";
+  if (Q_strlen(method) + Q_strlen(data) > 254) {
+    DevMsg("CallOnClient arguments exceed the usermessage limit\n");
+    return 0;
+  }
+  CSingleUserRecipientFilter filter(owner);
+  filter.MakeReliable();
+  UserMessageBegin(filter,"SWEPCmd");
+    WRITE_EHANDLE(weapon);
+    WRITE_STRING(method);
+    WRITE_STRING(data);
+  MessageEnd();
+#endif
+  return 0;
+}
+
 static const luaL_Reg CBaseCombatWeaponmeta[] = {
+  {"LastShootTime", CBaseCombatWeapon_LastShootTime},
+  {"SetLastShootTime", CBaseCombatWeapon_SetLastShootTime},
+  {"CallOnClient", CBaseCombatWeapon_CallOnClient},
   {"AbortReload", CBaseCombatWeapon_AbortReload},
   {"Activate", CBaseCombatWeapon_Activate},
   {"ActivityListCount", CBaseCombatWeapon_ActivityListCount},
@@ -1275,6 +1312,7 @@ static const luaL_Reg CBaseCombatWeaponmeta[] = {
   {"GetPrimaryAmmoType", CBaseCombatWeapon_GetPrimaryAmmoType},
   {"GetPrimaryAttackActivity", CBaseCombatWeapon_GetPrimaryAttackActivity},
   {"GetPrintName", CBaseCombatWeapon_GetPrintName},
+  {"SetHoldType", CBaseCombatWeapon_SetHoldType},
   {"GetHoldType", CBaseCombatWeapon_GetHoldType},
   {"GetRandomBurst", CBaseCombatWeapon_GetRandomBurst},
   {"GetRumbleEffect", CBaseCombatWeapon_GetRumbleEffect},
@@ -1322,13 +1360,11 @@ static const luaL_Reg CBaseCombatWeaponmeta[] = {
   {"OnActiveStateChanged", CBaseCombatWeapon_OnActiveStateChanged},
   {"OnRestore", CBaseCombatWeapon_OnRestore},
   {"Precache", CBaseCombatWeapon_Precache},
-  {"PrimaryAttack", CBaseCombatWeapon_PrimaryAttack},
   {"Ready", CBaseCombatWeapon_Ready},
   {"Reload", CBaseCombatWeapon_Reload},
   {"ReloadOrSwitchWeapons", CBaseCombatWeapon_ReloadOrSwitchWeapons},
   {"RescindAltFireHudHint", CBaseCombatWeapon_RescindAltFireHudHint},
   {"RescindReloadHudHint", CBaseCombatWeapon_RescindReloadHudHint},
-  {"SecondaryAttack", CBaseCombatWeapon_SecondaryAttack},
   {"SendViewModelAnim", CBaseCombatWeapon_SendViewModelAnim},
   {"SendWeaponAnim", CBaseCombatWeapon_SendWeaponAnim},
   {"SetActivity", CBaseCombatWeapon_SetActivity},

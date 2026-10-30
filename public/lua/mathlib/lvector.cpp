@@ -138,10 +138,10 @@ static int Vector_AngleEx (lua_State *L) {
 static int Vector_ToTable (lua_State *L) {
   Vector vec = luaL_checkvector(L, 1);
 
-  lua_newtable(L);
-  lua_pushnumber(L, vec.x); lua_setfield(L, -2, "x");
-  lua_pushnumber(L, vec.y); lua_setfield(L, -2, "y");
-  lua_pushnumber(L, vec.z); lua_setfield(L, -2, "z");
+  lua_createtable(L, 3, 0);
+  lua_pushnumber(L, vec.x); lua_rawseti(L, -2, 1);
+  lua_pushnumber(L, vec.y); lua_rawseti(L, -2, 2);
+  lua_pushnumber(L, vec.z); lua_rawseti(L, -2, 3);
   return 1;
 }
 
@@ -898,6 +898,16 @@ static const luaL_Reg QAnglemeta[] = {
 
 
 static int luasrc_QAngle (lua_State *L) {
+  if ( lua_gettop( L ) >= 1 && lua_isuserdata( L, 1 ) )
+  {
+    void *pAngle = luaL_testudata( L, 1, "QAngle" );
+    if ( pAngle != NULL )
+    {
+      lua_pushangle( L, *(QAngle *)pAngle );
+      return 1;
+    }
+  }
+
   lua_pushangle(L, QAngle((vec_t)luaL_optnumber(L, 1, 0.0f), (vec_t)luaL_optnumber(L, 2, 0.0f), (vec_t)luaL_optnumber(L, 3, 0.0f)));
   return 1;
 }
@@ -917,6 +927,7 @@ static const luaL_Reg QAnglemeta_extra[] = {
 
 static const luaL_Reg QAngle_funcs[] = {
   {"QAngle", luasrc_QAngle},
+  {"Angle", luasrc_QAngle},
   {NULL, NULL}
 };
 

@@ -100,6 +100,9 @@ static void HL2SB_DispatchLuaErrorHooks( lua_State *L, const char *pszError, con
 #include <vgui/ISystem.h>
 
 // memdbgon must be the last include file in a .cpp file!!!
+ConVar hl2sb_dev_msgs( "hl2sb_dev_msgs", "0", FCVAR_ARCHIVE,
+	"Print HL2SB diagnostics (script binds, REGISTER, addon mounting, [vtx], panel gc)" );
+
 #include "tier0/memdbgon.h"
 
 ConVar gamemode( "gamemode", "sandbox", FCVAR_ARCHIVE | FCVAR_REPLICATED );
@@ -734,6 +737,7 @@ void luasrc_setmodulepaths(lua_State *L) {
 // Defined below (HL2SB_LuaPanic); the menu state gets it too, otherwise an
 // unprotected error in a GameUI script aborts the process the same way.
 static int HL2SB_LuaPanic( lua_State *pL );
+extern void HL2SB_RegisterConsoleGlobals( lua_State *state );
 
 void luasrc_init_gameui (void) {
   LGameUI = luaL_newstate();
@@ -741,6 +745,7 @@ void luasrc_init_gameui (void) {
 
   luaL_openlibs(LGameUI);
   base_open(LGameUI);
+  HL2SB_RegisterConsoleGlobals( LGameUI );
   lua_pushboolean(LGameUI, 1);
   lua_setglobal(LGameUI, "_GAMEUI");  /* set global _GAMEUI */
 
@@ -766,6 +771,7 @@ void luasrc_init_gameui (void) {
   luasrc_setmodulepaths(LGameUI);
 
   luaopen_ConCommand(LGameUI);
+  luaopen_ConVar(LGameUI);
   luaopen_dbg(LGameUI);
   luaopen_engine(LGameUI);
   luaopen_enginevgui(LGameUI);
@@ -779,8 +785,9 @@ void luasrc_init_gameui (void) {
   luaopen_Panel(LGameUI);
   luaopen_surface(LGameUI);
   // The menu realm uses Material() through util.lua and the GMod crosshair
-  // editor. Open the real IMaterial constructor before loading those files.
+  // editor. ITexture installs the constructors and extends the material metatable.
   luaopen_IMaterial(LGameUI);
+  luaopen_ITexture(LGameUI);
   luaopen_vgui(LGameUI);
 
   /*
@@ -858,6 +865,10 @@ void luasrc_init_gameui (void) {
   // reads the collector and copies error text through these globals.
   HL2SB_LuaRegisterErrorCollector(LGameUI);
 
+  luasrc_register_metatable_globals( LGameUI );
+  if ( luasrc_dofile( LGameUI, LUA_ROOT "/includes/util.lua" ) != 0 )
+    luasrc_LuaWarnMsgF( "HL2SB: menu type helpers failed to load\n" );
+
   static const char *const menuFiles[] = {
     LUA_PATH_EXTENSIONS "/table.lua",     // table.merge, used by vgui.register
     LUA_PATH_EXTENSIONS "/vgui.lua",      // vgui.register
@@ -879,6 +890,9 @@ void luasrc_init_gameui (void) {
     // luasrc_dofile already reports what went wrong.
     if (luasrc_dofile(LGameUI, menuFiles[i]) != 0)
       luasrc_LuaWarnMsgF("HL2SB: main menu module failed to load: %s\n", menuFiles[i]);
+    if ( Q_stristr( menuFiles[i], "/hook.lua" ) || Q_stristr( menuFiles[i], "/concommand.lua" ) )
+      if ( luasrc_dofile( LGameUI, LUA_ROOT "/hl2sb/compat/dispatch.lua" ) != 0 )
+        luasrc_LuaWarnMsgF( "HL2SB: menu dispatch aliases failed to load\n" );
   }
 
   // Surface aliases such as SetDrawColor and DrawRect are shared by GMod's
@@ -914,8 +928,7 @@ void luasrc_init_gameui (void) {
   // realm loads from init.lua and the menu realm never did -- derma calls
   // istable at load time and died with
   // "attempt to call a nil value (global 'istable')" (hl2sb_derma.lua:190).
-  if (luasrc_dofile(LGameUI, LUA_ROOT "/includes/util.lua") != 0)
-    luasrc_LuaWarnMsgF("HL2SB: menu realm: GMod type helpers (lua/includes/util.lua) failed to load\n");
+  // Type helpers were loaded before the dispatch modules captured them.
 
   // GMod's DEFINE_BASECLASS is a PREPROCESSOR keyword here (see the rewrite pass
   // below): it expands to `local BaseClass = baseclass.Get( "X" )`, so the
@@ -957,7 +970,7 @@ void luasrc_init_gameui (void) {
   static const char *const s_pMenuSelfCheck =
     "local need = { 'include', 'istable', 'isfunction', 'ispanel', 'AccessorFunc',"
     " 'ToPanel', 'IsValid', 'Msg', 'MsgN', 'Warning', 'ErrorNoHalt', 'surface',"
-    " 'vgui', 'file', 'baseclass' }\n"
+    " 'vgui', 'file', 'baseclass', 'ConVar', 'GetConVar_Internal', 'Material', 'C_Material' }\n"
     "local missing = {}\n"
     "for _, n in ipairs( need ) do\n"
     "  if ( _G[ n ] == nil ) then missing[ #missing + 1 ] = n end\n"
@@ -982,6 +995,8 @@ void luasrc_init_gameui (void) {
 
 void luasrc_shutdown_gameui (void) {
   ResetGameUIConCommandDatabase();
+  extern void ResetGameUIConVarDatabase( void );
+  ResetGameUIConVarDatabase();
 
   // HL2SB (sbrust): GMod 的 gmod13_close 生命周期 -- 状态销毁前逐个通知
   // 已加载的二进制模块（见 lua/src/hl2sb_binmod.c）。
@@ -1496,6 +1511,8 @@ static int HL2SB_LuaPanic( lua_State *pL )
 	return 0;
 }
 
+static int HL2SB_LoadBootstrapModule( lua_State *state, const char *filename, const char *name );
+
 void luasrc_init (void) {
   if (g_bLuaInitialized)
 	  return;
@@ -1539,6 +1556,11 @@ void luasrc_init (void) {
   luasrc_setmodulepaths(L);
 
   luasrc_openlibs(L);
+
+  // Original dispatch modules capture the type helpers when first loaded.
+  if ( HL2SB_LoadBootstrapModule( L, LUA_ROOT "/includes/util.lua", "util.lua" ) != 0 ||
+       HL2SB_LoadBootstrapModule( L, LUA_PATH_MODULES "/hook.lua", "hook.lua" ) != 0 )
+    luasrc_LuaWarnMsgF( "HL2SB: shared Lua prerequisites failed to load\n" );
 
 #ifdef CLIENT_DLL
   HL2SB_OpenWorkshopLibrary( L );
@@ -2334,6 +2356,18 @@ static int HL2SB_LoadLuaFile (lua_State *L, const char *filename, bool execute) 
 	LuaMakeRelative( szRelative, sizeof( szRelative ) );
 	filename = szRelative;
 
+	char fullPath[MAX_PATH] = { 0 };
+	if ( filesystem )
+		filesystem->RelativePathToFullPath( filename, "MOD", fullPath, sizeof( fullPath ) );
+	if ( luasrc_PathInDisabledAddon( filename ) || luasrc_PathInDisabledAddon( fullPath ) )
+	{
+		if ( hl2sb_dev_msgs.GetBool() )
+		luasrc_LuaInfoMsgF( "[Lua] %s: addon is DISABLED - skipped\n", filename );
+		if ( !execute )
+			luaL_loadstring( L, "" );
+		return 0;
+	}
+
 	LuaAutoRefreshTrack( filename );
 
 	// GLua syntax compat: stock GMod scripts (and many workshop SWEPs) use
@@ -2422,6 +2456,88 @@ LUA_API int luasrc_dofile (lua_State *L, const char *filename) {
 extern void HL2SB_InstallNativeUserMessages( lua_State *L );
 #endif
 
+// Original modules execute once per Lua state and follow their owning realm.
+static bool HL2SB_ShouldLoadModule( lua_State *state, const char *name )
+{
+    // This module registers Derma controls and is required after Derma initialization.
+    if ( !Q_stricmp( name, "notification.lua" ) )
+        return false;
+    static const char *const clientOnly[] = {
+        "draw.lua", "markup.lua", "effects.lua", "halo.lua", "killicon.lua",
+        "spawnmenu.lua", "controlpanel.lua", "presets.lua", "menubar.lua",
+        "matproxy.lua", "notification.lua", "search.lua", NULL
+    };
+    lua_getglobal( state, "CLIENT" );
+    const bool client = lua_toboolean( state, -1 ) != 0;
+    lua_pop( state, 1 );
+    if ( !client )
+        for ( int i = 0; clientOnly[i]; ++i )
+            if ( !Q_stricmp( name, clientOnly[i] ) )
+                return false;
+    return true;
+}
+
+static int HL2SB_LoadBootstrapModule( lua_State *state, const char *filename, const char *name )
+{
+    const int top = lua_gettop( state );
+    char moduleName[128];
+    Q_FileBase( name, moduleName, sizeof( moduleName ) );
+    luaL_getsubtable( state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE );
+    lua_getfield( state, -1, moduleName );
+    bool loaded = false;
+    if ( lua_istable( state, -1 ) )
+    {
+        // Native libraries also publish tables before their Lua extension runs.
+        lua_getfield( state, -1, "_NAME" );
+        const char *publishedName = lua_tostring( state, -1 );
+        loaded = publishedName && !Q_strcmp( publishedName, moduleName );
+    }
+    luaL_getsubtable( state, LUA_REGISTRYINDEX, "HL2SB.BootstrapModules" );
+    lua_getfield( state, -1, moduleName );
+    loaded = loaded || lua_toboolean( state, -1 ) != 0;
+    lua_settop( state, top );
+    if ( loaded )
+        return 0;
+
+    const int status = luasrc_dofile( state, filename );
+    if ( status == 0 )
+    {
+        luaL_getsubtable( state, LUA_REGISTRYINDEX, "HL2SB.BootstrapModules" );
+        lua_pushboolean( state, true );
+        lua_setfield( state, -2, moduleName );
+        lua_pop( state, 1 );
+        // module() publishes its table. Plain global libraries need a cache entry too.
+        luaL_getsubtable( state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE );
+        lua_getfield( state, -1, moduleName );
+        if ( lua_isnil( state, -1 ) )
+        {
+            lua_pop( state, 1 );
+            lua_getglobal( state, moduleName );
+            if ( lua_isnil( state, -1 ) )
+            {
+                lua_pop( state, 1 );
+                lua_pushboolean( state, true );
+            }
+            lua_setfield( state, -2, moduleName );
+        }
+    }
+    else
+    {
+        // module() may publish its table before a chunk raises an error.
+        luaL_getsubtable( state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE );
+        lua_pushnil( state );
+        lua_setfield( state, -2, moduleName );
+    }
+    lua_settop( state, top );
+    if ( status == 0 && ( !Q_strcmp( moduleName, "hook" ) || !Q_strcmp( moduleName, "concommand" ) ) )
+    {
+        const int aliasStatus = luasrc_dofile( state, LUA_ROOT "/hl2sb/compat/dispatch.lua" );
+        lua_settop( state, top );
+        if ( aliasStatus != 0 ) return aliasStatus;
+    }
+    return status;
+}
+
 LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 {
 	FileFindHandle_t fh;
@@ -2437,6 +2553,9 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 	// stack leak that took the HUD down (see AGENTS.md 5.4.2).
 	int nFailed = 0;
 	const int nTop = lua_gettop( L );
+	const bool moduleFolder = Q_stristr( path, "/includes/modules" ) != NULL;
+    if ( moduleFolder && HL2SB_LoadBootstrapModule( L, LUA_ROOT "/includes/util.lua", "util.lua" ) != 0 )
+        ++nFailed;
 
 	//-----------------------------------------------------------------------------
 	// HL2SB: GMod's module dependency order.
@@ -2478,14 +2597,17 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 		char relative[ 512 ];
 		Q_snprintf( relative, sizeof( relative ), "%s/%s", path, s_pHL2SBFirst[ k ] );
 
-		if ( !LuaFileExists( relative ) )
+		if ( !LuaFileExists( relative ) ||
+		     ( moduleFolder && !HL2SB_ShouldLoadModule( L, s_pHL2SBFirst[k] ) ) )
 			continue;
 
 		char loadname[ 512 ];
 		filesystem->RelativePathToFullPath( relative, "MOD", loadname, sizeof( loadname ) );
 
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua]   %s  (prerequisite)\n", relative );
-		if ( luasrc_dofile( L, loadname ) != 0 )
+		if ( ( moduleFolder ? HL2SB_LoadBootstrapModule( L, loadname, s_pHL2SBFirst[k] )
+		                    : luasrc_dofile( L, loadname ) ) != 0 )
 			++nFailed;
 		lua_settop( L, nTop );
 
@@ -2508,7 +2630,7 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 				}
 			}
 
-			if ( bAlreadyLoaded )
+			if ( bAlreadyLoaded || ( moduleFolder && !HL2SB_ShouldLoadModule( L, fn ) ) )
 			{
 				fn = g_pFullFileSystem->FindNext( fh );
 				continue;
@@ -2523,8 +2645,10 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 				Q_snprintf( relative, sizeof( relative ), "%s/%s", path, fn );
 				filesystem->RelativePathToFullPath( relative, "MOD", loadname, sizeof( loadname ) );
 				// HL2SB: load diagnostics - "which Lua files actually ran".
+				if ( hl2sb_dev_msgs.GetBool() )
 				luasrc_LuaInfoMsgF( "[Lua]   %s\n", relative );
-				if ( luasrc_dofile( L, loadname ) != 0 )
+				if ( ( moduleFolder ? HL2SB_LoadBootstrapModule( L, loadname, fn )
+				                    : luasrc_dofile( L, loadname ) ) != 0 )
 					++nFailed;
 				lua_settop( L, nTop );
 				++nLoaded;
@@ -2541,8 +2665,10 @@ LUA_API void luasrc_dofolder (lua_State *L, const char *path)
 		HL2SB_InstallNativeUserMessages( L );
 #endif
 	if ( nFailed > 0 )
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaWarnMsgF( "[Lua] %s -> %d file(s), %d FAILED\n", path, nLoaded, nFailed );
 	else
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[Lua] %s -> %d file(s)\n", path, nLoaded );
 }
 
@@ -2638,6 +2764,7 @@ LUA_API int luasrc_dofile_includes (lua_State *L, const char *pszName)
 	char fullpath[ MAX_PATH ];
 	filesystem->RelativePathToFullPath( relative, "MOD", fullpath, sizeof( fullpath ) );
 
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[Lua]   %s\n", relative );
 	return luasrc_dofile( L, fullpath );
 }
@@ -2663,10 +2790,12 @@ LUA_API void luasrc_dofolder_sorted (lua_State *L, const char *path, bool bRecur
 		// mounts it (see luasrc_PathInDisabledAddon)
 		if ( luasrc_PathInDisabledAddon( loadname ) )
 		{
+			if ( hl2sb_dev_msgs.GetBool() )
 			Msg( "[Lua]   %s: addon is DISABLED - skipped\n", files[i].Get() );
 			continue;
 		}
 
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[Lua]   %s\n", files[i].Get() );
 		if ( luasrc_dofile( L, loadname ) != 0 )
 			++nFailed;
@@ -2676,8 +2805,10 @@ LUA_API void luasrc_dofolder_sorted (lua_State *L, const char *path, bool bRecur
 	}
 
 	if ( nFailed > 0 )
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaWarnMsgF( "[Lua] %s -> %d file(s), %d FAILED%s\n", path, files.Count(), nFailed, bRecurse ? " (recursive, A-Z)" : " (A-Z)" );
 	else
+		if ( hl2sb_dev_msgs.GetBool() )
 		Msg( "[Lua] %s -> %d file(s)%s\n", path, files.Count(), bRecurse ? " (recursive, A-Z)" : " (A-Z)" );
 }
 
@@ -3212,10 +3343,12 @@ static void luasrc_LoadOneEntity (const char *filename, const char *className)
 
 	if ( luasrc_PathInDisabledAddon( fullpath ) )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua] entity '%s' <- %s: addon is DISABLED - skipped\n", className, fullpath );
 		return;
 	}
 
+	if ( hl2sb_dev_msgs.GetBool() )
 	luasrc_LuaInfoMsgF( "[Lua] entity '%s' <- %s\n", className, fullpath );
 
 	// HL2SB: this is the one place that knows which addon (or the tree's own
@@ -3547,23 +3680,27 @@ void luasrc_LoadEntities (const char *path)
 //-----------------------------------------------------------------------------
 void luasrc_RunEntsOnLoaded ( void )
 {
-	lua_getglobal( L, "scripted_ents" );
-	if ( lua_istable( L, -1 ) )
+	const char *modules[] = { "scripted_ents", "weapons" };
+	for ( int i = 0; i < ARRAYSIZE( modules ); ++i )
 	{
-		lua_getfield( L, -1, "OnLoaded" );
-		if ( lua_isfunction( L, -1 ) )
+		lua_getglobal( L, modules[i] );
+		if ( lua_istable( L, -1 ) )
 		{
-			lua_remove( L, -2 );
-			luasrc_pcall( L, 0, 0, 0 );
+			lua_getfield( L, -1, "OnLoaded" );
+			if ( lua_isfunction( L, -1 ) )
+			{
+				lua_remove( L, -2 );
+				luasrc_pcall( L, 0, 0, 0 );
+			}
+			else
+			{
+				lua_pop( L, 2 );
+			}
 		}
 		else
 		{
-			lua_pop( L, 2 );
+			lua_pop( L, 1 );
 		}
-	}
-	else
-	{
-		lua_pop( L, 1 );
 	}
 }
 
@@ -3572,8 +3709,8 @@ void luasrc_RunEntsOnLoaded ( void )
 **
 ** GMod treats "lua/weapons/<name>.lua" and "lua/weapons/<name>/shared.lua" as the
 ** same weapon, so both paths funnel through here and a flat file behaves exactly
-** like <name>/shared.lua -- same seed, same __folder/__base, same
-** weapon.register() call, same log line.
+** like <name>/shared.lua -- same initial tables and folder, same
+** weapons.Register() call, same log line.
 */
 static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 {
@@ -3586,6 +3723,7 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 
 	if ( luasrc_PathInDisabledAddon( fullpath ) )
 	{
+		if ( hl2sb_dev_msgs.GetBool() )
 		luasrc_LuaInfoMsgF( "[Lua] weapon '%s' <- %s: addon is DISABLED - skipped\n", className, fullpath );
 		return;
 	}
@@ -3595,56 +3733,30 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	// get picked up?" could only be answered by walking the file system by hand --
 	// and GMod compatibility regressions are exactly the kind of thing that has
 	// to be checkable from the log.
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[Lua] weapon '%s' <- %s\n", className, fullpath );
 
 	// HL2SB: this is the one place that knows which addon (or the tree's own
 	// lua/) a scripted class came from -- see luasrc_NoteClassScript.
 	luasrc_NoteClassScript( className, filename, fullpath );
 
-	// GMod semantics: the engine seeds every SWEP with a deep copy of the base
-	// weapon table before running the script, so stock scripts can assign fields
-	// into SWEP.Primary/SWEP.Secondary at the top level (`SWEP.Primary.Sound = ...`)
-	// without creating those tables themselves.
-	//
-	// The table key is the weapons/ DIRECTORY name, which for the GMod-style base
-	// is "weapon_base"; fall back to the engine's own scripted base for older
-	// layouts. Primary/Secondary are guaranteed to be tables regardless of what
-	// the seed resolved, because a base whose data lives in flat keys
-	// (clip_size, ...) has no Primary table of its own.
-	luasrc_dostring( L,
-		"local __b = weapon.get( \"weapon_base\" )"
-		" or weapon.get( \"" LUA_BASE_WEAPON "\" ) or {};"
-		"SWEP = table.copy( __b );"
-		"if type( SWEP ) ~= \"table\" then SWEP = {} end;"
-		"if type( SWEP.Primary ) ~= \"table\" then SWEP.Primary = {} end;"
-		"if type( SWEP.Secondary ) ~= \"table\" then SWEP.Secondary = {} end" );
-	lua_getglobal( L, "SWEP" );
-	if ( !lua_istable( L, -1 ) )
-	{
-		// Paranoia: the seed should always leave a table here.
-		lua_pop( L, 1 );
-		lua_newtable( L );
-		lua_newtable( L );
-		lua_setfield( L, -2, "Primary" );
-		lua_newtable( L );
-		lua_setfield( L, -2, "Secondary" );
-	}
+	// Keep the class definition independent of its base. The original weapons
+	// registry resolves Base after all class files have been registered.
+	lua_newtable( L );
+	lua_newtable( L );
+	lua_setfield( L, -2, "Primary" );
+	lua_newtable( L );
+	lua_setfield( L, -2, "Secondary" );
 
 	char entDir[ MAX_PATH ];
 	Q_snprintf( entDir, sizeof( entDir ), "weapons/%s", className );
-	// Old base tables use an empty category; let the registry supply its default.
-	lua_getfield( L, -1, "Category" );
-	const bool emptyCategory = lua_type( L, -1 ) == LUA_TSTRING && lua_rawlen( L, -1 ) == 0;
-	lua_pop( L, 1 );
-	if ( emptyCategory )
-	{
-		lua_pushnil( L );
-		lua_setfield( L, -2, "Category" );
-	}
 	lua_pushstring( L, entDir );
 	lua_setfield( L, -2, "__folder" );
-	lua_pushstring( L, LUA_BASE_WEAPON );
-	lua_setfield( L, -2, "__base" );
+	// HL2SB: GMod stamps SWEP.Folder on every scripted weapon -- the original
+	// tool framework globs SWEP.Folder .. "/stools/*.lua" (stool.lua), so a nil
+	// Folder takes every stool down with it.  Same string as __folder.
+	lua_pushstring( L, entDir );
+	lua_setfield( L, -2, "Folder" );
 	// HL2SB GMod compat (2026-09-24): SWEP.ClassName -- GMod stamps the class
 	// name onto every SWEP table; a grenade SWEP strips itself with
 	// owner:StripWeapon( self.ClassName ) and reads nil without it.
@@ -3653,17 +3765,41 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 	lua_setglobal( L, "SWEP" );
 	if ( luasrc_dofile( L, fullpath ) == 0 )
 	{
-		lua_getglobal( L, "weapon" );
+		lua_getglobal( L, "SWEP" );
+		const int definition = lua_gettop( L );
+		lua_getglobal( L, "weapons" );
 		if ( lua_istable( L, -1 ) )
 		{
-			lua_getfield( L, -1, "register" );
+			lua_getfield( L, -1, "Register" );
 			if ( lua_isfunction( L, -1 ) )
 			{
 				lua_remove( L, -2 );
-				lua_getglobal( L, "SWEP" );
+				lua_pushvalue( L, definition );
 				lua_pushstring( L, className );
 				luasrc_pcall( L, 2, 0, 0 );
-				RegisterScriptedWeapon( className );
+
+				// Register may veto or change the class name. Only create a native
+				// factory when this exact definition is in the original registry.
+				lua_getfield( L, definition, "ClassName" );
+				char registeredName[ MAX_WEAPON_STRING ] = "";
+				if ( lua_type( L, -1 ) == LUA_TSTRING )
+					Q_strncpy( registeredName, lua_tostring( L, -1 ), sizeof( registeredName ) );
+				lua_pop( L, 1 );
+				lua_getglobal( L, "weapons" );
+				lua_getfield( L, -1, "GetStored" );
+				lua_remove( L, -2 );
+				if ( lua_isfunction( L, -1 ) && registeredName[0] )
+				{
+					lua_pushstring( L, registeredName );
+					luasrc_pcall( L, 1, 1, 0 );
+					const bool registered = lua_rawequal( L, definition, -1 ) != 0;
+					lua_pop( L, 1 );
+					if ( registered ) RegisterScriptedWeapon( registeredName );
+				}
+				else
+				{
+					lua_pop( L, 1 );
+				}
 			}
 			else
 			{
@@ -3674,6 +3810,7 @@ static void luasrc_LoadOneWeapon (const char *filename, const char *className)
 		{
 			lua_pop( L, 1 );
 		}
+		lua_pop( L, 1 );
 	}
 	lua_pushnil( L );
 	lua_setglobal( L, "SWEP" );
@@ -3802,6 +3939,7 @@ void luasrc_LoadEffects (const char *path)
 
 				if ( luasrc_PathInDisabledAddon( fullpath ) )
 				{
+					if ( hl2sb_dev_msgs.GetBool() )
 					luasrc_LuaInfoMsgF( "[Lua] effect '%s' <- %s: addon is DISABLED - skipped\n", fn, fullpath );
 				}
 				else
@@ -3860,6 +3998,7 @@ void luasrc_LoadEffects (const char *path)
 
 				if ( luasrc_PathInDisabledAddon( fullpath ) )
 				{
+					if ( hl2sb_dev_msgs.GetBool() )
 					luasrc_LuaInfoMsgF( "[Lua] effect '%s' <- %s: addon is DISABLED - skipped\n", className, fullpath );
 					continue;
 				}

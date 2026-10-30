@@ -22,6 +22,8 @@
 #include "model_types.h"	// HL2SB: STUDIO_TRANSPARENCY
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 //-----------------------------------------------------------------------------
@@ -580,6 +582,7 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 			int iHandMerged = -1;
 			if ( m_pBoneMergeCache && iHandBone >= 0 )
 				iHandMerged = m_pBoneMergeCache->IsBoneMerged( iHandBone ) ? 1 : 0;
+			if ( hl2sb_dev_msgs.GetBool() )
 			Msg( "[HL2SB wpns/cl] ent=%d wp=%s mine=%d owner=%d ownerpos=(%.0f %.0f %.0f) parent=%s#%d abs=(%.0f %.0f %.0f) local=(%.0f %.0f %.0f) seq=%d cyc=%.2f model=%s fx=0x%x cache=%d hand=%d merged=%d\n",
 				 iEnt, GetClassname(), ( pOwnerEnt == pLocal ) ? 1 : 0,
 				 pOwnerEnt ? pOwnerEnt->entindex() : -1,
@@ -629,7 +632,7 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 #if defined( LUA_SDK )
 	if ( IsScripted() && L != NULL && lua_isrefvalid( L, m_nTableReference ) )
 	{
-		// ⚠️ recursion latch (2026-09-24): the GMod-documented pattern inside
+		// recursion latch (2026-09-24): the GMod-documented pattern inside
 		// WEAPON:DrawWorldModel is `self:DrawModel( flags )` -- which re-enters
 		// THIS function.  While dispatching, fall straight through to the
 		// default render so that inner call draws the plain model instead of
@@ -637,6 +640,10 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 		static bool s_bInDrawWorldModel = false;
 		if ( s_bInDrawWorldModel )
 			return BaseClass::DrawModel( flags );
+
+		// Custom world models read the weapon's cached bones before drawing.
+		// Prepare them even when Lua hides the underlying weapon model.
+		SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
 
 		bool bTranslucent = ( flags & STUDIO_TRANSPARENCY ) != 0;
 		const char *pszMethod = bTranslucent ? "DrawWorldModelTranslucent" : "DrawWorldModel";
@@ -686,11 +693,13 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 				Vector vB;
 				MatrixGetColumn( mBone, 3, vB );
 				const Vector &vA = GetAbsOrigin();
+				if ( hl2sb_dev_msgs.GetBool() )
 				Msg( "[HL2SB wpns/bone] ent=%d abs=(%.0f %.0f %.0f) handbone=(%.0f %.0f %.0f) seq=%d cyc=%.2f\n",
 					 iEntB, vA.x, vA.y, vA.z, vB.x, vB.y, vB.z, GetSequence(), (float)GetCycle() );
 			}
 			else
 			{
+				if ( hl2sb_dev_msgs.GetBool() )
 				Msg( "[HL2SB wpns/bone] ent=%d handbone=MISS (lookup=%d)\n", iEntB, iHB );
 			}
 		}

@@ -41,6 +41,9 @@ public:
 
 	void			Precache( void );
 	void			InitScriptedWeapon( void );
+	void SetNativeHoldType( const char *name );
+	const char *GetNativeHoldType() const;
+	void UpdateHoldType();
 
 	void	PrimaryAttack( void );
 	void	SecondaryAttack( void );
@@ -251,6 +254,9 @@ private:
 	CHL2MPScriptedWeapon( const CHL2MPScriptedWeapon & );
 
 	CNetworkString( m_iScriptedClassname, MAX_WEAPON_STRING );
+	CNetworkString( m_szHoldType, 80 );
+	char m_szAppliedHoldType[80];
+	bool m_bUpdatingHoldType;
 
 };
 

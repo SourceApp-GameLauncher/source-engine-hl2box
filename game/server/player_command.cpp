@@ -19,6 +19,8 @@
 #include "tier0/vprof.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 extern IGameMovement *g_pGameMovement;
@@ -207,6 +209,18 @@ void CPlayerMove::SetupMove( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper *p
 	move->m_flConstraintRadius = player->m_flConstraintRadius;
 	move->m_flConstraintWidth = player->m_flConstraintWidth;
 	move->m_flConstraintSpeedFactor = player->m_flConstraintSpeedFactor;
+
+#if defined( LUA_SDK )
+	// HL2SB: GM:SetupMove( ply, mv, cmd ) dispatches from the OUTER SetupMove
+	// (archived reference CGMODPlayerMove.SetupMove: the cmd->move copy runs
+	// first, then the hook).  It has no takeover return -- the move-data
+	// edits themselves are the contract.  Local extern on purpose: waf has no
+	// header dependency propagation.
+	{
+		extern int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
+		HL2SB_LuaMoveHooks( player, move, "SetupMove" );
+	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -219,6 +233,25 @@ void CPlayerMove::SetupMove( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper *p
 void CPlayerMove::FinishMove( CBasePlayer *player, CUserCmd *ucmd, CMoveData *move )
 {
 	VPROF( "CPlayerMove::FinishMove" );
+
+#if defined( LUA_SDK )
+	// HL2SB: GM:FinishMove( ply, mv ) dispatches from the OUTER FinishMove
+	// (archived reference GM.FinishMove.dispatch: the hook runs first; a true
+	// return declares the script already moved the player from the move data
+	// and skips ONLY the native position/velocity/angle write-back below --
+	// the m_nOldButtons latch is kept either way, exactly like the reference
+	// true-branch which stores move+0x24 into the player and returns).  Local
+	// extern on purpose: waf has no header dependency propagation.
+	{
+		extern int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
+		if ( HL2SB_LuaMoveHooks( player, move, "FinishMove" ) != 0 )
+		{
+			player->m_Local.m_nOldButtons = move->m_nButtons;
+			player->SetPreviouslyPredictedOrigin( move->GetAbsOrigin() );
+			return;
+		}
+	}
+#endif
 
 	// NOTE: Don't copy this.  the movement code modifies its local copy but is not expecting to be authoritative
 	//player->m_flMaxspeed			= move->m_flClientMaxSpeed;
@@ -424,6 +457,7 @@ void CPlayerMove::RunCommand ( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 		if ( s_nUcmdDiag < 4 && ucmd->mousedx != 0 )
 		{
 			++s_nUcmdDiag;
+			if ( hl2sb_dev_msgs.GetBool() )
 			Msg( "[HL2SB physgun] srv ucmd dx=%d dy=%d cmdnum=%d\n",
 				ucmd->mousedx, ucmd->mousedy, ucmd->command_number );
 		}
@@ -467,6 +501,10 @@ void CPlayerMove::RunCommand ( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	else
 	{
 		VPROF( "pVehicle->ProcessMovement()" );
+#if defined( LUA_SDK )
+        extern void HL2SB_LuaVehicleMove( CBasePlayer *, CBaseEntity *, CMoveData * );
+        HL2SB_LuaVehicleMove( player, pVehicle->GetVehicleEnt(), g_pMoveData );
+#endif
 		pVehicle->ProcessMovement( player, g_pMoveData );
 	}
 			

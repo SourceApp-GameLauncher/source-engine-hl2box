@@ -145,6 +145,12 @@ DEFINE_FIXEDSIZE_ALLOCATOR_MT( studiodata_t, 128, CUtlMemoryPool::GROW_SLOW );
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+static bool HL2SB_DevMsgsEnabled( void )
+{
+	static ConVarRef s_HL2SBDevMsgs( "hl2sb_dev_msgs" );
+	return s_HL2SBDevMsgs.IsValid() && s_HL2SBDevMsgs.GetBool();
+}
+
 class CTempAllocHelper
 {
 public:
@@ -1816,6 +1822,7 @@ bool CMDLCache::BuildHardwareData( MDLHandle_t handle, studiodata_t *pStudioData
 
 		// HL2SB: unconditional - this is the proof that the patched datacache is loaded
 		// and what it decided about the strip layout.  Only version-49 models print.
+		if ( HL2SB_DevMsgsEnabled() )
 		Msg( "[HL2SB][vtx] %s vtxlen=%d sane49=%d sane48=%d -> %s\n",
 			 pStudioHdr->pszName(), nVtxLen, bSane49, bSane48,
 			 bUseMDL49 ? "MDL49" : "pre-49" );
@@ -1869,10 +1876,12 @@ bool CMDLCache::BuildHardwareData( MDLHandle_t handle, studiodata_t *pStudioData
 		}
 	}
 
+	if ( HL2SB_DevMsgsEnabled() )
 	Msg( "[HL2SB][vtx] %s -> StudioRender::LoadModel (build HW meshes)\n", pStudioHdr->pszName() );
 	BeginLock();
 	bool bLoaded = g_pStudioRender->LoadModel( pStudioHdr, pVtxHdr, &pStudioData->m_HardwareData );
 	EndLock();
+	if ( HL2SB_DevMsgsEnabled() )
 	Msg( "[HL2SB][vtx] %s <- StudioRender::LoadModel = %d\n", pStudioHdr->pszName(), bLoaded );
 
 	if ( bLoaded )

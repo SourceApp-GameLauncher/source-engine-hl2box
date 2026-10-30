@@ -1381,6 +1381,11 @@ public:
 	// Team Handling
 	int								m_iTeamNum;
 
+	// HL2SB: clientside copy of the map spawnflags (networked via DT_BaseEntity
+	// -- GMod publishes it this way and its shared Entity:HasSpawnFlags /
+	// GetSpawnFlags read it on the client).
+	int								m_spawnflags;
+
 #if !defined( NO_ENTITY_PREDICTION )
 	// Certain entities (projectiles) can be created on the client
 	CPredictableId					m_PredictableID;
@@ -1709,6 +1714,18 @@ public:
 
 #ifdef LUA_SDK
 	int								m_nTableReference;
+	// Fixed typed slots used by scripted entity data tables.
+	CNetworkArray( bool, m_GMOD_bool, 32 );
+	CNetworkArray( float, m_GMOD_float, 32 );
+	CNetworkArray( int, m_GMOD_int, 32 );
+	CNetworkArray( Vector, m_GMOD_vector, 32 );
+	CNetworkArray( QAngle, m_GMOD_angle, 32 );
+	CNetworkArray( EHANDLE, m_GMOD_entity, 32 );
+	CNetworkString( m_GMOD_String0, 512 );
+	CNetworkString( m_GMOD_String1, 512 );
+	CNetworkString( m_GMOD_String2, 512 );
+	CNetworkString( m_GMOD_String3, 512 );
+
 	virtual bool					IsWeapon( void ) const { return false; }
 #endif
 

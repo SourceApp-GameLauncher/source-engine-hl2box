@@ -157,6 +157,14 @@ static int input_IsMouseDown (lua_State *L) {
   return 1;
 }
 
+static int input_IsButtonDown( lua_State *L )
+{
+  const int code = (int)luaL_checknumber( L, 1 );
+  lua_pushboolean( L, code >= 0 && code < BUTTON_CODE_LAST && g_pInputSystem &&
+    g_pInputSystem->IsButtonDown( (ButtonCode_t)code ) );
+  return 1;
+}
+
 static int input_OnChangeIME (lua_State *L) {
   input()->OnChangeIME(luaL_checkboolean(L, 1));
   return 0;
@@ -487,5 +495,7 @@ static const luaL_Reg inputlib[] = {
 */
 LUALIB_API int luaopen_input (lua_State *L) {
   luaL_register(L, LUA_INPUTLIBNAME, inputlib);
+  lua_pushcfunction( L, input_IsButtonDown );
+  lua_setfield( L, -2, "IsButtonDown" );
   return 1;
 }

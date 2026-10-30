@@ -18,6 +18,7 @@
 #include "ltakedamageinfo.h"	// HL2SB (2026-09-29): lua_pushdamageinfo for the OnTakeDamage dispatch
 #include "lvphysics_interface.h"
 #include "mathlib/lvector.h"
+#include "collisionutils.h"
 #include "utlstring.h"	// HL2SB: CUtlString for the client draw-probe classnames
 #ifdef CLIENT_DLL
 #include "clientleafsystem.h"	// HL2SB (2026-10-02): re-report the render group after the script class binds
@@ -30,6 +31,8 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 IMPLEMENT_NETWORKCLASS_ALIASED( BaseScripted, DT_BaseScripted )
@@ -152,40 +155,70 @@ CBaseScripted::~CBaseScripted( void )
 
 void CBaseScripted::LoadScriptedEntity( void )
 {
-	lua_getglobal( L, "entity" );
-	if ( lua_istable( L, -1 ) )
-	{
-		lua_getfield( L, -1, "get" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_remove( L, -2 );
-			// HL2SB (2026-09-21, the "ball shows the C4 model" bug): look the
-			// script up by the SCRIPTED classname.  The client's GetClassname()
-			// collapses every scripted entity to the FIRST-registered SENT
-			// ("cod-c4") through the classmap's reverse lookup, so binding by
-			// it gave EVERY scripted entity the cod_c4 client table on the
-			// client -- its ENT:Draw is self:DrawModel(), which is why the
-			// ball rendered a bomb model and the nyan grenade rendered the
-			// suitcase instead of their sprites.
+  const char *pszScriptClass = NULL;
 #ifdef CLIENT_DLL
-			const char *pszScriptClass = GetScriptedClassname();
+  pszScriptClass = GetScriptedClassname();
 #else
-			const char *pszScriptClass = GetClassname();
+  pszScriptClass = GetClassname();
 #endif
-			if ( pszScriptClass == NULL || pszScriptClass[0] == 0 )
-				pszScriptClass = GetClassname();
-			lua_pushstring( L, pszScriptClass );
-			luasrc_pcall( L, 1, 1, 0 );
-		}
-		else
-		{
-			lua_pop( L, 2 );
-		}
-	}
-	else
-	{
-		lua_pop( L, 1 );
-	}
+  if ( pszScriptClass == NULL || pszScriptClass[0] == 0 )
+    pszScriptClass = GetClassname();
+
+  // Keep the legacy class lookup for the existing entity binding contract.
+  lua_getglobal( L, "entity" );
+  if ( lua_istable( L, -1 ) )
+  {
+    lua_getfield( L, -1, "get" );
+    if ( lua_isfunction( L, -1 ) )
+    {
+      lua_remove( L, -2 );
+      lua_pushstring( L, pszScriptClass );
+      luasrc_pcall( L, 1, 1, 0 );
+    }
+    else
+    {
+      lua_pop( L, 2 );
+    }
+  }
+  else
+  {
+    lua_pop( L, 1 );
+  }
+
+  // Replace the leaf table with the GMod scripted_ents.Get copy so Base
+  // methods are inherited without changing the entity initialization order.
+  if ( lua_istable( L, -1 ) )
+  {
+    const int leaf = lua_gettop( L );
+    lua_getglobal( L, "scripted_ents" );
+    if ( lua_istable( L, -1 ) )
+    {
+      lua_getfield( L, -1, "Get" );
+      if ( lua_isfunction( L, -1 ) )
+      {
+        lua_remove( L, -2 );
+        lua_pushstring( L, pszScriptClass );
+        lua_newtable( L );
+        const int instanceTable = lua_gettop( L );
+        if ( luasrc_pcall( L, 2, 1, 0 ) == 0 && lua_istable( L, -1 ) )
+        {
+          lua_remove( L, leaf );
+        }
+        else
+        {
+          lua_settop( L, instanceTable - 1 );
+        }
+      }
+      else
+      {
+        lua_pop( L, 2 );
+      }
+    }
+    else
+    {
+      lua_pop( L, 1 );
+    }
+  }
 }
 
 static int HL2SB_EntityTableIsValid (lua_State *L)
@@ -304,6 +337,7 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 			if ( s_nBindReports < 40 )
 			{
 				++s_nBindReports;
+				if ( hl2sb_dev_msgs.GetBool() )
 				luasrc_LuaWarnMsgF( "[HL2SB] bind '%s': table=%d funcs=%d\n",
 					className, bGotTable ? 1 : 0, nFuncs );
 			}
@@ -343,23 +377,7 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		lua_getref( L, m_nTableReference );
 	}
 
-	// HL2SB GMod SENT compat: GMod's engine calls ENT:SetupDataTables() while
-	// it sets a scripted entity up, and that is where ENT:NetworkVar()
-	// declares the per-instance accessors the script uses.  GMod's sent_ball
-	// declares BallSize/BallColor there and its SpawnFunction calls
-	// SetBallSize() before Spawn(), so without this call the entity throws on
-	// its first line ("attempt to call a method 'SetBallSize'").
-	//
-	// The shim itself is not defined by the entity script: it is installed
-	// here from the globals the engine publishes, so a stock GMod entity
-	// script runs unmodified.  When those globals are absent this is a no-op,
-	// which keeps entities that do not use NetworkVar working.
-	//
-	// HL2SB (2026-10-04) shared by BOTH branches: the fresh bind's class table
-	// and the healed merge's instance table land here, and an instance table
-	// created by a pre-bind field write has none of the seeds the fresh branch
-	// used to install -- GMod's scripted_ents.Get re-copies them on every
-	// re-run, so re-seed here whenever the Entity field is missing.
+	// Preserve creation-time script state when Spawn reuses the instance.
 	bool bSeeded = false;
 	if ( lua_istable( L, -1 ) )
 	{
@@ -367,6 +385,29 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		bSeeded = !lua_isnil( L, -1 );
 		lua_pop( L, 1 );
 	}
+#ifndef CLIENT_DLL
+	// Apply type defaults once, before script setup. A later Spawn must retain
+	// explicit state configured between ents.Create and Spawn, including hands
+	// attached to a viewmodel by the original Player:SetupHands.
+	if ( lua_istable( L, -1 ) && !bSeeded )
+	{
+		luasrc_PushScriptField( L, -1, "Type" );
+		const bool hasType = lua_type( L, -1 ) == LUA_TSTRING;
+		bool isAnimating = hasType && !Q_stricmp( lua_tostring( L, -1 ), "anim" );
+		lua_pop( L, 1 );
+		if ( !hasType )
+		{
+			luasrc_PushScriptField( L, -1, "Base" );
+			isAnimating = lua_type( L, -1 ) == LUA_TSTRING && !Q_stricmp( lua_tostring( L, -1 ), "base_anim" );
+			lua_pop( L, 1 );
+		}
+		if ( isAnimating )
+		{
+			if ( GetSolid() == SOLID_NONE ) SetSolid( SOLID_VPHYSICS );
+			if ( GetMoveType() == MOVETYPE_NONE ) SetMoveType( MOVETYPE_VPHYSICS );
+		}
+	}
+#endif
 	if ( lua_istable( L, -1 ) && !bSeeded )
 	{
 		// HL2SB GMod compat: `self.Entity` is the entity, exactly as GMod's
@@ -389,52 +430,6 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		lua_pushanimating( L, this );
 		lua_pushcclosure( L, HL2SB_EntityTableIsValid, 1 );
 		lua_setfield( L, -2, "IsValid" );
-
-		lua_getglobal( L, "HL2SB_EntityNetworkVar" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVar" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		lua_getglobal( L, "HL2SB_EntityNetworkVarNotify" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVarNotify" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		// Keep legacy table callers using the same declaration helpers.
-		lua_getglobal( L, "HL2SB_EntityDTVar" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "DTVar" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-
-		// HL2SB GMod compat (2026-10-08): NetworkVarElement gets the same
-		// treatment -- env_skypaint packs its three star values into one
-		// Angle slot through self:NetworkVarElement("Angle", 0, "p", ...).
-		// The implementation is a Lua shim (HL2SB_EntityNetworkVarElement);
-		// absent global, this is a no-op like the others.
-		lua_getglobal( L, "HL2SB_EntityNetworkVarElement" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_setfield( L, -2, "NetworkVarElement" );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
 
 
 	}
@@ -468,105 +463,9 @@ void CBaseScripted::InitScriptedEntity( bool bCallInitialize )
 		lua_pop( L, 1 );
 	}
 
-	// Bind the instance before invoking script so closures capture the entity,
-	// and every entity method is available during data-table setup.
-	if ( !bSeeded && m_nTableReference >= 0 )
-	{
-		lua_getref( L, m_nTableReference );
-		lua_getfield( L, -1, "SetupDataTables" );
-		if ( lua_isfunction( L, -1 ) )
-		{
-			lua_pushanimating( L, this );
-			luasrc_pcall( L, 1, 0, 0 );
-		}
-		else
-		{
-			lua_pop( L, 1 );
-		}
-		lua_pop( L, 1 );
-	}
-
-	// HL2SB GMod SENT compat: the engine defaults for an "anim" scripted entity.
-	//
-	// Measured, not guessed.  A live sent_ball spawned inside Garry's Mod reports
-	//
-	//     GetSolid()    = 6   SOLID_VPHYSICS
-	//     GetMoveType() = 6   MOVETYPE_VPHYSICS
-	//     GetModel()    = models/combine_helicopter/helicopter_bomb01.mdl
-	//
-	// while the SAME script under this fork left the entity at
-	//
-	//     solid = 0   SOLID_NONE
-	//
-	// lua/entities/sent_ball.lua never calls SetSolid or SetMoveType (its
-	// Initialize only sets the model, rebuilds physics, and picks a size/colour),
-	// and base_anim.lua -- which in GMod supplies ENT.Type = "anim" and nothing
-	// else of substance -- has no SetSolid either.  So those two values come from
-	// GMod's ENGINE, keyed off the entity's type:
-	//
-	//     BaseClasses["anim"] = "base_anim"        (scripted_ents.lua:13)
-	//
-	// A SOLID_NONE entity also cannot take part in physics collisions, which is
-	// not what a bouncy ball is for; ent_nyan_bomb escaped this only because its
-	// own Initialize() happens to call SetMoveType/SetSolid explicitly.
-	//
-	// STATUS: this restores GMod's documented-by-measurement state for an "anim"
-	// SENT.  It is NOT a confirmed fix for the separate "invisible sent_ball"
-	// report -- diagnostics showed the server reaching FL_EDICT_PVSCHECK (i.e.
-	// deciding to transmit) for sent_ball either way, while the client still never
-	// created the entity.  That report is unresolved; see AGENTS.md 9.17.
-	//
-	// Applied BEFORE the Initialize dispatch so a script that overrides either
-	// value still wins.  Only the types this fork can back are handled; a script
-	// that declares no Type at all keeps the inherited behaviour.
-#ifndef CLIENT_DLL
-	{
-		const char *pszType = NULL;
-
-		if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
-		{
-			lua_getref( L, m_nTableReference );
-			if ( lua_istable( L, -1 ) )
-			{
-				luasrc_PushScriptField( L, -1, "Type" );
-				if ( lua_type( L, -1 ) == LUA_TSTRING )
-					pszType = lua_tostring( L, -1 );
-			}
-			lua_pop( L, 2 );
-		}
-
-		// GMod also derives the base class from the type, and a SENT that only
-		// says DEFINE_BASECLASS("base_anim") while omitting ENT.Type still ends
-		// up anim-typed there (base_anim.lua sets it).  This fork maps base_anim
-		// onto prop_scripted, which carries no Type, so fall back to the declared
-		// base name -- otherwise sent_ball, whose own file sets no Type, would
-		// miss these defaults even though it is plainly an anim entity.
-		if ( pszType == NULL )
-		{
-			if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
-			{
-				lua_getref( L, m_nTableReference );
-				if ( lua_istable( L, -1 ) )
-				{
-					luasrc_PushScriptField( L, -1, "Base" );
-					if ( lua_type( L, -1 ) == LUA_TSTRING &&
-					     !Q_stricmp( lua_tostring( L, -1 ), "base_anim" ) )
-						pszType = "anim";
-				}
-				lua_pop( L, 2 );
-			}
-		}
-
-		if ( pszType != NULL && !Q_stricmp( pszType, "anim" ) )
-		{
-			if ( GetSolid() == SOLID_NONE )
-				SetSolid( SOLID_VPHYSICS );
-
-			if ( GetMoveType() == MOVETYPE_NONE )
-				SetMoveType( MOVETYPE_VPHYSICS );
-		}
-	}
-#endif
+	extern void HL2SB_InstallScriptDataTables(lua_State *, CBaseEntity *);
+	if (!bSeeded && m_nTableReference >= 0)
+		HL2SB_InstallScriptDataTables(L,this);
 
 	// HL2SB GMod compat: Initialize dispatches at SPAWN, not at create.  GMod's
 	// ents.Create does not run ENT:Initialize -- scripts configure the entity
@@ -636,6 +535,55 @@ RenderGroup_t CBaseScripted::GetRenderGroup( void )
 #endif
 
 	return BaseClass::GetRenderGroup();
+}
+
+// HL2SB: the stock C_BaseEntity::ShouldDraw requires a model ((model != 0)).
+// GMod's widget classes spawn model-less and render entirely through their
+// script (ENT:Draw -> widgets.RenderMe -> OverlayRender), so a scripted entity
+// whose Lua table draws itself must pass this renderable filter -- otherwise
+// the bone tool's handles never appear even with every material present.
+// Entities WITH a model keep the stock logic untouched.
+bool CBaseScripted::ShouldDraw( void )
+{
+	const model_t *pModel = GetModel();
+	if ( pModel != NULL )
+		return BaseClass::ShouldDraw();
+
+#ifdef CLIENT_DLL
+	if ( L == NULL || m_nTableReference < 0 )
+		return false;
+
+	bool bDraws = false;
+
+	lua_getref( L, m_nTableReference );
+	if ( lua_istable( L, -1 ) )
+	{
+		// Same protected lookup contract as the DrawModel dispatcher above --
+		// the script table can answer through an __index metamethod.
+		bDraws = luasrc_PushScriptField( L, -1, "Draw" ) != 0;
+		lua_pop( L, 1 );
+
+		if ( !bDraws )
+		{
+			bDraws = luasrc_PushScriptField( L, -1, "DrawTranslucent" ) != 0;
+			lua_pop( L, 1 );
+		}
+
+		if ( !bDraws )
+		{
+			bDraws = luasrc_PushScriptField( L, -1, "RenderOverride" ) != 0;
+			lua_pop( L, 1 );
+		}
+	}
+	lua_pop( L, 1 );
+
+	if ( !bDraws )
+		return false;
+
+	return !IsEffectActive( EF_NODRAW ) && ( index != 0 );
+#else
+	return false;
+#endif
 }
 
 int CBaseScripted::DrawModel( int flags )
@@ -813,6 +761,7 @@ void CBaseScripted::OnDataChanged( DataUpdateType_t updateType )
 				// not the entity's identity.  The networked script class is
 				// the real one.  Cap lowered: this fired per scripted entity
 				// and users read the collapsed constant as addon pollution.
+				if ( hl2sb_dev_msgs.GetBool() )
 				luasrc_LuaWarnMsgF( "[HL2SB] CLIENT scripted entity created (classmap name='%s', real class='%s')",
 					GetClassname(),
 					( m_iScriptedClassname.Get() != NULL ) ? m_iScriptedClassname.Get() : "(syncing)" );
@@ -864,6 +813,8 @@ void CBaseScripted::OnDataChanged( DataUpdateType_t updateType )
 			m_bLuaRenderGroupRead = false;
 
 			InitScriptedEntity();
+			InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
+			UpdateVisibility();
 
 			// HL2SB (2026-10-02): the render group may have been cached from the
 			// pre-bind fallback answer - AddToLeafSystem runs before the Lua
@@ -1024,6 +975,12 @@ bool CBaseScripted::AcceptInput( const char *szInputName, CBaseEntity *pActivato
 
 int CBaseScripted::UpdateTransmitState( void )
 {
+	// Parent visibility and recipient ownership must be checked together.
+	// Keep this entity eligible while its parent is hidden so it can resume
+	// transmission without requiring a new model or parent assignment.
+	if ( IsEFlagSet( EFL_TRANSMIT_WITH_PARENT ) )
+		return SetTransmitState( FL_EDICT_FULLCHECK );
+
 #ifdef LUA_SDK
 	if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
 	{
@@ -1496,3 +1453,182 @@ void CBaseScripted::UpdateOnRemove( void )
 	BaseClass::UpdateOnRemove();
 }
 
+#ifdef LUA_SDK
+static int ReadScriptCollisionResult( lua_State *state )
+{
+	trace_t &trace = *static_cast<trace_t *>( lua_touserdata( state, 2 ) );
+	lua_getfield( state, 1, "Fraction" );
+	if ( lua_type( state, -1 ) == LUA_TNUMBER )
+		trace.fraction = lua_tonumber( state, -1 );
+	lua_pop( state, 1 );
+	lua_getfield( state, 1, "HitPos" );
+	if ( luaL_testudata( state, -1, "Vector" ) )
+		trace.endpos = lua_tovector( state, -1 );
+	lua_pop( state, 1 );
+	lua_getfield( state, 1, "Normal" );
+	if ( luaL_testudata( state, -1, "Vector" ) )
+		trace.plane.normal = lua_tovector( state, -1 );
+	return 0;
+}
+#endif
+
+bool CBaseScripted::TestCollision( const Ray_t &ray, unsigned int mask, trace_t &trace )
+{
+	bool useDefault = true;
+#ifdef LUA_SDK
+	if ( L != NULL && m_nTableReference >= 0 && lua_checkstack( L, 16 ) )
+	{
+		const int top = lua_gettop( L );
+		lua_getref( L, m_nTableReference );
+		if ( lua_istable( L, -1 ) && luasrc_PushScriptField( L, -1, "TestCollision" ) )
+		{
+			PushLuaInstanceSafe( L, this );
+			lua_pushvector( L, ray.m_Start + ray.m_StartOffset );
+			lua_pushvector( L, ray.m_Delta );
+			lua_pushboolean( L, !ray.m_IsRay );
+			lua_pushvector( L, ray.m_Extents );
+			lua_pushnumber( L, mask );
+			useDefault = false;
+			if ( luasrc_pcall( L, 6, 1, 0 ) == 0 )
+			{
+				if ( lua_istable( L, -1 ) )
+				{
+					lua_pushcfunction( L, ReadScriptCollisionResult );
+					lua_pushvalue( L, -2 );
+					lua_pushlightuserdata( L, &trace );
+					if ( luasrc_pcall( L, 2, 0, 0 ) != 0 )
+					{
+						lua_settop( L, top );
+						return false;
+					}
+					trace.m_pEnt = this;
+					trace.hitbox = 0;
+					trace.hitgroup = 0;
+					trace.startsolid = false;
+					trace.allsolid = false;
+					trace.contents = CONTENTS_SOLID;
+					lua_settop( L, top );
+					return true;
+				}
+				useDefault = lua_isboolean( L, -1 ) && lua_toboolean( L, -1 );
+			}
+		}
+		lua_settop( L, top );
+	}
+#endif
+	if ( !useDefault )
+		return false;
+	if ( GetSolid() == SOLID_BBOX )
+	{
+		if ( !IntersectRayWithBox( ray, GetAbsOrigin() + CollisionProp()->OBBMins(),
+			GetAbsOrigin() + CollisionProp()->OBBMaxs(), 0.0f, &trace ) )
+			return false;
+		trace.m_pEnt = this;
+		trace.contents = CONTENTS_SOLID;
+		return true;
+	}
+	return BaseClass::TestCollision( ray, mask, trace );
+}
+
+
+//-----------------------------------------------------------------------------
+// HL2SB: GMod dispatches ENTITY:CalcAbsolutePosition on scripted entities
+// whose script defines it (the widget classes -- widget_bone answers the
+// parent's bone position, widget_axis computes its own seat).  The reference
+// calls this from CBaseEntity::CalcAbsolutePosition through a dedicated
+// vtable slot; here the contract is answered with a guarded helper both
+// realms call from CalcAbsolutePosition: only scripted entities, only when
+// the script table actually carries the method, pcall-protected, with a
+// re-entrancy guard (a callback that reads its own abs position falls back
+// to the stale values instead of recursing) and a one-shot failure report.
+// A Vector return becomes the absolute origin, an Angle return the absolute
+// angles; anything else leaves the engine's own math in place.
+//-----------------------------------------------------------------------------
+bool HL2SB_ScriptedCalcAbsolutePosition( CBaseEntity *pEntity, Vector &outOrigin, QAngle &outAngles )
+{
+	static CUtlVector< CBaseEntity * > activeEntities;
+	// Cheap pre-filter first: only scripted entities ever answer this hook,
+	// and every scripted entity carries a live Lua table reference while it
+	// does.  This keeps the dynamic_cast off the hot path for world/brush
+	// entities whose abs transform recomputes constantly.
+	// The re-entry guard is PER ENTITY: a callback legitimately reads its
+	// PARENT's abs position (widget_bone does), which recomputes the parent
+	// transform through this same function -- only a self-recursion (a
+	// callback reading its own abs) is the cycle the guard exists for.
+	if ( !ThreadInMainThread() || L == NULL || pEntity->m_nTableReference < 0 )
+		return false;
+	if ( activeEntities.Find( pEntity ) != activeEntities.InvalidIndex() )
+		return false;
+
+	CBaseScripted *pScripted = dynamic_cast< CBaseScripted * >( pEntity );
+	if ( pScripted == NULL )
+		return false;
+
+	bool bAnswered = false;
+	bool bFailed = false;
+
+	// Anchor the entry top and restore it on EVERY path: luasrc_PushScriptField
+	// always leaves a slot (nil when absent), so the absent-method branch used
+	// to leak the entity table and every callback path leaked its arguments --
+	// the observed "Lua stack nonempty" HUD warnings.
+	const int iEntryTop = lua_gettop( L );
+	if ( !lua_checkstack( L, 16 ) )
+		return false;
+	activeEntities.AddToTail( pEntity );
+
+	lua_getref( L, pScripted->m_nTableReference );
+	if ( lua_istable( L, -1 ) )
+	{
+		if ( luasrc_PushScriptField( L, -1, "CalcAbsolutePosition" ) && lua_isfunction( L, -1 ) )
+		{
+			CBaseEntity::PushLuaInstanceSafe( L, pEntity );
+			// Contract: ( self, currentOrigin, currentAngles ) -- the callback
+			// may build on where the engine would have placed the entity.
+			lua_pushvector( L, outOrigin );
+			lua_pushangle( L, outAngles );
+			if ( luasrc_pcall( L, 3, 2, 0 ) != 0 )
+			{
+				bFailed = true;
+			}
+			else
+			{
+				// [pos][ang] -- each output is INDEPENDENT: a nil means "keep
+				// what the engine computed" for that component only, so a
+				// position-only callback must not clobber the angles.
+				if ( lua_isuserdata( L, -2 ) && luaL_testudata( L, -2, "Vector" ) != NULL )
+				{
+					const Vector value = lua_tovector( L, -2 );
+					if ( value.IsValid() )
+					{
+						outOrigin = value;
+						bAnswered = true;
+					}
+				}
+				if ( lua_isuserdata( L, -1 ) && luaL_testudata( L, -1, "Angle" ) != NULL )
+				{
+					const QAngle value = lua_toangle( L, -1 );
+					if ( value.IsValid() )
+					{
+						outAngles = value;
+						bAnswered = true;
+					}
+				}
+			}
+		}
+	}
+
+	lua_settop( L, iEntryTop );
+	activeEntities.Remove( activeEntities.Count() - 1 );
+
+	if ( bFailed )
+	{
+		static bool s_bReported = false;
+		if ( !s_bReported )
+		{
+			s_bReported = true;
+			luasrc_LuaWarnMsgF( "ENTITY:CalcAbsolutePosition raised -- further failures silenced (see the Lua error above)\n" );
+		}
+	}
+
+	return bAnswered;
+}

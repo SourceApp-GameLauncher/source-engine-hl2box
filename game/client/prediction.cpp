@@ -675,6 +675,20 @@ void CPrediction::SetupMove( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper *
 
 	pHLMove->m_bIsSprinting = pHLPlayer->IsSprinting();
 #endif
+
+#if defined( LUA_SDK )
+	// HL2SB: GM:SetupMove( ply, mv, cmd ) on the CLIENT prediction path as
+	// well -- shared movement code raises GM:Move during prediction, so the
+	// drive system's per-tick StartMove (it seeds mv from the driven entity
+	// and carries the E-key exit check) must run in this realm too, or the
+	// two sides disagree and the driven entity's motion is dropped between
+	// prediction frames.  Dispatched after the cmd->move copy, matching the
+	// server-side position.
+	{
+		extern int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
+		HL2SB_LuaMoveHooks( player, move, "SetupMove" );
+	}
+#endif
 #endif
 }
 
@@ -687,6 +701,25 @@ void CPrediction::FinishMove( C_BasePlayer *player, CUserCmd *ucmd, CMoveData *m
 {
 #if !defined( NO_ENTITY_PREDICTION )
 	VPROF( "CPrediction::FinishMove" );
+
+#if defined( LUA_SDK )
+	// HL2SB: GM:FinishMove( ply, mv ) on the CLIENT prediction path, with the
+	// same takeover contract as the server side: the hook decides FIRST, and a
+	// true return means the script already applied the move data itself, so
+	// the default position/velocity write-back below must not also run.  The
+	// button latch and the ground bookkeeping stay in both branches (the
+	// reference keeps them either way).
+	{
+		extern int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszHook );
+		if ( HL2SB_LuaMoveHooks( player, move, "FinishMove" ) != 0 )
+		{
+			player->m_RefEHandle = move->m_nPlayerHandle;
+			player->m_Local.m_nOldButtons = move->m_nButtons;
+			m_hLastGround = player->GetGroundEntity();
+			return;
+		}
+	}
+#endif
 
 	player->m_RefEHandle = move->m_nPlayerHandle;
 
@@ -914,6 +947,10 @@ void CPrediction::RunCommand( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	}
 	else
 	{
+#if defined( LUA_SDK )
+        extern void HL2SB_LuaVehicleMove( CBasePlayer *, CBaseEntity *, CMoveData * );
+        HL2SB_LuaVehicleMove( player, pVehicle->GetVehicleEnt(), g_pMoveData );
+#endif
 		pVehicle->ProcessMovement( player, g_pMoveData );
 	}
 

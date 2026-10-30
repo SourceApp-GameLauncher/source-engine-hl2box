@@ -23,6 +23,8 @@
 #include "hl2sb_gma.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+extern ConVar hl2sb_dev_msgs;
+
 #include "tier0/memdbgon.h"
 
 //-----------------------------------------------------------------------------
@@ -56,6 +58,7 @@ void HL2SB_MountGMAAddons()
 
 					if ( HL2SB_IsAddonDisabled( szArchiveBase ) )
 					{
+						if ( hl2sb_dev_msgs.GetBool() )
 						Msg( "[HL2SB] GMA: '%s' disabled by addons_disabled.txt - skipped\n", pszFound );
 						pszFound = filesystem->FindNext( hFind );
 						continue;
@@ -74,6 +77,7 @@ void HL2SB_MountGMAAddons()
 		filesystem->FindClose( hFind );
 
 	// The verification signal: this line must appear exactly once per realm.
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[HL2SB] GMA: found %d archive(s) in addons/\n", archives.Count() );
 
 	// Sort so the mount order (and therefore search-path precedence between
@@ -103,6 +107,7 @@ void HL2SB_MountGMAAddons()
 		filesystem->AddSearchPath( szArchiveRelative, "GAME", PATH_ADD_TO_TAIL );
 	}
 
+	if ( hl2sb_dev_msgs.GetBool() )
 	Msg( "[HL2SB] GMA: total %d archive(s), %.1f MB from addons/\n",
 		archives.Count(), (double)nTotalBytes / ( 1024.0 * 1024.0 ) );
 }

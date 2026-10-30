@@ -31,6 +31,7 @@
 #else
 #include "lbaseanimating.h"
 #include "physconstraint_lua.h"
+#include "world.h"
 #include "hl2sb_motioncontroller.h"
 #include "rope.h"
 #include "player.h"					// HL2SB: Entity:GetViewEntity (CBasePlayer::m_hViewEntity)
@@ -45,6 +46,7 @@
 #include "particle_parse.h"			// HL2SB: Entity:StopParticles (StopParticleEffects)
 #endif
 #include "lbaseplayer_shared.h"
+#include "lvehicle_shared.h"
 #include "lbasecombatweapon_shared.h"
 #include "lgametrace.h"
 #include "SoundEmitterSystem/lisoundemittersystembase.h"
@@ -766,6 +768,18 @@ static int CBaseEntity_EyeAngles (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_GetShootPos (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseCombatCharacter *character = entity->MyCombatCharacterPointer();
+#ifdef CLIENT_DLL
+  Vector pos = entity->EyePosition();
+#else
+  Vector pos = character ? character->Weapon_ShootPosition() : entity->EyePosition();
+#endif
+  lua_pushvector( L, pos );
+  return 1;
+}
+
 static int CBaseEntity_EyePosition (lua_State *L) {
   lua_pushvector(L, luaL_checkentity(L, 1)->EyePosition());
   return 1;
@@ -1424,7 +1438,17 @@ static int CBaseEntity_GetRangeTo (lua_State *L) {
 }
 
 static int CBaseEntity_GetRefTable (lua_State *L) {
-  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  if (lua_isnoneornil(L, 1)) return 0;
+  bool isEntity = false;
+  if (lua_type(L, 1) == LUA_TUSERDATA && lua_getmetatable(L, 1)) {
+    lua_pushliteral(L, "MetaID");
+    lua_rawget(L, -2);
+    isEntity = lua_isnumber(L, -1) && lua_tointeger(L, -1) == 9;
+    lua_pop(L, 2);
+  }
+  if (!isEntity) return luaL_argerror(L, 1, "Entity expected");
+  CBaseEntity *pEntity = lua_toentity(L, 1);
+  if (!pEntity) return 0;
   // HL2SB: < 0 catches LUA_REFNIL(-1) as well as LUA_NOREF(-2).  GMod's
   // Entity:GetTable() always answers a table, so create the per-entity table
   // here the same way the engine __newindex does - callers that only ever READ
@@ -1838,16 +1862,15 @@ static int CBaseEntity_GetMaterialType (lua_State *L) {
 }
 
 #ifndef CLIENT_DLL
-// HL2SB GMod compat (2026-09-25): Entity:Ignite( duration, bNPCOnly? ) -- see
-// the methods-table note above.  Forwards onto the entity's CBaseAnimating,
-// which spawns the engine's EntityFlame child (same as the animating binding).
+// Entity:Ignite( duration, radius ) uses the entity's virtual fire behavior.
 static int CBaseEntity_Ignite (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   CBaseAnimating *pAnim = pEntity->GetBaseAnimating();
   if ( pAnim == NULL )
     return 0;
-  const float flDuration = (float)luaL_optnumber( L, 2, 10.0f );
-  pAnim->Ignite( flDuration, pAnim->IsNPC(), 0.0f, false );
+  const float flDuration = (float)luaL_checknumber( L, 2 );
+  const float flRadius = lua_type( L, 3 ) == LUA_TNUMBER ? (float)lua_tonumber( L, 3 ) : 0.0f;
+  pAnim->Ignite( flDuration, false, flRadius, false );
   return 0;
 }
 #endif
@@ -2182,7 +2205,18 @@ static int CBaseEntity_IsMarkedForDeletion (lua_State *L) {
   return 1;
 }
 
+// GMod's base Entity predicates return false for NULL while still rejecting
+// non-entity arguments. Keep that distinction for the shared metatable.
+static bool CBaseEntity_IsNullSentinel (lua_State *L, int nArg) {
+  return luaL_testudata(L, nArg, "CBaseEntity") != NULL &&
+         lua_toentity(L, nArg) == NULL;
+}
+
 static int CBaseEntity_IsNPC (lua_State *L) {
+  if (CBaseEntity_IsNullSentinel(L, 1)) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
   lua_pushboolean(L, luaL_checkentity(L, 1)->IsNPC());
   return 1;
 }
@@ -2317,6 +2351,10 @@ static int CBaseEntity_SetWeaponModel (lua_State *L) {
 }
 
 static int CBaseEntity_IsPlayer (lua_State *L) {
+  if (CBaseEntity_IsNullSentinel(L, 1)) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
   lua_pushboolean(L, luaL_checkentity(L, 1)->IsPlayer());
   return 1;
 }
@@ -2570,7 +2608,22 @@ static int CBaseEntity_RegisterThinkContext (lua_State *L) {
 }
 
 static int CBaseEntity_Remove (lua_State *L) {
-  luaL_checkentity(L, 1)->Remove();
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifdef CLIENT_DLL
+  if (entity->entindex() == 0 || entity->IsPlayer())
+#else
+  if (entity == GetWorldEntity() || entity->IsPlayer())
+#endif
+    return 0;
+  static const char *const protectedClasses[] = {
+    "worldspawn", "player", "gm_bot", "gmod_gamerules", "soundent",
+    "ai_ally_speech_manager", "ai_network_build_helper", "scene_manager",
+    "ai_network", "player_manager", "instanced_scripted_scene", "npc_barnacle_tongue_tip"
+  };
+  for (int i = 0; i < ARRAYSIZE(protectedClasses); ++i)
+    if (Q_strcmp(entity->GetClassname(), protectedClasses[i]) == 0)
+      return 0;
+  entity->Remove();
   return 0;
 }
 
@@ -2643,11 +2696,21 @@ static int CBaseEntity_GetNetworkOrigin (lua_State *L) {
   return 1;
 }
 
+// HL2SB: the reference publishes Entity:SetNetworkOrigin as a TWO-step write on
+// the client -- the networked origin field AND the absolute position (which
+// runs CalcAbsolutePosition, clears the dirty-transform flag, updates the
+// coordinate frame and transforms into the parent's local space).  Writing
+// only the network field leaves the networked coordinate and the actually
+// DRAWN position out of sync, which shows as an entity that is visible one
+// frame and not the next while it is being moved.  Kept inside this binding on
+// purpose: the engine's own SetNetworkOrigin is reached from the network
+// receive path, where the second write does not belong.
 static int CBaseEntity_SetNetworkOrigin (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   const Vector &vecOrigin = luaL_checkvector(L, 2);
 #ifdef CLIENT_DLL
   pEntity->SetNetworkOrigin(vecOrigin);
+  pEntity->SetAbsOrigin(vecOrigin);
 #else
   pEntity->SetAbsOrigin(vecOrigin);
 #endif
@@ -2714,49 +2777,7 @@ int CBaseEntity_SetPos (lua_State *L) {
   else
     pEntity->Teleport( &vecOrigin, NULL, NULL );
 #else
-  // HL2SB GMod parity (2026-09-25): SetPos on a PARENTED clientside entity
-  // must move it to the WORLD position (GMod: "Moves the entity to the
-  // specified position", plus "use Entity:SetupBones to force it" - which is
-  // exactly First Person Body's SetPos + SetupBones pattern).  Feeding a
-  // world vector into the parent-follow as a LOCAL offset is what launched
-  // the body into the air above the player's head.
-  CBaseEntity *pParent = pEntity->GetMoveParent();
-  if ( pParent != NULL )
-  {
-    matrix3x4_t worldToParent;
-    AngleIMatrix( pParent->GetAbsAngles(), pParent->GetAbsOrigin(), worldToParent );
-    Vector vecLocal;
-    VectorTransform( vecOrigin, worldToParent, vecLocal );
-    pEntity->SetLocalOrigin( vecLocal );
-    return 0;
-  }
-  pEntity->SetAbsOrigin(vecOrigin);
-#endif
-  return 0;
-}
-
-// HL2SB (2026-09-22): Entity:CallOnClient( functionName, data ) -- the GMod
-// wiki documents it under Weapon, but cf_beast's SWEP base calls it as
-// self:CallOnClient( "Muzzle" ) and the mechanism is entity-level.  Server
-// only (the wiki: "Does nothing on client"); one user message carries the
-// entity index, the function name and the data string, and the client invokes
-// ent:functionName( data ) on its scripted entity (see __MsgFunc_HL2SB_RPC in
-// lsrcinit.cpp).  GMod caps name+data at 254 bytes -- the usermessage limit.
-static int CBaseEntity_CallOnClient (lua_State *L) {
-#ifdef GAME_DLL
-  CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  const char *pszFn = luaL_checkstring(L, 2);
-  const char *pszData = luaL_optstring(L, 3, "");
-  if (Q_strlen(pszFn) + Q_strlen(pszData) > 254) {
-    return luaL_error(L, "CallOnClient: function name + data must fit in 254 bytes");
-  }
-
-  CReliableBroadcastRecipientFilter filter;
-  UserMessageBegin(filter, "HL2SB_RPC");
-    WRITE_SHORT(pEntity->entindex());
-    WRITE_STRING(pszFn);
-    WRITE_STRING(pszData);
-  MessageEnd();
+  pEntity->SetAbsOrigin( vecOrigin );
 #endif
   return 0;
 }
@@ -2840,6 +2861,19 @@ static int CBaseEntity_SetClassname (lua_State *L) {
 
 static int CBaseEntity_SetCollisionBounds (lua_State *L) {
   luaL_checkentity(L, 1)->SetCollisionBounds(luaL_checkvector(L, 2), luaL_checkvector(L, 3));
+  return 0;
+}
+
+static int CBaseEntity_SetCollisionBoundsWS (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  Vector mins = luaL_checkvector( L, 2 ) - pEntity->GetAbsOrigin();
+  Vector maxs = luaL_checkvector( L, 3 ) - pEntity->GetAbsOrigin();
+  Vector localMins, localMaxs;
+  matrix3x4_t transform;
+  AngleMatrix( pEntity->GetAbsAngles(), transform );
+  VectorITransform( mins, transform, localMins );
+  VectorITransform( maxs, transform, localMaxs );
+  pEntity->SetCollisionBounds( localMins, localMaxs );
   return 0;
 }
 
@@ -3035,6 +3069,61 @@ static int CBaseEntity_SetParent (lua_State *L) {
   return 0;
 }
 
+// Bone length is measured between the current bone and its studio parent.
+static int CBaseEntity_BoneLength (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseAnimating *animating = entity->GetBaseAnimating();
+  if ( animating == NULL )
+    return 0;
+  const int bone = luaL_checkint( L, 2 );
+  CStudioHdr *hdr = animating->GetModelPtr();
+  if ( hdr == NULL || bone < 0 || bone >= hdr->numbones() )
+    return 0;
+  const int parent = hdr->pBone( bone )->parent;
+  if ( parent < 1 )
+  {
+    lua_pushnumber( L, 0 );
+    return 1;
+  }
+  Vector position, parentPosition;
+  QAngle angles;
+  animating->GetBonePosition( bone, position, angles );
+  animating->GetBonePosition( parent, parentPosition, angles );
+  lua_pushnumber( L, position.DistTo( parentPosition ) );
+  return 1;
+}
+
+static int CBaseEntity_EnableCustomCollisions (lua_State *L) {
+  luaL_checkentity( L, 1 )->AddSolidFlags( FSOLID_CUSTOMRAYTEST | FSOLID_CUSTOMBOXTEST );
+  return 0;
+}
+
+static int CBaseEntity_FollowBone (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+
+  CBaseEntity *pParent = lua_toplayer(L, 2);
+  if (pParent == NULL)
+    pParent = lua_toentity(L, 2);
+
+  if (pParent == NULL)
+  {
+    pEntity->RemoveEffects( EF_FOLLOWBONE );
+    pEntity->SetParent( NULL, -1 );
+    return 0;
+  }
+
+  int iBone = (int)luaL_optnumber( L, 3, 0 );
+  if ( iBone < 0 || iBone > 255 )
+  {
+    luasrc_LuaWarnMsgF( "FollowBone: bone index %d out of range (0-255)\n", iBone );
+    iBone = 0;
+  }
+
+  pEntity->AddEffects( EF_FOLLOWBONE );
+  pEntity->SetParent( pParent, iBone );
+  return 0;
+}
+
 static int CBaseEntity_SetPlayerSimulated (lua_State *L) {
   luaL_checkentity(L, 1)->SetPlayerSimulated(luaL_checkplayer(L, 2));
   return 0;
@@ -3092,6 +3181,25 @@ static int CBaseEntity_SetColor (lua_State *L) {
   lua_Color clr = luaL_checkcolor(L, 2);
 
   pEntity->SetRenderColor( clr.r(), clr.g(), clr.b(), clr.a() );
+  return 0;
+}
+
+static int CBaseEntity_GetColor4Part (lua_State *L) {
+  color32 clr = luaL_checkentity(L, 1)->GetRenderColor();
+  lua_pushinteger(L, clr.r);
+  lua_pushinteger(L, clr.g);
+  lua_pushinteger(L, clr.b);
+  lua_pushinteger(L, clr.a);
+  return 4;
+}
+
+static int CBaseEntity_SetColor4Part (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  pEntity->SetRenderColor(
+    (int)luaL_checknumber(L, 2),
+    (int)luaL_checknumber(L, 3),
+    (int)luaL_checknumber(L, 4),
+    (int)luaL_optnumber(L, 5, 255) );
   return 0;
 }
 
@@ -4255,37 +4363,6 @@ bool HL2SB_EntityPushVarsTable( lua_State *L, CBaseEntity *pEntity, bool bCreate
   return true;
 }
 
-static int CBaseEntity_SetVar (lua_State *L) {
-  CBaseEntity *pEntity = lua_toentity( L, 1 );
-  const char *pszName = luaL_checkstring( L, 2 );
-  if ( pEntity == NULL || pszName[0] == '\0' || !HL2SB_EntityPushVarsTable( L, pEntity, true ) )
-    return 0;
-  // [.., vartab]
-  lua_pushstring( L, pszName );
-  lua_pushvalue( L, 3 );
-  lua_rawset( L, -3 );
-  lua_pop( L, 1 );
-  return 0;
-}
-
-static int CBaseEntity_GetVar (lua_State *L) {
-  CBaseEntity *pEntity = lua_toentity( L, 1 );
-  const char *pszName = luaL_checkstring( L, 2 );
-  if ( pEntity != NULL && pszName[0] != '\0' && HL2SB_EntityPushVarsTable( L, pEntity, false ) )
-  {
-    lua_pushstring( L, pszName );
-    lua_rawget( L, -2 );
-    if ( !lua_isnil( L, -1 ) )
-    {
-      lua_remove( L, -2 );
-      return 1;
-    }
-    lua_pop( L, 2 );   // nil + vartab
-  }
-  lua_pushvalue( L, 3 );   // GMod: GetVar's default is nil when not given
-  return 1;
-}
-
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: Entity:SetOverlayText( text ) / Entity:GetOverlayText().
 // GMod shows this text over the entity while a player aims at it (the
@@ -4442,6 +4519,8 @@ void HL2SB_PushNullEntityIndex (lua_State *L, const char *pszField) {
     bKnown = HL2SB_PushClassField( L, s_pszNullIndexParents[i], pszField );
 
   if ( bKnown ) {
+    // DT methods validate NULL receivers themselves.
+    if (lua_isfunction(L,-1) && (!Q_strncmp(pszField,"GetDT",5) || !Q_strncmp(pszField,"SetDT",5))) return;
     lua_pop( L, 1 );   /* drop the looked-up value; answer the call-safe stub */
     lua_pushcfunction( L, HL2SB_NullEntityMethod );
   } else {
@@ -4707,7 +4786,12 @@ static int CBaseEntity___tostring (lua_State *L) {
 // field lookup now yields nil instead (see CBaseEntity___index).
 //-----------------------------------------------------------------------------
 static int CBaseEntity_IsValid (lua_State *L) {
-  lua_pushboolean(L, lua_toentity(L, 1) != NULL);
+  CBaseEntity *entity = lua_toentity(L, 1);
+#ifdef CLIENT_DLL
+  lua_pushboolean(L, entity != NULL && entity->entindex() != 0);
+#else
+  lua_pushboolean(L, entity != NULL && entity != GetWorldEntity());
+#endif
   return 1;
 }
 
@@ -4761,22 +4845,13 @@ static int CBaseEntity_SetAngles (lua_State *L) {
   }
   return 0;
 #else
-  // HL2SB GMod parity (2026-09-25): SetAngles on a parented clientside entity
-  // is WORLD space, same contract as SetPos above (First Person Body sets the
-  // body angles to the eye angles every RenderScene).
-  CBaseEntity *pParent = pEntity->GetMoveParent();
-  if ( pParent != NULL )
-  {
-    pEntity->SetLocalAngles( angWorld - pParent->GetAbsAngles() );
-    return 0;
-  }
+  pEntity->SetAbsAngles( angWorld );
 #endif
-  pEntity->SetLocalAngles( angWorld );
   return 0;
 }
 
 static int CBaseEntity_GetAngles (lua_State *L) {
-  lua_pushangle(L, luaL_checkentity(L, 1)->GetLocalAngles());
+  lua_pushangle(L, luaL_checkentity(L, 1)->GetAbsAngles());
   return 1;
 }
 
@@ -4848,17 +4923,13 @@ static int CBaseEntity_TakeDamageInfo (lua_State *L) {
 // C++ accessor for the same field is GetOwnerEntity().
 //-----------------------------------------------------------------------------
 static int CBaseEntity_GetOwner (lua_State *L) {
-  // HL2SB (2026-10-19): answer nil for a missing owner, as the reference does.
-  // Pushing the NULL sentinel made "if ( self:GetOwner() ~= nil )" guards pass,
-  // and a method called on the sentinel answers false for every name -- so
-  // scripts ended up doing arithmetic on a boolean.  A TNT entity hit exactly
-  // that after its owner went away: the bookkeeping line raised before its own
-  // self:Remove(), so it never despawned and kept exploding.
-  CBaseEntity *pOwner = luaL_checkentity( L, 1 )->GetOwnerEntity();
-  if ( pOwner == NULL )
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseCombatWeapon *weapon = dynamic_cast<CBaseCombatWeapon *>( entity );
+  CBaseEntity *owner = weapon ? weapon->GetOwner() : entity->GetOwnerEntity();
+  if ( owner == NULL )
     lua_pushnil( L );
   else
-    lua_pushentity( L, pOwner );
+    CBaseEntity::PushLuaInstanceSafe( L, owner );
   return 1;
 }
 
@@ -5919,6 +5990,9 @@ static int CBaseEntity_SetTransmitWithParent (lua_State *L) {
     pEnt->AddEFlags( EFL_TRANSMIT_WITH_PARENT );
   else
     pEnt->RemoveEFlags( EFL_TRANSMIT_WITH_PARENT );
+#ifdef GAME_DLL
+  pEnt->DispatchUpdateTransmitState();
+#endif
   return 0;
 }
 
@@ -6008,7 +6082,295 @@ static int CBaseEntity_GetParentWorldTransformMatrix (lua_State *L) {
   return 1;
 }
 
+
+static bool HL2SB_IsDTEntity(lua_State *L, int index) {
+  if (lua_type(L,index) != LUA_TUSERDATA || lua_rawlen(L,index) != sizeof(CBaseHandle)) return false;
+  static const char *const metatables[] = {
+    "CBaseEntity", "CBaseAnimating", "CBaseFlex", "CBaseCombatCharacter",
+    "CBasePlayer", "CHL2MP_Player", "CBaseCombatWeapon", "Vehicle", "NPC", "NextBot"
+  };
+  for (int i = 0; i < ARRAYSIZE(metatables); ++i)
+    if (luaL_testudata(L,index,metatables[i])) return true;
+  return false;
+}
+
+static CBaseEntity *HL2SB_DTEntity(lua_State *L) {
+  if (!HL2SB_IsDTEntity(L,1)) { luaL_typerror(L,1,"Entity"); return NULL; }
+  CBaseEntity *entity = lua_toentity(L,1);
+  if (!entity) luaL_error(L,"Tried to use a NULL entity!");
+  return entity;
+}
+
+// Slot indices use the same integer conversion for both realms.
+static int HL2SB_DTInteger( double value ) {
+  return value >= -2147483648.0 && value < 2147483648.0 ? (int)value : (-2147483647 - 1);
+}
+
+static int HL2SB_DTIndex( lua_State *L, int count, bool setter ) {
+  const int index = HL2SB_DTInteger( luaL_checknumber(L, 2) );
+  if ( index < 0 || index >= count ) return setter ? -1 : 0;
+  return index;
+}
+
+extern int Vehicle_GetThirdPersonMode(lua_State *L);
+extern int Vehicle_SetThirdPersonMode(lua_State *L);
+extern int Vehicle_GetCameraDistance(lua_State *L);
+extern int Vehicle_SetCameraDistance(lua_State *L);
+extern int Vehicle_GetVehicleClass(lua_State *L);
+extern int Vehicle_SetVehicleClass(lua_State *L);
+
+static int CBaseEntity_GetDTBool(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  if (index == 3 && lua_entityisvehicle(entity)) return Vehicle_GetThirdPersonMode(L);
+  lua_pushboolean(L,entity->m_GMOD_bool[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTBool(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const bool value = lua_toboolean(L,3) != 0;
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  if (index == 3 && lua_entityisvehicle(entity)) { lua_settop(L,1); lua_pushboolean(L,value); return Vehicle_SetThirdPersonMode(L); }
+  entity->m_GMOD_bool.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTFloat(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  if (index == 3 && lua_entityisvehicle(entity)) return Vehicle_GetCameraDistance(L);
+  lua_pushnumber(L,entity->m_GMOD_float[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTFloat(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const float value = (float)luaL_checknumber(L,3);
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  if (index == 3 && lua_entityisvehicle(entity)) { lua_remove(L,2); return Vehicle_SetCameraDistance(L); }
+  entity->m_GMOD_float.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTInt(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushinteger(L,entity->m_GMOD_int[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTInt(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int value = HL2SB_DTInteger(luaL_checknumber(L,3));
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  entity->m_GMOD_int.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTVector(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushvector(L,entity->m_GMOD_vector[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTVector(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const Vector value = luaL_checkvector(L,3);
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  entity->m_GMOD_vector.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTAngle(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushangle(L,entity->m_GMOD_angle[index]);
+  return 1;
+}
+
+static int CBaseEntity_SetDTAngle(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const QAngle value = luaL_checkangle(L,3);
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index < 0) return 0;
+  entity->m_GMOD_angle.Set(index,value);
+  return 0;
+}
+
+static int CBaseEntity_GetDTEntity(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,32,false);
+  lua_pushentity(L,entity->m_GMOD_entity[index].Get());
+  return 1;
+}
+
+static int CBaseEntity_SetDTEntity(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  CBaseEntity *value = NULL;
+  if (lua_isnone(L,3)) return luaL_typerror(L,3,"Entity");
+  if (!lua_isnil(L,3)) {
+    if (!HL2SB_IsDTEntity(L,3)) return luaL_typerror(L,3,"Entity");
+    value = lua_toentity(L,3);
+  }
+  const int index = HL2SB_DTIndex(L,32,true);
+  if (index >= 0) entity->m_GMOD_entity.Set(index,EHANDLE(value));
+  return 0;
+}
+
+static int CBaseEntity_GetDTString(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const int index = HL2SB_DTIndex(L,4,false);
+  if (index == 3 && lua_entityisvehicle(entity)) return Vehicle_GetVehicleClass(L);
+  const char *value = "";
+  switch(index) {
+    case 0: value = entity->m_GMOD_String0.Get(); break;
+    case 1: value = entity->m_GMOD_String1.Get(); break;
+    case 2: value = entity->m_GMOD_String2.Get(); break;
+    case 3: value = entity->m_GMOD_String3.Get(); break;
+  }
+  lua_pushstring(L,value);
+  return 1;
+}
+
+static int CBaseEntity_SetDTString(lua_State *L) {
+  CBaseEntity *entity = HL2SB_DTEntity(L);
+  const char *value = luaL_checkstring(L,3);
+  const int index = HL2SB_DTIndex(L,4,true);
+  if (index < 0) return 0;
+  if (index == 3 && lua_entityisvehicle(entity)) { lua_remove(L,2); return Vehicle_SetVehicleClass(L); }
+  char *target = NULL;
+  switch(index) {
+    case 0: target = entity->m_GMOD_String0.GetForModify(); break;
+    case 1: target = entity->m_GMOD_String1.GetForModify(); break;
+    case 2: target = entity->m_GMOD_String2.GetForModify(); break;
+    case 3: target = entity->m_GMOD_String3.GetForModify(); break;
+  }
+  Q_memset(target,0,512);
+  Q_strncpy(target,value,512);
+  return 0;
+}
+
+#ifdef CLIENT_DLL
+void HL2SB_ReceiveDTVar(CBaseEntity *entity, const char *type, int index, const void *value) {
+  if (!L || !g_bLuaInitialized) return;
+  const int top = lua_gettop(L);
+  lua_getglobal(L,"DTVar_ReceiveProxyGL");
+  if (lua_isfunction(L,-1)) {
+    lua_pushentity(L,entity);
+    lua_pushstring(L,type);
+    lua_pushinteger(L,index);
+    if (!Q_strcmp(type,"Bool")) lua_pushboolean(L,*(const bool *)value);
+    else if (!Q_strcmp(type,"Float")) lua_pushnumber(L,*(const float *)value);
+    else if (!Q_strcmp(type,"Int")) lua_pushinteger(L,*(const int *)value);
+    else if (!Q_strcmp(type,"Vector")) lua_pushvector(L,*(const Vector *)value);
+    else if (!Q_strcmp(type,"Angle")) lua_pushangle(L,*(const QAngle *)value);
+    else if (!Q_strcmp(type,"Entity")) lua_pushentity(L,((const EHANDLE *)value)->Get());
+    else lua_pushstring(L,(const char *)value);
+    luasrc_pcall(L,4,0,0);
+  }
+  lua_settop(L,top);
+}
+#endif
+
+void HL2SB_InstallScriptDataTables(lua_State *L, CBaseEntity *entity) {
+  const int top = lua_gettop(L);
+  lua_pushentity(L,entity);
+  const int self = lua_gettop(L);
+  lua_getfield(L,self,"SetupDataTables");
+  const bool hasSetup = lua_isfunction(L,-1);
+  lua_pop(L,1);
+  if (hasSetup) {
+    const char *methods[] = {"InstallDataTable", "SetupDataTables"};
+    for (int i = 0; i < 2; ++i) {
+      lua_getfield(L,self,methods[i]);
+      if (!lua_isfunction(L,-1)) {
+        luasrc_LuaWarnMsgF("Missing entity data-table method %s\n",methods[i]);
+        break;
+      }
+      lua_pushvalue(L,self);
+      if (luasrc_pcall(L,1,0,0) != 0) break;
+    }
+  }
+  lua_settop(L,top);
+}
+
+static int CBaseEntity_NearestPoint( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  const Vector &point = luaL_checkvector( L, 2 );
+  Vector nearest;
+  entity->CollisionProp()->CalcNearestPoint( point, &nearest );
+  lua_pushvector( L, nearest );
+  return 1;
+}
+
+static int CBaseEntity_DropToFloor( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+#ifdef GAME_DLL
+  lua_pushinteger( L, UTIL_DropToFloor( entity, luaL_optinteger( L, 2, MASK_SOLID ), luaL_optentity( L, 3, NULL ) ) );
+#else
+  lua_pushinteger( L, 0 );
+#endif
+  return 1;
+}
+
+static int CBaseEntity_GetActiveWeapon( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  CBaseCombatCharacter *character = dynamic_cast<CBaseCombatCharacter *>( entity );
+  CBaseCombatWeapon *weapon = character ? character->GetActiveWeapon() : NULL;
+  CBaseEntity::PushLuaInstanceSafe( L, weapon );
+  return 1;
+}
+
+static int CBaseEntity_SetBodyGroups( lua_State *L ) {
+  CBaseAnimating *anim = luaL_checkentity( L, 1 )->GetBaseAnimating();
+  if ( !anim ) return 0;
+  const char *groups = luaL_checkstring( L, 2 );
+  const int count = MIN( Q_strlen( groups ), anim->GetNumBodyGroups() );
+  for ( int i = 0; i < count; ++i ) {
+    const char c = groups[i];
+    int value = -1;
+    if ( c >= '0' && c <= '9' ) value = c - '0';
+    else if ( c >= 'a' && c <= 'z' ) value = c - 'a' + 10;
+    else if ( c >= 'A' && c <= 'Z' ) value = c - 'A' + 10;
+    if ( value >= 0 ) anim->SetBodygroup( i, value );
+  }
+  return 0;
+}
+
+static int CBaseEntity_GetPersistent( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  lua_pushboolean( L, entity->m_GMOD_bool[31] );
+  return 1;
+}
+
+static int CBaseEntity_SetPersistent( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  entity->m_GMOD_bool.Set( 31, lua_toboolean( L, 2 ) != 0 );
+  return 0;
+}
+
 static const luaL_Reg CBaseEntitymeta[] = {
+  {"GetDTBool", CBaseEntity_GetDTBool},
+  {"SetDTBool", CBaseEntity_SetDTBool},
+  {"GetDTFloat", CBaseEntity_GetDTFloat},
+  {"SetDTFloat", CBaseEntity_SetDTFloat},
+  {"GetDTInt", CBaseEntity_GetDTInt},
+  {"SetDTInt", CBaseEntity_SetDTInt},
+  {"GetDTString", CBaseEntity_GetDTString},
+  {"SetDTString", CBaseEntity_SetDTString},
+  {"GetDTEntity", CBaseEntity_GetDTEntity},
+  {"SetDTEntity", CBaseEntity_SetDTEntity},
+  {"GetDTVector", CBaseEntity_GetDTVector},
+  {"SetDTVector", CBaseEntity_SetDTVector},
+  {"GetDTAngle", CBaseEntity_GetDTAngle},
+  {"SetDTAngle", CBaseEntity_SetDTAngle},
+
   {"GetWorldTransformMatrix", CBaseEntity_GetWorldTransformMatrix},
   {"GetParentWorldTransformMatrix", CBaseEntity_GetParentWorldTransformMatrix},
   {"GetForward", CBaseEntity_GetForward},
@@ -6054,12 +6416,12 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // (the functions themselves dispatch: driveable field / exported pod access /
   // default). GM:CalcVehicleView's `Vehicle.GetThirdPersonMode == nil` guard
   // relies on this for the seat camera; the Vehicle metatable keeps its copy.
-  {"GetThirdPersonMode", Vehicle_GetThirdPersonMode},
-  {"SetThirdPersonMode", Vehicle_SetThirdPersonMode},
-  {"GetCameraDistance", Vehicle_GetCameraDistance},
-  {"SetCameraDistance", Vehicle_SetCameraDistance},
-  {"GetVehicleClass", Vehicle_GetVehicleClass},
-  {"SetVehicleClass", Vehicle_SetVehicleClass},
+  {"Get_HL2SBThirdPersonMode", Vehicle_GetThirdPersonMode},
+  {"Set_HL2SBThirdPersonMode", Vehicle_SetThirdPersonMode},
+  {"Get_HL2SBCameraDistance", Vehicle_GetCameraDistance},
+  {"Set_HL2SBCameraDistance", Vehicle_SetCameraDistance},
+  {"Get_HL2SBVehicleClass", Vehicle_GetVehicleClass},
+  {"Set_HL2SBVehicleClass", Vehicle_SetVehicleClass},
   {"Activate", CBaseEntity_Activate},
   {"AddDataObjectType", CBaseEntity_AddDataObjectType},
   {"AddEffects", CBaseEntity_AddEffects},
@@ -6096,9 +6458,15 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"EndGroundContact", CBaseEntity_EndGroundContact},
   {"EndTouch", CBaseEntity_EndTouch},
   {"entindex", CBaseEntity_entindex},
+  // HL2SB: the reference publishes this under EntIndex (capitalized) -- every
+  // original GMod script spells it that way (lua_run.lua's chunk name, the
+  // properties/persistence system, undo).  Both spellings answer the same
+  // binding now.
+  {"EntIndex", CBaseEntity_entindex},
   {"EntityToWorldSpace", CBaseEntity_EntityToWorldSpace},
   {"EyeAngles", CBaseEntity_EyeAngles},
   {"EyePosition", CBaseEntity_EyePosition},
+  {"GetShootPos", CBaseEntity_GetShootPos},
   // HL2SB: GMod's public spelling is EyePos (wiki: Entity:EyePos, client and
   // server), and Team Sandbox only ever published the C++ name EyePosition.  So
   // every GMod script that asks an entity for its view position died with
@@ -6213,6 +6581,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // HL2SB GMod compat: GMod's spellings of the same idea (a Color rather than a
   // normalised Vector), plus a material name that has no engine-side override.
   {"GetColor", CBaseEntity_GetColor},
+  {"GetPersistent", CBaseEntity_GetPersistent},
+  {"GetActiveWeapon", CBaseEntity_GetActiveWeapon},
+  {"GetColor4Part", CBaseEntity_GetColor4Part},
   {"GetMaterial", CBaseEntity_GetMaterial},
   {"GetSimulatingPlayer", CBaseEntity_GetSimulatingPlayer},
   {"GetSimulationTime", CBaseEntity_GetSimulationTime},
@@ -6366,8 +6737,6 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetPos", CBaseEntity_SetPos},
   {"SetKeyValue", CBaseEntity_SetKeyValue},
   {"GetPos", CBaseEntity_GetPos},
-  // HL2SB (2026-09-22): GMod's CallOnClient -- cf_beast's weapon base needs it.
-  {"CallOnClient", CBaseEntity_CallOnClient},
   {"SetAbsQueriesValid", CBaseEntity_SetAbsQueriesValid},
   {"SetAbsVelocity", CBaseEntity_SetAbsVelocity},
   {"SetAIWalkable", CBaseEntity_SetAIWalkable},
@@ -6379,6 +6748,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetCheckUntouch", CBaseEntity_SetCheckUntouch},
   {"SetClassname", CBaseEntity_SetClassname},
   {"SetCollisionBounds", CBaseEntity_SetCollisionBounds},
+  {"SetCollisionBoundsWS", CBaseEntity_SetCollisionBoundsWS},
   {"SetCollisionGroup", CBaseEntity_SetCollisionGroup},
   {"SetEffectEntity", CBaseEntity_SetEffectEntity},
   {"SetEffects", CBaseEntity_SetEffects},
@@ -6410,11 +6780,19 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetOwnerEntity", CBaseEntity_SetOwnerEntity},
   {"SetOwner", CBaseEntity_SetOwner},
   {"SetParent", CBaseEntity_SetParent},
+  {"FollowBone", CBaseEntity_FollowBone},
+  {"BoneLength", CBaseEntity_BoneLength},
+  {"EnableCustomCollisions", CBaseEntity_EnableCustomCollisions},
   {"SetPlayerSimulated", CBaseEntity_SetPlayerSimulated},
   {"SetPredictionEligible", CBaseEntity_SetPredictionEligible},
   {"SetPredictionPlayer", CBaseEntity_SetPredictionPlayer},
   {"SetRenderColor", CBaseEntity_SetRenderColor},
   {"SetColor", CBaseEntity_SetColor},
+  {"SetPersistent", CBaseEntity_SetPersistent},
+  {"NearestPoint", CBaseEntity_NearestPoint},
+  {"DropToFloor", CBaseEntity_DropToFloor},
+  {"SetBodyGroups", CBaseEntity_SetBodyGroups},
+  {"SetColor4Part", CBaseEntity_SetColor4Part},
   {"SetMaterial", CBaseEntity_SetMaterial},
   {"SetSkin", CBaseEntity_SetSkin},
   {"SetRenderColorA", CBaseEntity_SetRenderColorA},
@@ -6501,8 +6879,6 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetNW2Angle", CBaseEntity_SetNW2Angle},
   {"GetNW2Angle", CBaseEntity_GetNW2Angle},
   // HL2SB GMod compat: per-entity Lua variables + overlay text.
-  {"SetVar", CBaseEntity_SetVar},
-  {"GetVar", CBaseEntity_GetVar},
   {"SetOverlayText", CBaseEntity_SetOverlayText},
   {"GetOverlayText", CBaseEntity_GetOverlayText},
   /* HL2SB: GMod's Entity:SetEyeTarget( pos ), accepted but inert - see the long note
@@ -6657,6 +7033,20 @@ static int luasrc_EyePos( lua_State *L )
 	return 1;
 }
 
+#ifdef CLIENT_DLL
+static int luasrc_MainEyePos( lua_State *L )
+{
+	lua_pushvector( L, MainViewOrigin() );
+	return 1;
+}
+
+static int luasrc_MainEyeAngles( lua_State *L )
+{
+	lua_pushangle( L, MainViewAngles() );
+	return 1;
+}
+#endif
+
 static const luaL_Reg ents_funcs[] = {
   {"Create", luasrc_ents_Create},
   {"GetByIndex", luasrc_ents_GetByIndex},
@@ -6668,6 +7058,10 @@ static const luaL_Reg CBaseEntity_funcs[] = {
   {"CreateEntityByName", luasrc_CreateEntityByName},
   {"SetPhysConstraintSystem", Lua_SetPhysConstraintSystem},
   {"EyePos", luasrc_EyePos},
+#ifdef CLIENT_DLL
+  {"MainEyePos", luasrc_MainEyePos},
+  {"MainEyeAngles", luasrc_MainEyeAngles},
+#endif
   // HL2SB: GMod's BroadcastLua( code ) -- server realm broadcasts to every
   // connected player through the same lua_run_cl transport; client realm
   // is a no-op (see the function above).

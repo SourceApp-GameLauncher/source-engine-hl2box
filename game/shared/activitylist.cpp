@@ -2523,7 +2523,18 @@ void ActivityList_RegisterSharedActivities( void )
 	REGISTER_SHARED_ACTIVITY( ACT_GMOD_TAUNT_ROBOT );
 	REGISTER_SHARED_ACTIVITY( ACT_GMOD_TAUNT_SALUTE );
 
-	AssertMsg( g_HighestActivity == LAST_SHARED_ACTIVITY - 1, "Not all activities from ai_activity.h registered in activitylist.cpp" ); 
+	AssertMsg( g_HighestActivity == LAST_SHARED_ACTIVITY - 1, "Not all activities from ai_activity.h registered in activitylist.cpp" );
+#ifdef LUA_SDK
+    const char *vehicleActivities[] = { "ACT_DRIVE_JEEP", "ACT_DRIVE_AIRBOAT" };
+    for ( int i = 0; i < ARRAYSIZE(vehicleActivities); ++i )
+    {
+        const int activity = ActivityList_RegisterPrivateActivity(vehicleActivities[i]);
+        lua_pushinteger(L, activity);
+        lua_setfield(L, -2, vehicleActivities[i]);
+        lua_pushinteger(L, activity);
+        lua_setglobal(L, vehicleActivities[i]);
+    }
+#endif
 } 
 
 // HACKHACK: Keep backwards compatibility on broken activities temporarily

@@ -1076,6 +1076,11 @@ void CWeaponGravityGun::EffectUpdate( void )
 #endif
 
 		QAngle angles = m_heldWorldAngles;
+		if ( pObject->IsNPC() || pObject->MyNPCPointer() != NULL )
+		{
+			angles.x = 0.0f;
+			angles.z = 0.0f;
+		}
 
 		// HL2SB GMod compat: teleport-drag for everything without a vphysics
 		// body (NPCs, nextbots, scripted ents) - the entity stays alive and

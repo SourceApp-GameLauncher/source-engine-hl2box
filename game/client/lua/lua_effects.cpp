@@ -39,6 +39,7 @@
 #include "c_baseplayer.h"
 #include "c_baseviewmodel.h"
 #include "c_basecombatweapon.h"
+#include "clientleafsystem.h"
 #include "vphysics_interface.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -159,6 +160,12 @@ static int LuaEffect_IsValid(lua_State *state) {
 	lua_pop(state, 1);
 	lua_pushboolean(state, !retired);
 	return 1;
+}
+
+static int LuaEffect_Remove(lua_State *state) {
+	lua_pushboolean(state, true);
+	lua_setfield(state, 1, "__hl2sb_retired");
+	return 0;
 }
 
 //=============================================================================
@@ -309,6 +316,71 @@ static int LuaEffect_GetTracerShootPos( lua_State *L )
 //=============================================================================
 // One live effect: a Lua table plus the engine's draw slot.
 //=============================================================================
+static bool s_bLuaDOFMode = false;
+
+bool HL2SB_LuaDOFMode()
+{
+	return s_bLuaDOFMode;
+}
+
+void HL2SB_ResetLuaDOFMode()
+{
+	s_bLuaDOFMode = false;
+}
+
+int HL2SB_LuaSetDOFMode( lua_State *state )
+{
+	s_bLuaDOFMode = lua_toboolean( state, 1 ) != 0;
+	C_BaseEntityIterator it;
+	C_BaseEntity *entity;
+	while ( ( entity = it.Next() ) != NULL )
+	{
+		if ( entity->GetRenderHandle() != INVALID_CLIENT_RENDER_HANDLE )
+			ClientLeafSystem()->SetRenderGroup( entity->GetRenderHandle(), entity->GetRenderGroup() );
+	}
+	return 0;
+}
+
+class CLuaSortedEffect : public C_BaseEntity
+{
+public:
+	CLuaSortedEffect( int ref ) : m_nEffectRef( ref ), m_bReady( false ) {}
+	void SetReady( bool ready ) { m_bReady = ready; }
+	virtual bool ShouldDraw() { return true; }
+	virtual bool IsTransparent() { return true; }
+	virtual RenderGroup_t GetRenderGroup() { return RENDER_GROUP_TRANSLUCENT_ENTITY; }
+	virtual void GetRenderBounds( Vector &mins, Vector &maxs ) { mins.Init( -32, -32, -32 ); maxs.Init( 32, 32, 32 ); }
+	virtual int DrawModel( int flags )
+	{
+		if ( L == NULL || m_nEffectRef < 0 || !m_bReady ) return 0;
+		const int top = lua_gettop( L );
+		lua_getref( L, m_nEffectRef );
+		if ( lua_istable( L, -1 ) )
+		{
+			lua_getfield( L, -1, "__hl2sb_retired" );
+			const bool retired = lua_toboolean( L, -1 ) != 0;
+			lua_pop( L, 1 );
+			if ( !retired )
+			{
+				lua_getfield( L, -1, "Render" );
+				if ( lua_isfunction( L, -1 ) )
+				{
+					lua_pushvalue( L, -2 );
+					luasrc_pcall( L, 1, 0, 0 );
+				}
+			}
+		}
+		lua_settop( L, top );
+		return 1;
+	}
+private:
+	int m_nEffectRef;
+	bool m_bReady;
+};
+
+class CLuaEffect;
+static CUtlVector<CLuaEffect *> s_SortedLuaEffects;
+
 class CLuaEffect : public CClientSideEffect
 {
 public:
@@ -316,6 +388,7 @@ public:
 	virtual ~CLuaEffect( void );
 
 	virtual void Draw( double frametime );
+	void UpdateSorted( double frametime );
 
 private:
 	// HL2SB: the base class keeps the POINTER we hand it, so it has to point at
@@ -324,6 +397,8 @@ private:
 	// nothing has to have run before it is usable.
 	char m_szName[128];
 	int m_nRef;
+	CHandle<CLuaSortedEffect> m_hSortedEffect;
+	bool m_bUpdatingSorted;
 	// HL2SB diagnostic: how many times this effect was drawn (see the retirement
 	// warning in Draw()).
 	int m_nDraws;
@@ -331,6 +406,9 @@ private:
 
 CLuaEffect::~CLuaEffect( void )
 {
+	s_SortedLuaEffects.FindAndRemove( this );
+	if ( m_hSortedEffect.Get() != NULL )
+		m_hSortedEffect->Release();
 	// CEffectsList deletes the effect when Think() says it is done, and
 	// clienteffects->Flush() deletes the rest on level change, so this is the
 	// single place the Lua registry reference is released.
@@ -350,6 +428,7 @@ CLuaEffect::~CLuaEffect( void )
 CLuaEffect::CLuaEffect( const char *pszName, int nRef, const CEffectData &data )
 	: CClientSideEffect( m_szName )
 	, m_nRef( nRef )
+	, m_bUpdatingSorted( false )
 	, m_nDraws( 0 )
 {
 	Q_strncpy( m_szName, ( pszName != NULL ) ? pszName : "lua_effect", sizeof( m_szName ) );
@@ -397,6 +476,31 @@ CLuaEffect::CLuaEffect( const char *pszName, int nRef, const CEffectData &data )
 	}
 
 	lua_pop( L, 1 );
+	if ( !Q_stricmp( m_szName, "dof_node" ) )
+	{
+		CLuaSortedEffect *effect = new CLuaSortedEffect( m_nRef );
+		if ( effect->InitializeAsClientEntity( NULL, RENDER_GROUP_TRANSLUCENT_ENTITY ) )
+		{
+			m_hSortedEffect = effect;
+			s_SortedLuaEffects.AddToTail( this );
+		}
+		else
+			delete effect;
+	}
+}
+
+void CLuaEffect::UpdateSorted( double frametime )
+{
+	if ( !IsActive() || m_hSortedEffect.Get() == NULL ) return;
+	m_bUpdatingSorted = true;
+	Draw( frametime );
+	m_bUpdatingSorted = false;
+}
+
+void HL2SB_UpdateSortedLuaEffects()
+{
+	for ( int i = 0; i < s_SortedLuaEffects.Count(); ++i )
+		s_SortedLuaEffects[i]->UpdateSorted( gpGlobals->frametime );
 }
 
 void CLuaEffect::Draw( double frametime )
@@ -417,14 +521,29 @@ void CLuaEffect::Draw( double frametime )
 		return;
 	}
 
+	lua_getfield( L, -1, "__hl2sb_retired" );
+	const bool bRetired = lua_toboolean( L, -1 ) != 0;
+	lua_pop( L, 1 );
+	if ( bRetired )
+	{
+		lua_pop( L, 1 );
+		Destroy();
+		return;
+	}
+	if ( m_hSortedEffect.Get() != NULL && !m_bUpdatingSorted )
+	{
+		lua_pop( L, 1 );
+		return;
+	}
 
 	// EFFECT:Think() -- returning false retires the effect (GMod contract).
+	bool bThinkSucceeded = true;
 	const int nTopBeforeThink = lua_gettop( L );
 	lua_getfield( L, -1, "Think" );
 	if ( lua_isfunction( L, -1 ) )
 	{
 		lua_pushvalue( L, -2 );
-		luasrc_pcall( L, 1, 1, 0 );
+		bThinkSucceeded = luasrc_pcall( L, 1, 1, 0 ) == 0;
 
 		// HL2SB crash fix (2026-09-21, the nuke SIGABRT): on error
 		// luasrc_pcall logs the message and POPS it, so a failed Think leaves
@@ -553,6 +672,24 @@ void CLuaEffect::Draw( double frametime )
 
 	if ( !IsActive() )
 	{
+		lua_pop( L, 1 );
+		return;
+	}
+	if ( m_hSortedEffect.Get() != NULL )
+	{
+		m_hSortedEffect->SetReady( false );
+		const int nTableTop = lua_gettop( L );
+		lua_getfield( L, -1, "GetPos" );
+		if ( lua_isfunction( L, -1 ) )
+		{
+			lua_pushvalue( L, -2 );
+			if ( luasrc_pcall( L, 1, 1, 0 ) == 0 && luaL_testudata( L, -1, LUA_VECTORLIBNAME ) )
+			{
+				m_hSortedEffect->SetAbsOrigin( luaL_checkvector( L, -1 ) );
+				m_hSortedEffect->SetReady( bThinkSucceeded );
+			}
+		}
+		lua_settop( L, nTableTop );
 		lua_pop( L, 1 );
 		return;
 	}
@@ -758,7 +895,7 @@ bool HL2SB_CreateLuaEffect( const char *pszName, const CEffectData &data )
 		{"SetAngles", LuaEffect_SetAngles}, {"GetAngles", LuaEffect_GetAngles},
 		{"SetParent", LuaEffect_SetParent}, {"SetParentPhysNum", LuaEffect_SetParentPhysNum},
 		{"SetModel", LuaEffect_SetModel}, {"GetModel", LuaEffect_GetModel},
-		{"IsValid", LuaEffect_IsValid}, {NULL, NULL}
+		{"IsValid", LuaEffect_IsValid}, {"Remove", LuaEffect_Remove}, {NULL, NULL}
 	};
 	for (int i = 0; entityMethods[i].name; ++i) {
 		lua_getfield(L, -1, entityMethods[i].name);

@@ -693,7 +693,6 @@ CPlayerAnimState::CPlayerAnimState( CHL2MP_Player *outer )
 // Purpose: 
 //-----------------------------------------------------------------------------
 // Animation hooks run on both realms; Lua owns the activity and playback rate.
-extern void HL2SB_ResolveVehicleAnimation( CBaseEntity *pEntity );
 
 static bool HL2SB_PushPlayerAnimationHook( const char *pszName, CHL2MP_Player *pPlayer )
 {
@@ -718,26 +717,6 @@ static bool HL2SB_PushPlayerAnimationHook( const char *pszName, CHL2MP_Player *p
     return true;
 }
 
-// The original Lua's generic activity offsets predate this engine's enum layout.
-static Activity HL2SB_NormalizePlayerActivity( Activity ideal, Activity translated )
-{
-    static const struct { Activity ideal; int offset; Activity native; } mappings[] =
-    {
-        { ACT_MP_STAND_IDLE, 0, ACT_HL2MP_IDLE },
-        { ACT_MP_WALK, 1, ACT_HL2MP_WALK },
-        { ACT_MP_RUN, 2, ACT_HL2MP_RUN },
-        { ACT_MP_CROUCH_IDLE, 3, ACT_HL2MP_IDLE_CROUCH },
-        { ACT_MP_CROUCHWALK, 4, ACT_HL2MP_WALK_CROUCH },
-        { ACT_MP_SWIM, 9, ACT_HL2MP_SWIM }
-    };
-    for ( int i = 0; i < ARRAYSIZE( mappings ); ++i )
-    {
-        if ( mappings[i].ideal == ideal && translated == ACT_HL2MP_IDLE + mappings[i].offset )
-            return mappings[i].native;
-    }
-    return translated;
-}
-
 void CPlayerAnimState::Update()
 {
     CHL2MP_Player *pPlayer = GetOuter();
@@ -745,8 +724,17 @@ void CPlayerAnimState::Update()
     if ( !pHdr || !pHdr->SequencesAvailable() || !pPlayer->IsAlive() )
         return;
 
-    if ( pPlayer->IsInAVehicle() )
-        HL2SB_ResolveVehicleAnimation( pPlayer->GetMoveParent() );
+    extern CBaseEntity *HL2SB_GetPlayerDrivingEntity( CBasePlayer * );
+    if (HL2SB_GetPlayerDrivingEntity(pPlayer) != NULL)
+    {
+        const int stackTop = L ? lua_gettop(L) : 0;
+        if (HL2SB_PushPlayerAnimationHook("PlayerDriveAnimate", pPlayer))
+        {
+            luasrc_pcall(L, 2, 0, 0);
+            lua_settop(L, stackTop);
+        }
+        return;
+    }
 
     Vector velocity;
     GetOuterAbsVelocity( velocity );
@@ -781,7 +769,6 @@ void CPlayerAnimState::Update()
     }
     if ( !translatedByLua && pWeapon )
         translated = pWeapon->ActivityOverride( ideal, NULL );
-    translated = HL2SB_NormalizePlayerActivity( ideal, translated );
 
     int desiredSequence = sequenceOverride;
     const int currentSequence = pPlayer->GetSequence();
@@ -825,8 +812,22 @@ void CPlayerAnimState::Update()
              ( gpGlobals->curtime >= nextPrint[index] || nextPrint[index] > gpGlobals->curtime + 1.0f ) )
         {
             nextPrint[index] = gpGlobals->curtime + 1.0f;
-            Msg( "[HL2SB player animation] entity=%d sequence=%d cycle=%.4f rate=%.3f speed=%.1f\n",
-                 index, pPlayer->GetSequence(), pPlayer->GetCycle(), pPlayer->GetPlaybackRate(), velocity.Length2D() );
+            Msg( "[HL2SB player animation] side=%s entity=%d sequence=%d cycle=%.4f rate=%.3f speed=%.1f vehicle=%d parent=%d local=(%.3f %.3f %.3f) localang=(%.2f %.2f %.2f) render=(%.2f %.2f %.2f) eye=(%.2f %.2f %.2f) viewoff=(%.2f %.2f %.2f) aim=(%.4f %.4f) head=(%.4f %.4f) feet=(%.2f %.2f)\n",
+#ifdef CLIENT_DLL
+                 "client",
+#else
+                 "server",
+#endif
+                 index, pPlayer->GetSequence(), pPlayer->GetCycle(), pPlayer->GetPlaybackRate(), velocity.Length2D(),
+                 pPlayer->IsInAVehicle() ? 1 : 0, pPlayer->GetMoveParent() ? pPlayer->GetMoveParent()->entindex() : -1,
+                 pPlayer->GetLocalOrigin().x, pPlayer->GetLocalOrigin().y, pPlayer->GetLocalOrigin().z,
+                 pPlayer->GetLocalAngles().x, pPlayer->GetLocalAngles().y, pPlayer->GetLocalAngles().z,
+                 m_angRender.x, m_angRender.y, m_angRender.z,
+                 pPlayer->GetAnimEyeAngles().x, pPlayer->GetAnimEyeAngles().y, pPlayer->GetAnimEyeAngles().z,
+                 pPlayer->GetViewOffset().x, pPlayer->GetViewOffset().y, pPlayer->GetViewOffset().z,
+                 pPlayer->GetPoseParameter( pPlayer->LookupPoseParameter( "aim_yaw" ) ), pPlayer->GetPoseParameter( pPlayer->LookupPoseParameter( "aim_pitch" ) ),
+                 pPlayer->GetPoseParameter( pPlayer->LookupPoseParameter( "head_yaw" ) ), pPlayer->GetPoseParameter( pPlayer->LookupPoseParameter( "head_pitch" ) ),
+                 m_flCurrentFeetYaw, m_flGoalFeetYaw );
         }
     }
 }

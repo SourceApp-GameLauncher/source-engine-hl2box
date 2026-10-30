@@ -14,7 +14,7 @@
 	#include "hl2mp_player.h"
 #endif
 
-#include "weapon_hl2mpbasehlmpcombatweapon.h"
+#include "weapon_hl2mpbase_machinegun.h"
 
 #define	PISTOL_FASTEST_REFIRE_TIME		0.1f
 #define	PISTOL_FASTEST_DRY_REFIRE_TIME	0.2f
@@ -30,10 +30,10 @@
 // CWeaponPistol
 //-----------------------------------------------------------------------------
 
-class CWeaponPistol : public CBaseHL2MPCombatWeapon
+class CWeaponPistol : public CHL2MPMachineGun
 {
 public:
-	DECLARE_CLASS( CWeaponPistol, CBaseHL2MPCombatWeapon );
+	DECLARE_CLASS( CWeaponPistol, CHL2MPMachineGun );
 
 	CWeaponPistol(void);
 

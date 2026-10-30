@@ -180,7 +180,11 @@ bool CHL2MPMachineGun::Deploy( void )
 {
 	m_nShotsFired = 0;
 
+#if defined( HL2SB )
+	return CBaseHL2MPCombatWeapon::Deploy();
+#else
 	return BaseClass::Deploy();
+#endif
 }
 
 

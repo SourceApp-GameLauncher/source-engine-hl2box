@@ -62,7 +62,7 @@ public:
 	void BoltTouch( CBaseEntity *pOther );
 	bool CreateVPhysics( void );
 	unsigned int PhysicsSolidMaskForEntity() const;
-	static CCrossbowBolt *BoltCreate( const Vector &vecOrigin, const QAngle &angAngles, int iDamage, CBasePlayer *pentOwner = NULL );
+	static CCrossbowBolt *BoltCreate( const Vector &vecOrigin, const QAngle &angAngles, int iDamage, CBaseEntity *pentOwner = NULL );
 
 protected:
 
@@ -92,10 +92,12 @@ END_DATADESC()
 IMPLEMENT_SERVERCLASS_ST( CCrossbowBolt, DT_CrossbowBolt )
 END_SEND_TABLE()
 
-CCrossbowBolt *CCrossbowBolt::BoltCreate( const Vector &vecOrigin, const QAngle &angAngles, int iDamage, CBasePlayer *pentOwner )
+CCrossbowBolt *CCrossbowBolt::BoltCreate( const Vector &vecOrigin, const QAngle &angAngles, int iDamage, CBaseEntity *pentOwner )
 {
 	// Create a new entity with CCrossbowBolt private data
 	CCrossbowBolt *pBolt = (CCrossbowBolt *)CreateEntityByName( "crossbow_bolt" );
+	if ( !pBolt )
+		return NULL;
 	UTIL_SetOrigin( pBolt, vecOrigin );
 	pBolt->SetAbsAngles( angAngles );
 	pBolt->Spawn();
@@ -397,6 +399,7 @@ public:
 	
 	virtual void	Precache( void );
 	virtual void	PrimaryAttack( void );
+	virtual float GetFireRate( void ) { return 0.75f; }
 	virtual void	SecondaryAttack( void );
 	virtual bool	Deploy( void );
 	virtual bool	Holster( CBaseCombatWeapon *pSwitchingTo = NULL );
@@ -406,7 +409,9 @@ public:
 	virtual bool	SendWeaponAnim( int iActivity );
 
 #ifndef CLIENT_DLL
+	virtual int CapabilitiesGet( void ) { return bits_CAP_WEAPON_RANGE_ATTACK1; }
 	virtual void Operator_HandleAnimEvent( animevent_t *pEvent, CBaseCombatCharacter *pOperator );
+	void NPCPrimaryAttack( void ) { FireBolt(); }
 #endif
 
 	DECLARE_NETWORKCLASS(); 
@@ -518,6 +523,45 @@ acttable_t	CWeaponCrossbow::m_acttable[] =
 	{ ACT_HL2MP_GESTURE_RANGE_ATTACK,	ACT_HL2MP_GESTURE_RANGE_ATTACK_CROSSBOW,	false },
 	{ ACT_HL2MP_GESTURE_RELOAD,			ACT_HL2MP_GESTURE_RELOAD_AR2,				false },
 	{ ACT_HL2MP_JUMP,					ACT_HL2MP_JUMP_CROSSBOW,					false },
+#ifndef CLIENT_DLL
+	{ ACT_IDLE, ACT_IDLE_SMG1, true },
+	{ ACT_RANGE_ATTACK1, ACT_RANGE_ATTACK_SHOTGUN, true },
+	{ ACT_RELOAD, ACT_RELOAD_SHOTGUN, false },
+	{ ACT_WALK, ACT_WALK_RIFLE, true },
+	{ ACT_IDLE_ANGRY, ACT_IDLE_ANGRY_SHOTGUN, true },
+	{ ACT_IDLE_RELAXED, ACT_IDLE_SHOTGUN_RELAXED, false },
+	{ ACT_IDLE_STIMULATED, ACT_IDLE_SHOTGUN_STIMULATED, false },
+	{ ACT_IDLE_AGITATED, ACT_IDLE_SHOTGUN_AGITATED, false },
+	{ ACT_WALK_RELAXED, ACT_WALK_RIFLE_RELAXED, false },
+	{ ACT_WALK_STIMULATED, ACT_WALK_RIFLE_STIMULATED, false },
+	{ ACT_WALK_AGITATED, ACT_WALK_AIM_RIFLE, false },
+	{ ACT_RUN_RELAXED, ACT_RUN_RIFLE_RELAXED, false },
+	{ ACT_RUN_STIMULATED, ACT_RUN_RIFLE_STIMULATED, false },
+	{ ACT_RUN_AGITATED, ACT_RUN_AIM_RIFLE, false },
+	{ ACT_IDLE_AIM_RELAXED, ACT_IDLE_SMG1_RELAXED, false },
+	{ ACT_IDLE_AIM_STIMULATED, ACT_IDLE_AIM_RIFLE_STIMULATED, false },
+	{ ACT_IDLE_AIM_AGITATED, ACT_IDLE_ANGRY_SMG1, false },
+	{ ACT_WALK_AIM_RELAXED, ACT_WALK_RIFLE_RELAXED, false },
+	{ ACT_WALK_AIM_STIMULATED, ACT_WALK_AIM_RIFLE_STIMULATED, false },
+	{ ACT_WALK_AIM_AGITATED, ACT_WALK_AIM_RIFLE, false },
+	{ ACT_RUN_AIM_RELAXED, ACT_RUN_RIFLE_RELAXED, false },
+	{ ACT_RUN_AIM_STIMULATED, ACT_RUN_AIM_RIFLE_STIMULATED, false },
+	{ ACT_RUN_AIM_AGITATED, ACT_RUN_AIM_RIFLE, false },
+	{ ACT_WALK_AIM, ACT_WALK_AIM_SHOTGUN, true },
+	{ ACT_WALK_CROUCH, ACT_WALK_CROUCH_RIFLE, true },
+	{ ACT_WALK_CROUCH_AIM, ACT_WALK_CROUCH_AIM_RIFLE, true },
+	{ ACT_RUN, ACT_RUN_RIFLE, true },
+	{ ACT_RUN_AIM, ACT_RUN_AIM_SHOTGUN, true },
+	{ ACT_RUN_CROUCH, ACT_RUN_CROUCH_RIFLE, true },
+	{ ACT_RUN_CROUCH_AIM, ACT_RUN_CROUCH_AIM_RIFLE, true },
+	{ ACT_GESTURE_RANGE_ATTACK1, ACT_GESTURE_RANGE_ATTACK_SHOTGUN, true },
+	{ ACT_RANGE_ATTACK1_LOW, ACT_RANGE_ATTACK_SHOTGUN_LOW, true },
+	{ ACT_RELOAD_LOW, ACT_RELOAD_SHOTGUN_LOW, false },
+	{ ACT_GESTURE_RELOAD, ACT_GESTURE_RELOAD_SHOTGUN, false },
+	{ ACT_CROUCHIDLE_STIMULATED, ACT_HL2MP_IDLE_CROUCH_SMG1, false },
+	{ ACT_CROUCHIDLE_AIM_STIMULATED, ACT_RANGE_AIM_SMG1_LOW, false },
+	{ ACT_CROUCHIDLE_AGITATED, ACT_RANGE_AIM_SMG1_LOW, false },
+#endif
 };
 
 IMPLEMENT_ACTTABLE(CWeaponCrossbow);
@@ -658,9 +702,35 @@ void CWeaponCrossbow::FireBolt( void )
 	}
 
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
-	
+
+#ifndef CLIENT_DLL
+	if ( pOwner == NULL )
+	{
+		CAI_BaseNPC *pNPC = GetOwner() ? GetOwner()->MyNPCPointer() : NULL;
+		if ( !pNPC || !pNPC->GetEnemy() )
+			return;
+
+		const Vector vecSrc = pNPC->Weapon_ShootPosition();
+		const Vector vecAiming = pNPC->GetActualShootTrajectory( vecSrc );
+		QAngle angAiming;
+		VectorAngles( vecAiming, angAiming );
+		CCrossbowBolt *pBolt = CCrossbowBolt::BoltCreate( vecSrc, angAiming, 20, pNPC );
+		if ( !pBolt )
+			return;
+		pBolt->SetAbsVelocity( vecAiming * BOLT_WATER_VELOCITY );
+		WeaponSound( SINGLE );
+		WeaponSound( SPECIAL2 );
+		CSoundEnt::InsertSound( SOUND_COMBAT, GetAbsOrigin(), 200, 0.2f );
+		SendWeaponAnim( ACT_VM_PRIMARYATTACK );
+		m_flNextPrimaryAttack = m_flNextSecondaryAttack = gpGlobals->curtime + 3.0f;
+		--m_iClip1;
+		SetChargerState( CHARGER_STATE_DISCHARGE );
+		return;
+	}
+#else
 	if ( pOwner == NULL )
 		return;
+#endif
 
 #ifndef CLIENT_DLL
 	Vector vecAiming	= pOwner->GetAutoaimVector( 0 );	
@@ -670,6 +740,8 @@ void CWeaponCrossbow::FireBolt( void )
 	VectorAngles( vecAiming, angAiming );
 
 	CCrossbowBolt *pBolt = CCrossbowBolt::BoltCreate( vecSrc, angAiming, GetHL2MPWpnData().m_iPlayerDamage, pOwner );
+	if ( !pBolt )
+		return;
 
 	if ( pOwner->GetWaterLevel() == 3 )
 	{
@@ -774,6 +846,9 @@ void CWeaponCrossbow::CreateChargerEffects( void )
 {
 #ifndef CLIENT_DLL
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
+
+	if ( !pOwner || !pOwner->GetViewModel() )
+		return;
 
 	if ( m_hChargerSprite != NULL )
 		return;
@@ -968,6 +1043,12 @@ void CWeaponCrossbow::Operator_HandleAnimEvent( animevent_t *pEvent, CBaseCombat
 	}
 }
 
+void HL2SB_CrossbowOnNPCRangeAttack( CBaseCombatWeapon *pWeapon, CBaseCombatCharacter *pOperator )
+{
+	CWeaponCrossbow *pCrossbow = dynamic_cast< CWeaponCrossbow * >( pWeapon );
+	if ( pCrossbow && pOperator && pCrossbow->GetOwner() == pOperator )
+		pCrossbow->NPCPrimaryAttack();
+}
 #endif
 
 //-----------------------------------------------------------------------------

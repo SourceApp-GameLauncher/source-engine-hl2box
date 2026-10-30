@@ -208,7 +208,14 @@ CBulletWhizTimer g_BulletWhiz( "CBulletWhizTimer" );
 //-----------------------------------------------------------------------------
 #define LISTENER_HEIGHT 24
 
+void FX_TracerSound( const Vector &start, const Vector &end, int iTracerType, const char *soundOverride );
+
 void FX_TracerSound( const Vector &start, const Vector &end, int iTracerType )
+{
+	FX_TracerSound( start, end, iTracerType, NULL );
+}
+
+void FX_TracerSound( const Vector &start, const Vector &end, int iTracerType, const char *soundOverride )
 {
 	const char *pszSoundName = NULL;
 	float flWhizDist = TRACER_MAX_HEAR_DIST;
@@ -254,6 +261,9 @@ void FX_TracerSound( const Vector &start, const Vector &end, int iTracerType )
 	default:
 		return;
 	}
+
+	if ( soundOverride != NULL )
+		pszSoundName = soundOverride;
 
 	if( !pszSoundName )
 		return;

@@ -601,6 +601,9 @@ public:
 
 	int						WeaponState() const { return m_iState; }
 
+	// Last bullet time belongs to this realm and is not sent to clients.
+	double m_flLastShootTime;
+
 	// Weapon data
 	CNetworkVar( int, m_iState );				// See WEAPON_* definition
 	string_t				m_iszName;				// Classname of this weapon.

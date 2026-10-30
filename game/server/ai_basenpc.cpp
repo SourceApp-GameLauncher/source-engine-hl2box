@@ -7208,6 +7208,15 @@ void CAI_BaseNPC::OnRangeAttack1()
 	}
 
 	SetNextAttack( m_ShotRegulator.NextShotTime() );
+
+#if defined( HL2SB )
+	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+	if ( pWeapon && FClassnameIs( pWeapon, "weapon_crossbow" ) )
+	{
+		extern void HL2SB_CrossbowOnNPCRangeAttack( CBaseCombatWeapon *pWeapon, CBaseCombatCharacter *pOperator );
+		HL2SB_CrossbowOnNPCRangeAttack( pWeapon, this );
+	}
+#endif
 }
 
 

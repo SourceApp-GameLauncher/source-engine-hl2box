@@ -7,6 +7,7 @@
 #define lc_baseentity_cpp
 
 #include "cbase.h"
+#include "basecombatweapon_shared.h"
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "lbaseentity_shared.h"
@@ -14,6 +15,9 @@
 #include "model_types.h"	// HL2SB: STUDIO_RENDER, the default of Entity:DrawModel()
 #include "c_baseanimating.h"
 #include "basescripted.h"
+#include "c_fire_smoke.h"	// HL2SB: Entity:IsOnFire (C_EntityFlame = the networked flame)
+#include "view.h"			// HL2SB: MainViewOrigin/MainViewAngles (GUIMousePressed ray)
+#include "view_scene.h"		// HL2SB: CViewSetup (the picking ray uses the live FOV)
 #include "particles_new.h"	// HL2SB: Entity:CreateParticleEffect (CNewParticleEffect)
 #include "particle_parse.h"	// HL2SB: ParticleAttachment_t
 #include "lnewparticle.h"	// HL2SB: HL2SB_PushNewParticleEffect
@@ -127,14 +131,9 @@ static int CBaseEntity_DrawModel (lua_State *L) {
   C_BaseEntity *pEntity = luaL_checkentity(L, 1);
   int nFlags = luaL_optint(L, 2, STUDIO_RENDER);
 
-  // GMod lets a scripted entity draw its custom geometry on the first call.
-  // The entity's draw scope handles a nested self:DrawModel as a model draw.
-  CBaseScripted *pScripted = dynamic_cast<CBaseScripted *>( pEntity );
-  if ( pScripted != NULL )
-  {
-    lua_pushinteger( L, pScripted->DrawModel( nFlags ) );
-    return 1;
-  }
+  // GMod Entity:DrawModel is a direct native model draw for every entity.
+  // Scripted ENT:Draw and RenderOverride callbacks are dispatched by the
+  // renderer through CBaseScripted::DrawModel, not by this Lua binding.
 
   // Studio drawing cannot consume a brush or sprite model header.
   const model_t *pModel = pEntity->GetModel();
@@ -323,6 +322,44 @@ static int CBaseEntity_PrintMessage (lua_State *L) {
   return 0;
 }
 
+// HL2SB: GMod's shared spawnflag readers, client half.  The reference reads
+// the networked copy and answers a plain boolean bit test for HasSpawnFlags;
+// the argument is lenient there (any number), which checkinteger covers for
+// the integer constants every script passes.
+static int CBaseEntity_GetSpawnFlags (lua_State *L) {
+  lua_pushinteger( L, luaL_checkentity( L, 1 )->m_spawnflags );
+  return 1;
+}
+
+static int CBaseEntity_HasSpawnFlags (lua_State *L) {
+  lua_pushboolean( L, ( luaL_checkentity( L, 1 )->m_spawnflags & (unsigned)luaL_checkinteger( L, 2 ) ) != 0 );
+  return 1;
+}
+
+// HL2SB: GMod's shared Entity:IsOnFire, client half.  The reference reads its
+// own per-entity fire-state members; the engine-native source of truth here is
+// the networked effect-entity handle (CBaseAnimating::Ignite points it at the
+// entityflame, the flame's StopEffect clears it) plus the FL_ONFIRE flag.
+// The stock properties panel runs the ignite/extinguish Filter on the CLIENT
+// and one erroring Filter kills the whole DEntityProperties build, so without
+// this the entire context-menu property list went dead, not just ignite.
+// Extinguish stays server-only -- the reference publishes no client copy.
+static int CBaseEntity_IsWorld (lua_State *L) {
+  lua_pushboolean( L, luaL_checkentity( L, 1 )->IsWorld() );
+  return 1;
+}
+
+static int CBaseEntity_IsOnFire (lua_State *L) {
+  C_BaseEntity *pEntity = luaL_checkentity( L, 1 );
+  bool bOnFire = ( pEntity->GetFlags() & FL_ONFIRE ) != 0;
+  if ( !bOnFire )
+  {
+    bOnFire = ( dynamic_cast< C_EntityFlame * >( pEntity->GetEffectEntity() ) != NULL );
+  }
+  lua_pushboolean( L, bOnFire );
+  return 1;
+}
+
 static const luaL_Reg CBaseEntitymeta[] = {
   {"SpawnClientEntity", CBaseEntity_SpawnClientEntity},
   {"Interp_HierarchyUpdateInterpolationAmounts", CBaseEntity_Interp_HierarchyUpdateInterpolationAmounts},
@@ -359,6 +396,16 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // into the same table.
   {"CreateParticleEffect", CBaseEntity_CreateParticleEffect},
   {"StopParticlesInvolving", CBaseEntity_StopParticlesInvolving},
+  // HL2SB: GMod publishes these two on the CLIENT entity metatable too --
+  // Entity:HasSpawnFlags/GetSpawnFlags are shared.  lua_run.lua's Initialize
+  // calls self:HasSpawnFlags on the client copy of the entity and died with
+  // "attempt to call a nil value" before this.  The value is the networked
+  // m_spawnflags copy (DT_BaseEntity carries it; Add/RemoveSpawnFlags stay
+  // server-only, matching the reference surface).
+  {"GetSpawnFlags", CBaseEntity_GetSpawnFlags},
+  {"HasSpawnFlags", CBaseEntity_HasSpawnFlags},
+  {"IsOnFire", CBaseEntity_IsOnFire},
+  {"IsWorld", CBaseEntity_IsWorld},
   {NULL, NULL}
 };
 
@@ -373,6 +420,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
 ** needs the hook before that.
 */
 extern "C" void VGUI_SetOnMousePressAllowed( bool ( *fn )( int mouseCode ) );
+
+bool HL2SB_GetScreenClickDirection( Vector &direction, int x, int y, const CViewSetup *setup );
 
 static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
 {
@@ -394,6 +443,23 @@ static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
 			lua_pushinteger(L, mouseCode);
 		END_LUA_CALL_HOOK(2, 0);
 		lua_settop(L, iTop);
+	}
+
+	// HL2SB: GMod's GUIMousePressed -- the properties module opens the entity
+	// context menu from this hook (its PropertiesClick handler).  The
+	// reference fires it with the mouse code and the world picking ray under
+	// the cursor and lets the Lua side gate world-clickers itself; without it
+	// the stock right-click menu can never appear.
+	{
+		int x = 0, y = 0;
+		vgui::input()->GetCursorPos( x, y );
+		Vector vecDir( 0, 0, 1 );
+		HL2SB_GetScreenClickDirection( vecDir, x, y, NULL );
+		BEGIN_LUA_CALL_HOOK( "GUIMousePressed" );
+			lua_pushinteger( L, mouseCode );
+			lua_pushvector( L, vecDir );
+		END_LUA_CALL_HOOK( 2, 0 );
+		lua_settop( L, iTop );
 	}
 	return bBlocked;
 }

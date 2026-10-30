@@ -14,11 +14,14 @@
 #include "luasrclib.h"
 #include "lauxlib.h"
 #include "lsql.h"
+#include "activitylist.h"
 
 // HL2SB: game.AddParticles() below drives the particle system manager directly.
 #include "particles/particles.h"
 #include "filesystem.h"
 #include "tier1/CommandBuffer.h"
+#include "tier0/fasttimer.h"
+#include "tier1/utlstring.h"
 // HL2SB: luaL_checkentity (SuppressHostEvents), the GMod global helpers
 // registered at the end, the NetworkVar shim (which hands a 0..1 Vector back for
 // a Vector-declared variable, a 0..255 Color otherwise) and the vector/color
@@ -72,15 +75,199 @@ static ConVar cl_drawownshadow("cl_drawownshadow", "0", FCVAR_ARCHIVE, "Render t
 #include "usermessages.h"
 #ifdef CLIENT_DLL
 #include "c_user_message_register.h"	// USER_MESSAGE_REGISTER (client hook)
-#include "cliententitylist.h"			// HL2SB_RPC: entity index -> C_BaseEntity
+#include "cliententitylist.h"			// SWEPCmd: entity index -> C_BaseEntity
 #endif
 
 // HL2SB (2026-10-02): game.GetAmmoName reads the shared ammo def.
 #include "ammodef.h"
 #include <string>
 #include <vector>
+#include <utility>
+#include "tier1/KeyValues.h"
+#if !defined(NO_STEAM) && !defined(DISABLE_STEAM)
+#include "steam/steam_api.h"
+extern CSteamAPIContext *steamapicontext;
+#endif
 
 void HL2SB_AddCustomDecal( const char *name, const char *const *materials, int count );
+
+struct HL2SB_GameDepot {
+  const char *folder;
+  const char *title;
+  int appID;
+  const char *extraFolders;
+};
+
+static const HL2SB_GameDepot s_GameDepots[] = {
+  { "hl2", "Half-Life 2 & Episodes", 220, "episodic;ep2;lostcoast" },
+  { "cstrike", "Counter-Strike: Source", 240, "" },
+  { "tf", "Team Fortress 2", 440, "" },
+  { "dod", "Day of Defeat: Source", 300, "" },
+  { "hl2mp", "Half-Life 2: Deathmatch", 320, "" },
+  { "hl1", "Half-Life: Source", 280, "" },
+  { "hl1mp", "Half-Life Deathmatch: Source", 360, "hl1" },
+  { "zeno_clash", "Zeno Clash (Model Pack)", 22208, "" },
+  { "portal", "Portal", 400, "" },
+  { "diprip", "D.I.P.R.I.P.", 17530, "" },
+  { "zps", "Zombie Panic! Source", 17500, "vpks" },
+  { "pvkii", "Pirates, Vikings and Knights II", 17570, "" },
+  { "dystopia", "Dystopia", 17580, "" },
+  { "insurgency", "Insurgency (Source Mod)", 17700, "" },
+  { "insurgency", "Insurgency (Standalone)", 222880, "" },
+  { "ageofchivalry", "Age of Chivalry", 17510, "" },
+  { "left4dead2", "Left 4 Dead 2", 550, "left4dead2_dlc1;left4dead2_dlc2;left4dead2_dlc3;update" },
+  { "left4dead", "Left 4 Dead", 500, "left4dead_dlc3" },
+  { "portal2", "Portal 2", 620, "portal2_dlc1;portal2_dlc2" },
+  { "swarm", "Alien Swarm", 630, "" },
+  { "nucleardawn", "Nuclear Dawn", 17710, "" },
+  { "dinodday", "Dino D-Day", 70000, "" },
+  { "csgo", "Counter-Strike: GO", 4465480, "" },
+  { "berimbau", "Blade Symphony", 225600, "" },
+  { "infra", "INFRA", 251110, "" },
+  { "fof", "Fistful of Frags", 265630, "" },
+  { "thestanleyparable", "The Stanley Parable", 221910, "" },
+  { "gstringv2", "G String Game", 1224600, "" },
+  { "treason", "Klaus Veen's Treason", 1786950, "" },
+  { "vietnam", "Military Conflict: Vietnam", 1012110, "gmod" },
+  { "bms", "Black Mesa", 362890, "" },
+};
+
+static std::vector<std::string> HL2SB_GameSearchPaths( const char *pathID ) {
+  const int size = filesystem->GetSearchPath( pathID, true, NULL, 0 );
+  std::vector<char> buffer( size > 0 ? size : 1, 0 );
+  filesystem->GetSearchPath( pathID, true, &buffer[0], (int)buffer.size() );
+  V_FixSlashes( &buffer[0], '/' );
+  std::vector<std::string> paths;
+  const char *position = &buffer[0];
+  while ( *position ) {
+    const char *end = strchr( position, ';' );
+    if ( !end ) end = position + strlen( position );
+    std::string path( position, end - position );
+    while ( !path.empty() && path[path.size() - 1] == '/' ) path.resize( path.size() - 1 );
+    if ( !path.empty() ) paths.push_back( path );
+    position = *end ? end + 1 : end;
+  }
+  return paths;
+}
+
+static bool HL2SB_GameFolderMatches( const HL2SB_GameDepot &game, const char *folder ) {
+  if ( !Q_stricmp( folder, game.folder ) ) return true;
+  const char *position = game.extraFolders;
+  while ( *position ) {
+    const char *end = strchr( position, ';' );
+    if ( !end ) end = position + strlen( position );
+    const std::string extra( position, end - position );
+    if ( !Q_stricmp( folder, extra.c_str() ) ) return true;
+    position = *end ? end + 1 : end;
+  }
+  return false;
+}
+
+static bool HL2SB_IsDepotSearchPath( const HL2SB_GameDepot &game, const std::string &path ) {
+  // Addon and download directory names do not identify mounted games.
+  if ( Q_stristr( path.c_str(), "/addons/" ) || Q_stristr( path.c_str(), "/download/" ) ||
+       Q_stristr( path.c_str(), "/workshop/" ) ) return false;
+  const size_t slash = path.find_last_of( '/' );
+  const std::string name = path.substr( slash == std::string::npos ? 0 : slash + 1 );
+  const char *extension = V_GetFileExtension( name.c_str() );
+  const bool packed = extension && !Q_stricmp( extension, "vpk" );
+  const std::string directory = packed ? path.substr( 0, slash ) : path;
+  const size_t parentSlash = directory.find_last_of( '/' );
+  const std::string folder = directory.substr( parentSlash == std::string::npos ? 0 : parentSlash + 1 );
+  if ( packed && !Q_stricmp( folder.c_str(), "sourceengine" ) ) {
+    const std::string pack = std::string( "content_" ) + game.folder;
+    return !Q_stricmp( name.c_str(), (pack + ".vpk").c_str() ) ||
+           !Q_stricmp( name.c_str(), (pack + "_dir.vpk").c_str() );
+  }
+  if ( !HL2SB_GameFolderMatches( game, folder.c_str() ) ) return false;
+  const std::string info = !Q_stricmp(folder.c_str(), game.folder) ?
+    directory + "/gameinfo.txt" : directory.substr(0, parentSlash) + "/" + game.folder + "/gameinfo.txt";
+  if ( !filesystem->FileExists( info.c_str(), NULL ) ) return false;
+  // The two Insurgency releases use the same content folder.
+  if ( !Q_stricmp( game.folder, "insurgency" ) ) {
+    KeyValues *settings = new KeyValues( "GameInfo" );
+    const bool loaded = settings->LoadFromFile( filesystem, info.c_str(), NULL );
+    const int appID = settings->GetInt( "FileSystem/SteamAppId", 0 );
+    settings->deleteThis();
+    if ( !loaded || appID != game.appID ) return false;
+  }
+  return true;
+}
+
+// Register browsing aliases when mounts change, never from a Lua query.
+void HL2SB_RefreshGameContentPaths() {
+  typedef std::pair<std::string, std::string> GamePath;
+  static std::vector<GamePath> aliases;
+  const std::vector<std::string> paths = HL2SB_GameSearchPaths( "GAME" );
+  std::vector<GamePath> next;
+  for ( int i = 0; i < ARRAYSIZE(s_GameDepots); ++i ) {
+    for ( size_t j = 0; j < paths.size(); ++j ) {
+      if ( HL2SB_IsDepotSearchPath( s_GameDepots[i], paths[j] ) ) {
+        const GamePath entry( paths[j], s_GameDepots[i].folder );
+        bool duplicate = false;
+        for ( size_t k = 0; k < next.size(); ++k ) if ( next[k] == entry ) duplicate = true;
+        if ( !duplicate ) next.push_back( entry );
+      }
+    }
+  }
+  if ( next == aliases ) return;
+  for ( size_t i = 0; i < aliases.size(); ++i )
+    filesystem->RemoveSearchPath( aliases[i].first.c_str(), aliases[i].second.c_str() );
+  for ( size_t i = 0; i < next.size(); ++i ) {
+    filesystem->AddSearchPath( next[i].first.c_str(), next[i].second.c_str(), PATH_ADD_TO_TAIL );
+    filesystem->MarkPathIDByRequestOnly( next[i].second.c_str(), true );
+  }
+  aliases.swap( next );
+}
+
+int HL2SB_EngineGetGames( lua_State *L ) {
+  const std::vector<std::string> paths = HL2SB_GameSearchPaths( "GAME" );
+  const std::vector<std::string> bases = HL2SB_GameSearchPaths( "BASE_PATH" );
+  lua_newtable( L );
+  for ( int i = 0; i < ARRAYSIZE(s_GameDepots); ++i ) {
+    const HL2SB_GameDepot &game = s_GameDepots[i];
+    bool mounted = false, installed = false, owned = false;
+    for ( size_t j = 0; j < paths.size(); ++j ) {
+      if ( HL2SB_IsDepotSearchPath( game, paths[j] ) ) mounted = true;
+    }
+    // Local installations can exist without being in the active search paths.
+    for ( size_t j = 0; j < bases.size(); ++j ) {
+      const std::string directory = bases[j] + "/" + game.folder;
+      if ( HL2SB_IsDepotSearchPath( game, directory ) ) installed = true;
+    }
+    for ( size_t j = 0; j < paths.size(); ++j ) {
+      if ( HL2SB_IsDepotSearchPath( game, paths[j] ) ) {
+        const char *extension = V_GetFileExtension( paths[j].c_str() );
+        const std::string directory = extension && !Q_stricmp(extension, "vpk") ?
+          paths[j].substr(0, paths[j].find_last_of('/')) : paths[j];
+        const size_t slash = directory.find_last_of('/');
+        const std::string folder = directory.substr(slash == std::string::npos ? 0 : slash + 1);
+        const std::string info = !Q_stricmp(folder.c_str(), game.folder) ? directory + "/gameinfo.txt" :
+          directory.substr(0, slash) + "/" + game.folder + "/gameinfo.txt";
+        if ( filesystem->FileExists( info.c_str(), NULL ) ) installed = true;
+      }
+    }
+#if !defined(NO_STEAM) && !defined(DISABLE_STEAM)
+    if ( steamapicontext && steamapicontext->SteamApps() ) {
+      ISteamApps *apps = steamapicontext->SteamApps();
+      char directory[MAX_PATH] = { 0 };
+      owned = apps->BIsSubscribedApp( game.appID );
+      installed = owned && apps->BIsAppInstalled( game.appID ) &&
+        apps->GetAppInstallDir( game.appID, directory, sizeof(directory) ) != 0;
+      mounted = mounted && owned && installed;
+    }
+#endif
+    lua_newtable( L );
+    lua_pushstring(L, game.folder); lua_setfield(L, -2, "folder");
+    lua_pushstring(L, game.title); lua_setfield(L, -2, "title");
+    lua_pushinteger(L, game.appID); lua_setfield(L, -2, "depot");
+    lua_pushboolean(L, mounted); lua_setfield(L, -2, "mounted");
+    lua_pushboolean(L, installed); lua_setfield(L, -2, "installed");
+    lua_pushboolean(L, owned); lua_setfield(L, -2, "owned");
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
 
 static int lua_game_GetWorld( lua_State *state )
 {
@@ -651,9 +838,39 @@ static const luaL_Reg lua_metatable_funcs[] = {
 void luasrc_register_metatable_globals (lua_State *L) {
   luaL_register(L, "_G", lua_metatable_funcs);
   lua_pop(L, 1);
+
 }
 
 /* Publish registry[gmodName] = the native metatable, so `_R.Entity` resolves. */
+// Original entity-family accessors read native methods from their metatable before
+// consulting Entity and instance fields. Publish inherited animation methods
+// here so it does not need a second native field-lookup path.
+static void luasrc_install_animation_methods (lua_State *L, const char *metatable) {
+  luaL_getmetatable(L, "CBaseAnimating");
+  luaL_getmetatable(L, metatable);
+  if (lua_istable(L, -2) && lua_istable(L, -1)) {
+    const int source = lua_gettop(L) - 1;
+    const int target = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, source) != 0) {
+      const char *name = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : NULL;
+      if (name && !(name[0] == '_' && name[1] == '_') && lua_iscfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_rawget(L, target);
+        const bool missing = lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (missing) {
+          lua_pushvalue(L, -2);
+          lua_pushvalue(L, -2);
+          lua_rawset(L, target);
+        }
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 2);
+}
+
 static void luasrc_install_metatable_aliases (lua_State *L) {
   for (int i = 0; s_LuaMetatableAliases[i].pszGModName; ++i) {
     const char *pszGModName = s_LuaMetatableAliases[i].pszGModName;
@@ -2088,7 +2305,7 @@ static void __MsgFunc_HL2SB_NW( bf_read &read )
 // addon reading the second argument raised "concatenate a nil value" on each
 // pickup.  hook.Run( name, ... ) forwards ( ammoName, amount ) to registered
 // hooks and then falls back to GM:HUDAmmoPickedUp, which is exactly the GMod
-// contract.  Stack discipline matches __MsgFunc_HL2SB_RPC below: snapshot the
+// contract.  Stack discipline matches __MsgFunc_SWEPCmd below: snapshot the
 // top and restore unconditionally instead of hand-counting pops.
 static void __MsgFunc_HL2SB_AMMO( bf_read &read )
 {
@@ -2119,50 +2336,28 @@ static void __MsgFunc_HL2SB_AMMO( bf_read &read )
 	lua_settop( L, iBase );		// unconditional restore
 }
 
-// HL2SB (2026-09-22): Entity:CallOnClient( name, data ) receiver -- the server
-// sends SHORT entindex, STRING functionName, STRING data; we resolve the
-// client entity and call its Lua method of that name with the data string as
-// the only argument (GMod's contract: the SWEP's function runs on the client
-// with `data` as its first parameter).
-static void __MsgFunc_HL2SB_RPC( bf_read &read )
-{
-	int entindex = read.ReadShort();
-	char szFn[ 128 ];
-	read.ReadString( szFn, sizeof( szFn ) );
-	char szData[ 256 ];
-	read.ReadString( szData, sizeof( szData ) );
-
-	if ( read.IsOverflowed() || szFn[ 0 ] == '\0' )
-		return;
-
-	IClientEntity *pIClient = cl_entitylist->GetClientEntity( entindex );
-	C_BaseEntity *pEnt = pIClient ? pIClient->GetBaseEntity() : NULL;
-	if ( pEnt == NULL )
-		return;
-
-	// The in-game state (global L); hooks only arrive once it exists.
-	if ( L == NULL )
-		return;
-
-	// Snapshot FIRST.  luasrc_pcall pops the function and its arguments on
-	// BOTH paths (results and errors alike), so the only safe cleanup is a
-	// full restore to this depth -- the first version hardcoded lua_pop(2)
-	// after it, which underflowed the main state's stack by one per call
-	// (call it from a SWEP's PrimaryAttack and the game dies within a few
-	// shots, which is exactly the CF pack's "fires once and crashes").
-	const int iBase = lua_gettop( L );
-
-	// PushLuaInstanceSafe, NOT lua_pushentity: the latter always installs the
-	// generic CBaseEntity metatable, so a weapon CallOnClient("Deploy") ran
-	// SWEP:Deploy with a self that had no SetNextPrimaryFire (on CBaseCombatWeapon).
-	CBaseEntity::PushLuaInstanceSafe( L, pEnt );
-	lua_getfield( L, -1, szFn );		// [ent, fn]  (resolved through __index)
-	if ( lua_isfunction( L, -1 ) ) {
-		lua_pushvalue( L, -2 );			// [ent, fn, self]
-		lua_pushstring( L, szData );	// [ent, fn, self, data]
-		luasrc_pcall( L, 2, 0, 0 );		// protected: a bad callback must not kill the frame
-	}
-	lua_settop( L, iBase );				// unconditional restore -- no under/overflow
+// Owner-only weapon method message, retaining the entity serial number.
+static void __MsgFunc_SWEPCmd(bf_read &read) {
+  const unsigned int encoded = (unsigned int)read.ReadLong();
+  char method[32], data[256];
+  read.ReadString(method,sizeof(method));
+  read.ReadString(data,sizeof(data));
+  if (read.IsOverflowed() || !L || !g_bLuaInitialized || !method[0] ||
+      encoded == INVALID_NETWORKED_EHANDLE_VALUE) return;
+  const int index = encoded & ((1 << MAX_EDICT_BITS) - 1);
+  const int serial = encoded >> MAX_EDICT_BITS;
+  CBaseEntity *entity = cl_entitylist->GetBaseEntity(index);
+  if (!entity || (entity->GetRefEHandle().GetSerialNumber() &
+      ((1 << NUM_NETWORKED_EHANDLE_SERIAL_NUMBER_BITS) - 1)) != serial || !entity->IsWeapon()) return;
+  const int top = lua_gettop(L);
+  CBaseEntity::PushLuaInstanceSafe(L,entity);
+  lua_getfield(L,-1,method);
+  if (lua_isfunction(L,-1)) {
+    lua_pushvalue(L,-2);
+    lua_pushstring(L,data);
+    luasrc_pcall(L,2,0,0);
+  }
+  lua_settop(L,top);
 }
 // Hooked in luasrc_openlibs' client tail (usermessages->HookMessage).
 #endif // CLIENT_DLL
@@ -2925,6 +3120,74 @@ static int HL2SB_Lua_EngineCommand (lua_State *L) {
   return 0;
 }
 
+static int HL2SB_Lua_RunConsoleCommand( lua_State *L )
+{
+  const char *name = luaL_checkstring( L, 1 );
+  for ( const unsigned char *p = (const unsigned char *)name; *p; ++p )
+  {
+    if ( !( ( *p >= 'a' && *p <= 'z' ) || ( *p >= 'A' && *p <= 'Z' ) ||
+            ( *p >= '0' && *p <= '9' ) || *p == '!' || *p == '+' || *p == '-' ||
+            *p == '.' || *p == '^' || *p == '_' || *p == '~' ) )
+      return luaL_error( L, "RunConsoleCommand: Command has invalid characters! (%s)\n\tThe first parameter of this function should contain only the command, the second parameter should contain arguments.", name );
+  }
+  if ( Q_strlen( name ) < 2 )
+    return luaL_error( L, "RunConsoleCommand: Command is too short, bailing! (%s)", name );
+
+  char command[1024];
+  Q_strncpy( command, name, sizeof( command ) );
+  for ( int index = 2; index < 64 && index <= lua_gettop( L ); ++index )
+  {
+    const int type = lua_type( L, index );
+    const char *value = lua_tostring( L, index );
+    if ( !value ) break;
+    if ( !Q_stricmp( value, "con_logfile" ) || !Q_stricmp( value, "quitnoconfirm" ) )
+      return luaL_error( L, "RunConsoleCommand: Command argument is blocked! (%s %s)", name, value );
+
+    char number[1024];
+    if ( type == LUA_TNUMBER )
+    {
+      Q_snprintf( number, sizeof( number ), "%.2f", (double)lua_tonumber( L, index ) );
+      value = number;
+    }
+    char argument[512];
+    int length = 0;
+    while ( value[length] && length < (int)sizeof( argument ) - 1 )
+    {
+      argument[length] = value[length] == '"' ? '\'' : ( value[length] == '\n' ? ' ' : value[length] );
+      ++length;
+    }
+    argument[length] = '\0';
+    Q_strncat( command, " \"", sizeof( command ) );
+    Q_strncat( command, argument, sizeof( command ) );
+    Q_strncat( command, "\"", sizeof( command ) );
+  }
+  Q_strncat( command, ";", sizeof( command ) );
+
+  lua_pushcfunction( L, lua_IsConCommandBlocked );
+  lua_pushstring( L, command );
+  lua_call( L, 1, 1 );
+  const bool blocked = lua_toboolean( L, -1 ) != 0;
+  lua_pop( L, 1 );
+  if ( blocked )
+    return luaL_error( L, "RunConsoleCommand: Command is blocked! (%s)", name );
+#ifdef CLIENT_DLL
+  engine->ClientCmd( command );
+#else
+  engine->ServerCommand( command );
+#endif
+  return 0;
+}
+
+void HL2SB_RegisterConsoleGlobals( lua_State *state )
+{
+  lua_pushcfunction( state, lua_IsConCommandBlocked );
+  lua_setglobal( state, "IsConCommandBlocked" );
+  lua_pushcfunction( state, HL2SB_Lua_EngineCommand );
+  lua_setglobal( state, "HL2SB_EngineCommand" );
+  lua_pushcfunction( state, HL2SB_Lua_RunConsoleCommand );
+  lua_setglobal( state, "RunConsoleCommand" );
+}
+
 // self:NetworkVar( type, slot, name [, options] )
 static int HL2SB_Lua_EntityNetworkVar (lua_State *L) {
   const char *pszType = luaL_checkstring( L, 2 );
@@ -3136,25 +3399,245 @@ static void HL2SB_UIBuildKV(lua_State *L, int table, KeyValues *pKV, int depth =
   }
 }
 
+// Validate before allocating native trees so Lua errors cannot leak them.
+static bool HL2SB_ValidateKVTable(lua_State *L, int table, CUtlVector<const void *> &ancestors)
+{
+  table = lua_absindex(L, table);
+  const void *identity = lua_topointer(L, table);
+  if (ancestors.Find(identity) != ancestors.InvalidIndex() || ancestors.Count() >= 256)
+    return false;
+  ancestors.AddToTail(identity);
+  lua_pushnil(L);
+  while (lua_next(L, table))
+  {
+    if (lua_istable(L, -2)) { lua_pop(L, 2); ancestors.Remove(ancestors.Count() - 1); return false; }
+    if (lua_istable(L, -1) && !HL2SB_ValidateKVTable(L, -1, ancestors))
+    { lua_pop(L, 2); ancestors.Remove(ancestors.Count() - 1); return false; }
+    lua_pop(L, 1);
+  }
+  ancestors.Remove(ancestors.Count() - 1);
+  return true;
+}
+
+static void HL2SB_BuildUtilityKV(lua_State *L, int table, KeyValues *kv)
+{
+  table = lua_absindex(L, table);
+  lua_pushnil(L);
+  while (lua_next(L, table))
+  {
+    const char *key = luaL_tolstring(L, -2, NULL);
+    if (key)
+    {
+      // New children preserve separately named entries during serialization.
+      KeyValues *child = new KeyValues(key);
+      child->UsesEscapeSequences(true);
+      kv->AddSubKey(child);
+      if (lua_istable(L, -2)) HL2SB_BuildUtilityKV(L, -2, child);
+      else
+      {
+        const char *value = luaL_tolstring(L, -2, NULL);
+        child->SetString(NULL, value);
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 2);
+  }
+}
+
+static int HL2SB_BuildUtilityKVProtected(lua_State *L)
+{
+  HL2SB_BuildUtilityKV(L, 1, static_cast<KeyValues *>(lua_touserdata(L, lua_upvalueindex(1))));
+  return 0;
+}
+
 static int HL2SB_UITableToKeyValues(lua_State *L)
 {
   luaL_checktype(L, 1, LUA_TTABLE);
-  KeyValues *pKV = new KeyValues("TableToKeyValues");
-  HL2SB_UIBuildKV(L, 1, pKV);
+  const char *root = lua_type(L, 2) == LUA_TSTRING ? lua_tostring(L, 2) : "TableToKeyValues";
+  bool valid;
+  {
+    CUtlVector<const void *> ancestors;
+    valid = HL2SB_ValidateKVTable(L, 1, ancestors);
+  }
+  if (!valid)
+    return luaL_error(L, "Cannot convert recursive or invalid table to KeyValues");
+  KeyValues *kv = new KeyValues(root);
+  kv->UsesEscapeSequences(true);
+  lua_pushlightuserdata(L, kv);
+  lua_pushcclosure(L, HL2SB_BuildUtilityKVProtected, 1);
+  lua_pushvalue(L, 1);
+  if (lua_pcall(L, 1, 0, 0) != LUA_OK)
+  {
+    kv->deleteThis();
+    return lua_error(L);
+  }
   CUtlBuffer buffer(0, 0, CUtlBuffer::TEXT_BUFFER);
-  pKV->RecursiveSaveToFile(buffer, 0, false, true);
+  kv->RecursiveSaveToFile(buffer, 0);
   lua_pushlstring(L, (const char *)buffer.Base(), buffer.TellPut());
-  pKV->deleteThis();
+  kv->deleteThis();
+  return 1;
+}
+
+// Keep original key spelling locally; the engine symbol pool folds key case.
+static bool HL2SB_KVToken(const char *&text, CUtlString &token, bool escapes, bool &brace)
+{
+  token = "";
+  brace = false;
+  for (;;)
+  {
+    while (*text && (unsigned char)*text <= ' ') ++text;
+    if (text[0] != '/' || text[1] != '/') break;
+    while (*text && *text != '\n') ++text;
+  }
+  if (!*text) return false;
+  if (*text == '{' || *text == '}')
+  {
+    char value[2] = {*text++, 0}; token = value; brace = true; return true;
+  }
+  const bool quoted = *text == '"';
+  if (quoted) ++text;
+  while (*text)
+  {
+    char c = *text;
+    if (quoted ? c == '"' : ((unsigned char)c <= ' ' || c == '{' || c == '}')) break;
+    ++text;
+    if (quoted && escapes && c == '\\' && *text)
+    {
+      c = *text++;
+      if (c == 'n') c = '\n';
+      else if (c == 't') c = '\t';
+      else if (c != '"' && c != '\\') break;
+    }
+    char value[2] = {c, 0}; token += value;
+  }
+  if (quoted && *text == '"') ++text;
+  return true;
+}
+
+static bool HL2SB_KVOriginalNames(const char *&text, KeyValues *kv,
+    CUtlVector<CUtlString> &names, bool escapes, int depth = 0)
+{
+  if (depth >= 256) return false;
+  for (KeyValues *child = kv->GetFirstSubKey(); child; child = child->GetNextKey())
+  {
+    CUtlString key, value;
+    bool brace;
+    if (!HL2SB_KVToken(text, key, escapes, brace) || brace || Q_stricmp(key.Get(), child->GetName()))
+      return false;
+    names.AddToTail(key);
+    if (!HL2SB_KVToken(text, value, escapes, brace)) return false;
+    if (brace && !Q_strcmp(value.Get(), "{"))
+    {
+      if (!HL2SB_KVOriginalNames(text, child, names, escapes, depth + 1)) return false;
+    }
+    else if (brace || child->GetDataType() == KeyValues::TYPE_NONE) return false;
+  }
+  CUtlString end;
+  bool brace;
+  return HL2SB_KVToken(text, end, escapes, brace) && brace && !Q_strcmp(end.Get(), "}");
+}
+
+static void HL2SB_PushUtilityKV(lua_State *L, KeyValues *kv, bool ordered, bool preserveCase,
+    const CUtlVector<CUtlString> &names, int &nameIndex)
+{
+  lua_newtable(L);
+  bool zeroNames = true;
+  int count = 0;
+  for (KeyValues *child = kv->GetFirstSubKey(); child; child = child->GetNextKey())
+  {
+    ++count;
+    if (Q_strcmp(child->GetName(), "0")) zeroNames = false;
+  }
+  zeroNames = zeroNames && count != 1;
+  int index = 1;
+  for (KeyValues *child = kv->GetFirstSubKey(); child; child = child->GetNextKey(), ++index)
+  {
+    char key[512];
+    Q_strncpy(key, nameIndex < names.Count() ? names[nameIndex].Get() : child->GetName(),
+        ordered ? 256 : sizeof(key));
+    ++nameIndex;
+    if (!preserveCase) Q_strlower(key);
+    if (ordered)
+    {
+      lua_newtable(L);
+      if (zeroNames) Q_snprintf(key, sizeof(key), "%d", index);
+      lua_pushstring(L, key);
+      lua_setfield(L, -2, "Key");
+    }
+    if (child->GetDataType() == KeyValues::TYPE_NONE)
+      HL2SB_PushUtilityKV(L, child, ordered, preserveCase, names, nameIndex);
+    else if (child->GetDataType() == KeyValues::TYPE_INT)
+      lua_pushnumber(L, ordered ? child->GetFloat() : child->GetInt());
+    else if (child->GetDataType() == KeyValues::TYPE_FLOAT)
+    {
+      const float value = child->GetFloat();
+      lua_pushnumber(L, ordered ? value : floorf(value * 10000.0f) * 0.0001f);
+    }
+    else
+      lua_pushstring(L, child->GetString());
+    if (ordered)
+    {
+      lua_setfield(L, -2, "Value");
+      lua_rawseti(L, -2, index);
+    }
+    else
+    {
+      lua_pushstring(L, key);
+      lua_insert(L, -2);
+      lua_rawset(L, -3);
+    }
+  }
+}
+
+static int HL2SB_ReadUtilityKV(lua_State *L, bool ordered)
+{
+  const char *text = luaL_checkstring(L, 1);
+  const bool escapes = lua_toboolean(L, 2) != 0;
+  const bool preserveCase = lua_toboolean(L, 3) != 0;
+  KeyValues *kv = new KeyValues(ordered ? "KeyValuesToTablePreserveOrder" : "KeyValuesToTable");
+  kv->UsesEscapeSequences(escapes);
+  kv->LoadFromBuffer("lua", text);
+  CUtlVector<CUtlString> names;
+  const char *cursor = text;
+  CUtlString token;
+  bool brace;
+  if (!HL2SB_KVToken(cursor, token, escapes, brace) || brace ||
+      !HL2SB_KVToken(cursor, token, escapes, brace) || !brace || Q_strcmp(token.Get(), "{") ||
+      !HL2SB_KVOriginalNames(cursor, kv, names, escapes))
+    names.Purge();
+  int nameIndex = 0;
+  HL2SB_PushUtilityKV(L, kv, ordered, preserveCase, names, nameIndex);
+  kv->deleteThis();
   return 1;
 }
 
 static int HL2SB_UIKeyValuesToTable(lua_State *L)
 {
-  const char *text = luaL_checkstring(L, 1);
-  KeyValues *pKV = new KeyValues("TableToKeyValues");
-  if (pKV->LoadFromBuffer("lua", text)) HL2SB_UIPushKV(L, pKV);
-  else lua_pushnil(L);
-  pKV->deleteThis();
+  return HL2SB_ReadUtilityKV(L, false);
+}
+
+static int HL2SB_KeyValuesToTablePreserveOrder(lua_State *L)
+{
+  return HL2SB_ReadUtilityKV(L, true);
+}
+
+static int lua_ProtectedCall(lua_State *L)
+{
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  const int arguments = lua_gettop(L) - 1;
+  const int status = luasrc_pcall(L, arguments, 0, 0);
+  lua_pushboolean(L, status == LUA_OK);
+  return 1;
+}
+
+static int HL2SB_TimerCycle(lua_State *L)
+{
+  static CCycleCount previous;
+  CCycleCount now, elapsed;
+  now.Sample();
+  CCycleCount::Sub(now, previous, elapsed);
+  lua_pushnumber(L, elapsed.GetMillisecondsF());
+  previous.Sample();
   return 1;
 }
 
@@ -3331,6 +3814,7 @@ static int HL2SB_UISavePresets(lua_State *L)
 }
 
 LUALIB_API void luasrc_openlibs (lua_State *L) {
+  HL2SB_RefreshGameContentPaths();
   const luaL_Reg *lib = luasrclibs;
   for (; lib->func; lib++) {
     // HL2SB (2026-09-21): log the module name FIRST so a failure names its
@@ -3447,6 +3931,13 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
 /* Every lib is open now, so the metatables exist and can be aliased. */
   luasrc_install_metatable_aliases(L);
   luasrc_install_type_names(L);
+  luasrc_install_animation_methods(L, LUA_BASEPLAYERLIBNAME);
+  luasrc_install_animation_methods(L, LUA_BASECOMBATWEAPONLIBNAME);
+  // Player hands and other animating entity families use the same inherited
+  // CBaseAnimating methods as GMod's Entity metatable.
+  luasrc_install_animation_methods(L, LUA_BASEENTITYLIBNAME);
+  lua_pushinteger(L, ActivityList_RegisterPrivateActivity("ACT_MP_SWIM_IDLE"));
+  lua_setglobal(L, "ACT_MP_SWIM_IDLE");
 
   /* ...and the library tables themselves can be reachable under GMod's names. */
   luasrc_install_lib_aliases(L);
@@ -3460,7 +3951,14 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_getglobal(L, "util");
   lua_pushcfunction(L, HL2SB_UITableToKeyValues); lua_setfield(L, -2, "TableToKeyValues");
   lua_pushcfunction(L, HL2SB_UIKeyValuesToTable); lua_setfield(L, -2, "KeyValuesToTable");
+  lua_pushcfunction(L, HL2SB_KeyValuesToTablePreserveOrder); lua_setfield(L, -2, "KeyValuesToTablePreserveOrder");
+  lua_pushcfunction(L, HL2SB_TimerCycle); lua_setfield(L, -2, "TimerCycle");
+  lua_pushcfunction(L, lua_ProtectedCall); lua_setglobal(L, "ProtectedCall");
   lua_pop(L, 1);
+
+  lua_pushinteger(L, 0); lua_setglobal(L, "TEAM_CONNECTING");
+  lua_pushinteger(L, 1001); lua_setglobal(L, "TEAM_UNASSIGNED");
+  lua_pushinteger(L, 1002); lua_setglobal(L, "TEAM_SPECTATOR");
 
   /* HL2SB: re-assert the realm globals LAST.
   **
@@ -3496,10 +3994,10 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     // MessageEnd and refuses the send outright on mismatch ("User Msg
     // 'HL2SB_NW': N bytes written, expected 256" -- 226 refusals in one
     // session), so the fixed 256 dropped every broadcast server-side.
-  // HL2SB (2026-09-22): Entity:CallOnClient carrier message -- registered
+  // HL2SB (2026-09-22): Weapon:CallOnClient carrier message -- registered
   // here for the same signon-table reason as HL2SB_NW above.
-  if ( usermessages->LookupUserMessage( "HL2SB_RPC" ) == -1 )
-    usermessages->Register( "HL2SB_RPC", -1 );
+  if ( usermessages->LookupUserMessage( "SWEPCmd" ) == -1 )
+    usermessages->Register( "SWEPCmd", -1 );
   // HL2SB (2026-09-25): ammo pickup popup carrier -- see CBasePlayer_GiveAmmo
   // (game/server/lua/lplayer.cpp), which sends it unless hidePopup is set.
   if ( usermessages->LookupUserMessage( "HL2SB_AMMO" ) == -1 )
@@ -3520,10 +4018,10 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     usermessages->Register( "HL2SB_NW", -1 );  // -1: variable size (see server
     // branch above -- a fixed declared size makes the engine refuse the send).
   usermessages->HookMessage( "HL2SB_NW", __MsgFunc_HL2SB_NW );
-  // HL2SB (2026-09-22): Entity:CallOnClient receiver -- same timing rules.
-  if ( usermessages->LookupUserMessage( "HL2SB_RPC" ) == -1 )
-    usermessages->Register( "HL2SB_RPC", -1 );
-  usermessages->HookMessage( "HL2SB_RPC", __MsgFunc_HL2SB_RPC );
+  // HL2SB (2026-09-22): Weapon:CallOnClient receiver -- same timing rules.
+  if ( usermessages->LookupUserMessage( "SWEPCmd" ) == -1 )
+    usermessages->Register( "SWEPCmd", -1 );
+  usermessages->HookMessage( "SWEPCmd", __MsgFunc_SWEPCmd );
   // HL2SB (2026-09-25): ammo pickup popup receiver -> HUDAmmoPickedUp hook.
   if ( usermessages->LookupUserMessage( "HL2SB_AMMO" ) == -1 )
     usermessages->Register( "HL2SB_AMMO", -1 );
@@ -4025,20 +4523,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_setglobal( L, "AddOriginToPVS" );
 #endif
 
-  /* HL2SB: the scripted-entity network variable shim.  CBaseScripted::
-  ** InitScriptedEntity() installs these two onto each entity's Lua table (as
-  ** NetworkVar / NetworkVarNotify) before calling ENT:SetupDataTables(), so a
-  ** stock GMod entity script declares its network variables without knowing this
-  ** engine has no DataTable slots for Lua entities.  Both realms: the client
-  ** needs the accessors too, because that is where ENT:Draw reads them. */
-  lua_pushcfunction( L, HL2SB_Lua_EntityNetworkVar );
-  lua_setglobal( L, "HL2SB_EntityNetworkVar" );
-  lua_pushcfunction( L, HL2SB_Lua_EntityNetworkVarNotify );
-  lua_setglobal( L, "HL2SB_EntityNetworkVarNotify" );
-  lua_pushcfunction( L, lua_IsConCommandBlocked );
-  lua_setglobal( L, "IsConCommandBlocked" );
-  lua_pushcfunction( L, HL2SB_Lua_EngineCommand );
-  lua_setglobal( L, "HL2SB_EngineCommand" );
+  HL2SB_RegisterConsoleGlobals( L );
 
   /* HL2SB: GMod's `achievements` table, as a STUB.
   **

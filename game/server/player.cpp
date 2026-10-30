@@ -1833,6 +1833,16 @@ void CBasePlayer::Event_Killed( const CTakeDamageInfo &info )
 {
 	CSound *pSound;
 
+	// HL2SB: end any Lua drive session -- the drive view state (view entity,
+	// observer mode, world model) has to restore through GM:EndEntityDriving
+	// before the deathcam takes over.  The drive system itself only documents
+	// the explicit stop paths (PlayerStopDriving / self:Stop), so a player who
+	// dies mid-drive otherwise keeps the wedged view into the respawn.
+	{
+		extern void HL2SB_DriveStopPlayer( CBasePlayer *pPlayer );
+		HL2SB_DriveStopPlayer( this );
+	}
+
 	if ( Hints() )
 	{
 		Hints()->ResetHintTimers();
@@ -2616,7 +2626,7 @@ bool CBasePlayer::SetObserverMode(int mode )
 
 
 	// check mp_forcecamera settings for dead players
-	if ( mode > OBS_MODE_FIXED && GetTeamNumber() > TEAM_SPECTATOR )
+	if ( mode > OBS_MODE_FIXED && GetTeamNumber() > TEAM_SPECTATOR && GetTeamNumber() != 1001 && GetTeamNumber() != 1002 )
 	{
 		switch ( mp_forcecamera.GetInt() )
 		{
@@ -2869,7 +2879,7 @@ void CBasePlayer::ObserverUse( bool bIsPressed )
 	if ( !HLTVDirector()->IsActive() )
 		return;
 
-	if ( GetTeamNumber() != TEAM_SPECTATOR )
+	if ( GetTeamNumber() != TEAM_SPECTATOR && GetTeamNumber() != 1002 )
 		return;	// only pure spectators can play cameraman
 
 	if ( !bIsPressed )
@@ -3015,7 +3025,7 @@ bool CBasePlayer::IsValidObserverTarget(CBaseEntity * target)
 	}
 		
 	// check forcecamera settings for active players
-	if ( GetTeamNumber() != TEAM_SPECTATOR )
+	if ( GetTeamNumber() != TEAM_SPECTATOR && GetTeamNumber() != 1002 )
 	{
 		switch ( mp_forcecamera.GetInt() )	
 		{
@@ -5267,6 +5277,14 @@ void CBasePlayer::Spawn( void )
 		Hints()->ResetHints();
 	}
 
+	// HL2SB: belt-and-braces drive clear on respawn -- Event_Killed already
+	// stops the session, this guards any path that dies without Event_Killed
+	// (kill console command, map teleport).
+	{
+		extern void HL2SB_DriveStopPlayer( CBasePlayer *pPlayer );
+		HL2SB_DriveStopPlayer( this );
+	}
+
 	SetClassname( "player" );
 
 	// Shared spawning code..
@@ -5374,7 +5392,7 @@ void CBasePlayer::Spawn( void )
 		LockPlayerInPlace();
 	}
 
-	if ( GetTeamNumber() != TEAM_SPECTATOR )
+	if ( GetTeamNumber() != TEAM_SPECTATOR && GetTeamNumber() != 1002 )
 	{
 		StopObserverMode();
 	}
@@ -5863,10 +5881,24 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 		m_Local.m_iHideHUD |= HIDEHUD_INVEHICLE;
 	}
 
-	if ( !pVehicle->IsPassengerVisible( nRole ) )
+
+	// We cannot be ducking -- do all this before SetPassenger because it
+	// saves our view offset for restoration when we exit the vehicle.
+	RemoveFlag( FL_DUCKING );
+
+	SetViewOffset( VEC_VIEW_SCALED( this ) );
+	m_Local.m_bDucked = false;
+	m_Local.m_bDucking  = false;
+	m_Local.m_flDucktime = 0.0f;
+	m_Local.m_flDuckJumpTime = 0.0f;
+	m_Local.m_flJumpTime = 0.0f;
+
+	// Turn our toggled duck off
+	if ( GetToggledDuckState() )
 	{
-		AddEffects( EF_NODRAW );
+		ToggleDuck();
 	}
+
 
 	// Put us in the vehicle
 	pVehicle->SetPassenger( nRole, this );
@@ -5931,68 +5963,6 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 
 	SetCollisionGroup( COLLISION_GROUP_IN_VEHICLE );
 	
-	// We cannot be ducking -- do all this before SetPassenger because it
-	// saves our view offset for restoration when we exit the vehicle.
-	RemoveFlag( FL_DUCKING );
-
-	// HL2SB: the SEATED eye offset, taken from the vehicle model's own attachment pair.
-	//
-	// A rider has two eye positions and they used to disagree by 32-39 units, because
-	// the view the client renders from is the vehicle model's `vehicle_driver_eyes`
-	// attachment (SharedVehicleViewSmoothing, vehicle_viewblend_shared.cpp:218) while
-	// this line gave the player the STANDING VEC_VIEW (64) on top of the seat point:
-	//   nova/chair_office02 (measured with hl2sb_veh_thirdperson_debug, engine.log 88.5s)
-	//       seat (vehicle_feet_passenger0) world z 38.4 / local z 22.5
-	//       vehicle_driver_eyes      world z 64.4 / local z 48.0   -> 26.0 above the seat
-	//       player eye as it was     = 38.4 + 64 = 102.4            -> 38.0 above the camera
-	//   prop_vehicle_jeep (191.1s)
-	//       seat world z 24.7, vehicle eye world z 56.7 -> 32.0 above the seat
-	//       player eye as it was = 24.7 + 64 = 88.7 -> 32.0 above the camera
-	// Everything that asks the PLAYER for its eye (weapon/muzzle traces, EyePosition(),
-	// the aim the head is pitched with) therefore pointed well above the camera, which
-	// is what "the first person camera is inside the model's face" looks like: the
-	// camera sits at the model's eye level with the model drawn around it.
-	//
-	// The pair (feet -> eyes) IS the sitting eye height for a seat (26.0 on the chair,
-	// 32.0 on the jeep) and the GMod anim models are authored for exactly that (their
-	// sit_/drive_ poses put the eyes ~26/~32 above the model origin - see
-	// HL2SB_SelectVehicleSitSequence), so the two eye positions become identical by
-	// construction. Nothing here is a model name, and a vehicle whose model carries no
-	// `vehicle_driver_eyes` keeps the SDK's VEC_VIEW.
-	//
-	// The offset is stored the same way the engine reads it back
-	// (CBaseEntity::EyePosition() = GetAbsOrigin() + GetViewOffset()), i.e. a world-space
-	// delta from the seat point, and it is restored on exit by the vehicle's saved copy
-	// (CBaseServerVehicle::m_savedViewOffset).
-	Vector vecSeatedViewOffset = VEC_VIEW_SCALED( this );
-	CBaseAnimating *pSeatModel = pEnt ? pEnt->GetBaseAnimating() : NULL;
-	if ( pSeatModel )
-	{
-		const int nEyeAttachment = pSeatModel->LookupAttachment( "vehicle_driver_eyes" );
-		if ( nEyeAttachment > 0 )
-		{
-			Vector vecEyeLocalOrigin;
-			QAngle angEyeLocalAngles;
-			if ( pSeatModel->GetAttachmentLocal( nEyeAttachment, vecEyeLocalOrigin, angEyeLocalAngles ) )
-			{
-				UTIL_ParentToWorldSpace( pSeatModel, vecEyeLocalOrigin, angEyeLocalAngles );
-				vecSeatedViewOffset = vecEyeLocalOrigin - vSeatOrigin;
-			}
-		}
-	}
-
-	SetViewOffset( vecSeatedViewOffset );
-	m_Local.m_bDucked = false;
-	m_Local.m_bDucking  = false;
-	m_Local.m_flDucktime = 0.0f;
-	m_Local.m_flDuckJumpTime = 0.0f;
-	m_Local.m_flJumpTime = 0.0f;
-
-	// Turn our toggled duck off
-	if ( GetToggledDuckState() )
-	{
-		ToggleDuck();
-	}
 
 	m_hVehicle = pEnt;
 
@@ -6915,7 +6885,7 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 	}
 	else if ( stricmp( cmd, "spectate" ) == 0 ) // join spectator team & start observer mode
 	{
-		if ( GetTeamNumber() == TEAM_SPECTATOR )
+		if ( GetTeamNumber() == TEAM_SPECTATOR || GetTeamNumber() == 1002 )
 			return true;
 
 		ConVarRef mp_allowspectators( "mp_allowspectators" );
@@ -6953,7 +6923,7 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 		// not allowed to change spectator modes when mp_fadetoblack is being used
 		if ( mp_fadetoblack.GetBool() )
 		{
-			if ( GetTeamNumber() > TEAM_SPECTATOR )
+			if ( GetTeamNumber() > TEAM_SPECTATOR && GetTeamNumber() != 1001 && GetTeamNumber() != 1002 )
 				return true;
 		}
 
@@ -7908,7 +7878,7 @@ void CBasePlayer::Weapon_Drop( CBaseCombatWeapon *pWeapon, const Vector *pvecTar
 
 	BaseClass::Weapon_Drop( pWeapon, pvecTarget, pVelocity );
 
-	if ( bWasActiveWeapon )
+	if ( bWasActiveWeapon && IsAlive() )
 	{
 		if (!SwitchToNextBestWeapon( NULL ))
 		{
