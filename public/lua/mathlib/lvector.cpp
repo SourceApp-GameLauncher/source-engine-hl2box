@@ -652,8 +652,17 @@ static int luasrc_Vector (lua_State *L) {
 }
 
 
+static int luasrc_LerpVector (lua_State *L) {
+  const float fraction = (float)luaL_checknumber(L, 1);
+  const Vector &from = luaL_checkvector(L, 2);
+  const Vector &to = luaL_checkvector(L, 3);
+  lua_pushvector(L, from + (to - from) * fraction);
+  return 1;
+}
+
 static const luaL_Reg Vector_funcs[] = {
   {"Vector", luasrc_Vector},
+  {"LerpVector", luasrc_LerpVector},
   {NULL, NULL}
 };
 
@@ -1009,8 +1018,25 @@ static const luaL_Reg QAnglemeta_extra[] = {
   {NULL, NULL}
 };
 
+static int luasrc_LerpAngle (lua_State *L) {
+  const float fraction = (float)luaL_checknumber(L, 1);
+  const QAngle &from = luaL_checkangle(L, 2);
+  const QAngle &to = luaL_checkangle(L, 3);
+  QAngle result = from;
+  if (from.x != to.x || from.y != to.y || from.z != to.z) {
+    Quaternion start, end, interpolated;
+    AngleQuaternion(from, start);
+    AngleQuaternion(to, end);
+    QuaternionSlerp(start, end, fraction, interpolated);
+    QuaternionAngles(interpolated, result);
+  }
+  lua_pushangle(L, result);
+  return 1;
+}
+
 static const luaL_Reg QAngle_funcs[] = {
   {"Angle", luasrc_QAngle},
+  {"LerpAngle", luasrc_LerpAngle},
   {NULL, NULL}
 };
 
