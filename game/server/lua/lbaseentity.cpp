@@ -409,7 +409,17 @@ static int CBaseEntity_IsMoving (lua_State *L) {
 }
 
 static int CBaseEntity_IsWorld (lua_State *L) {
-  lua_pushboolean(L, luaL_checkentity(L, 1)->IsWorld());
+  if (lua_isnoneornil(L, 1)) { lua_pushboolean(L, false); return 1; }
+  bool isEntity = false;
+  if (lua_type(L, 1) == LUA_TUSERDATA && lua_getmetatable(L, 1)) {
+    lua_pushliteral(L, "MetaID");
+    lua_rawget(L, -2);
+    isEntity = lua_isnumber(L, -1) && lua_tointeger(L, -1) == 9;
+    lua_pop(L, 2);
+  }
+  if (!isEntity) return luaL_argerror(L, 1, "Entity expected");
+  CBaseEntity *entity = lua_toentity(L, 1);
+  lua_pushboolean(L, entity != NULL && entity->IsWorld());
   return 1;
 }
 
