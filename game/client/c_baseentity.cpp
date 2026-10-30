@@ -1150,6 +1150,7 @@ void C_BaseEntity::Clear( void )
 	m_AimEntsListHandle = INVALID_AIMENTS_LIST_HANDLE;
 
 	index = -1;
+	m_iHealth = 0;
 	m_Collision.Init( this );
 	SetLocalOrigin( vec3_origin );
 	SetLocalAngles( vec3_angle );

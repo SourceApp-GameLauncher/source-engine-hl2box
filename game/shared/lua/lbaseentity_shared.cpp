@@ -24,6 +24,7 @@
 #include "lc_baseanimating.h"
 #include "lc_recipientfilter.h"
 #include "c_baseplayer.h"			// HL2SB: Entity:GetViewEntity (C_BasePlayer::GetLocalPlayer)
+#include "physpropclientside.h"
 #include "view.h"					// CurrentViewOrigin - the global EyePos()
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialsystem.h"
@@ -1039,7 +1040,14 @@ static int CBaseEntity_GetGroundEntity (lua_State *L) {
 }
 
 static int CBaseEntity_GetHealth (lua_State *L) {
-  lua_pushinteger(L, luaL_checkentity(L, 1)->GetHealth());
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifdef CLIENT_DLL
+  if (!entity->IsPlayer() && !dynamic_cast<C_PhysPropClientside *>(entity)) {
+    lua_pushinteger(L, entity->m_iHealth);
+    return 1;
+  }
+#endif
+  lua_pushinteger(L, entity->GetHealth());
   return 1;
 }
 
@@ -2924,7 +2932,13 @@ static int CBaseEntity_SetGroundEntity (lua_State *L) {
 }
 
 static int CBaseEntity_SetHealth (lua_State *L) {
-  luaL_checkentity(L, 1)->SetHealth(luaL_checkint(L, 2));
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const double value = luaL_checknumber(L, 2);
+  const int health = value >= -2147483648.0 && value < 2147483648.0 ? (int)value : (-2147483647 - 1);
+#ifdef CLIENT_DLL
+  entity->m_iHealth = health;
+#endif
+  entity->SetHealth(health);
   return 0;
 }
 
