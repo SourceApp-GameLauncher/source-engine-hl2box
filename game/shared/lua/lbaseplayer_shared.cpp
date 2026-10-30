@@ -1563,7 +1563,13 @@ static int CBasePlayer_WeaponCount (lua_State *L) {
 // Body addon captures PLAYER.Alive; this fork only had Entity:IsAlive and the
 // bare PLAYER metatable read does not fall through to it.
 static int CBasePlayer_Alive (lua_State *L) {
-  lua_pushboolean(L, lua_toplayer(L, 1)->IsAlive());
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+#ifdef CLIENT_DLL
+  if (!g_PR) return 0;
+  lua_pushboolean(L, g_PR->IsAlive(player->entindex()));
+#else
+  lua_pushboolean(L, player->IsAlive());
+#endif
   return 1;
 }
 
@@ -3283,7 +3289,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"GetVehicle", CBasePlayer_GetVehicle},
   {"KillSilent", CBasePlayer_KillSilent},
   {"Kill", CBasePlayer_Kill},
+#ifndef CLIENT_DLL
   {"SetTeam", CBasePlayer_SetTeam},
+#endif
   {"GetEyeTrace", CBasePlayer_GetEyeTrace},
   {"GetEyeTraceNoCursor", CBasePlayer_GetEyeTraceNoCursor},
   {"GetBonusChallenge", CBasePlayer_GetBonusChallenge},
