@@ -4202,6 +4202,9 @@ static int CBaseEntity_GetNWValue (lua_State *L, char defaultTag) {
     case HL2SB_NWTAG_BOOL: lua_pushboolean(L, false); break;
     case HL2SB_NWTAG_STRING: lua_pushliteral(L, ""); break;
     case HL2SB_NWTAG_ENTITY: lua_pushentity(L, NULL); break;
+    case HL2SB_NWTAG_VECTOR: lua_pushvector(L, Vector(0, 0, 0)); break;
+    case HL2SB_NWTAG_ANGLE: lua_pushangle(L, QAngle(0, 0, 0)); break;
+    case 'N': lua_pushnil(L); break;
     default: lua_pushnumber(L, 0); break;
   }
   return 1;
@@ -4211,6 +4214,9 @@ static int CBaseEntity_GetNWNumberValue(lua_State *L) { return CBaseEntity_GetNW
 static int CBaseEntity_GetNWBoolValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_BOOL); }
 static int CBaseEntity_GetNWStringValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_STRING); }
 static int CBaseEntity_GetNWEntityValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_ENTITY); }
+static int CBaseEntity_GetNWVectorValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_VECTOR); }
+static int CBaseEntity_GetNWAngleValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_ANGLE); }
+static int CBaseEntity_GetNetworkedVar(lua_State *L) { return CBaseEntity_GetNWValue(L, 'N'); }
 
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: the NW2 family (SetNW2*/GetNW2*).  GMod keeps NW and NW2
@@ -6333,7 +6339,7 @@ static int CBaseEntity_SetDTAngle(lua_State *L) {
 static int CBaseEntity_GetDTEntity(lua_State *L) {
   CBaseEntity *entity = HL2SB_DTEntity(L);
   const int index = HL2SB_DTIndex(L,32,false);
-  lua_pushentity(L,entity->m_GMOD_entity[index].Get());
+  CBaseEntity::PushLuaInstanceSafe(L,entity->m_GMOD_entity[index].Get());
   return 1;
 }
 
@@ -6997,10 +7003,16 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetNetworkedString", CBaseEntity_GetNWStringValue},
   {"SetNetworkedEntity", CBaseEntity_SetNWValue},
   {"GetNetworkedEntity", CBaseEntity_GetNWEntityValue},
-  {"SetNWVector", CBaseEntity_SetNWVector},
-  {"GetNWVector", CBaseEntity_GetNWVector},
-  {"SetNWAngle", CBaseEntity_SetNWAngle},
-  {"GetNWAngle", CBaseEntity_GetNWAngle},
+  {"SetNWVector", CBaseEntity_SetNWValue},
+  {"GetNWVector", CBaseEntity_GetNWVectorValue},
+  {"SetNWAngle", CBaseEntity_SetNWValue},
+  {"GetNWAngle", CBaseEntity_GetNWAngleValue},
+  {"SetNetworkedVector", CBaseEntity_SetNWValue},
+  {"GetNetworkedVector", CBaseEntity_GetNWVectorValue},
+  {"SetNetworkedAngle", CBaseEntity_SetNWValue},
+  {"GetNetworkedAngle", CBaseEntity_GetNWAngleValue},
+  {"SetNetworkedVar", CBaseEntity_SetNWValue},
+  {"GetNetworkedVar", CBaseEntity_GetNetworkedVar},
   // HL2SB GMod compat: NW2 family (issue #47) - separate store, same local
   // per-realm semantics as the NW1 entries above.
   {"SetNW2String", CBaseEntity_SetNW2String},
