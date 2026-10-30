@@ -13,6 +13,8 @@
 #include "luasrclib.h"
 #include "lbaseplayer_shared.h"
 #include "mathlib/lvector.h"	// HL2SB: luaL_checkangle for SetEyeAngles
+#include "hud_chat.h"
+#include "hud_basechat.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -20,6 +22,15 @@
 static int CBasePlayer_GetLocalPlayer (lua_State *L) {
   lua_pushplayer(L, CBasePlayer::GetLocalPlayer());
   return 1;
+}
+
+static int CBasePlayer_ChatPrint (lua_State *L) {
+  luaL_checkplayer( L, 1 );
+  const char *message = luaL_checkstring( L, 2 );
+  CBaseHudChat *chat = ( CBaseHudChat * )GET_HUDELEMENT( CHudChat );
+  if ( chat )
+    chat->ChatPrintf( 0, CHAT_FILTER_NONE, "%s", message );
+  return 0;
 }
 
 
@@ -119,6 +130,7 @@ static int CBasePlayer_SetEyeAngles (lua_State *L) {
 static const luaL_Reg CBasePlayermeta[] = {
   {"GetLocalPlayer", CBasePlayer_GetLocalPlayer},
   {"UniqueID", CBasePlayer_UniqueID},
+  {"ChatPrint", CBasePlayer_ChatPrint},
   {"DrawViewModel", CBasePlayer_DrawViewModel},
   {"CrosshairDisable", CBasePlayer_CrosshairDisable},
   {"CrosshairEnable", CBasePlayer_CrosshairEnable},
