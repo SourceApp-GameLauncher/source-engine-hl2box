@@ -772,7 +772,8 @@ bool HL2SB_LuaEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInfo_t 
     return false;
 
   BEGIN_LUA_CALL_HOOK( "EntityFireBullets" );
-    lua_pushentity( L, pShooter );
+    if ( pShooter && pShooter->IsPlayer() ) CBaseEntity::PushLuaInstanceSafe( L, pShooter );
+    else lua_pushentity( L, pShooter );
     lua_newtable( L );
     lua_pushinteger( L, info.m_iShots );            lua_setfield( L, -2, "Num" );
     lua_pushvector( L, info.m_vecSrc );             lua_setfield( L, -2, "Src" );
@@ -780,7 +781,9 @@ bool HL2SB_LuaEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInfo_t 
     lua_pushnumber( L, info.m_flDistance );         lua_setfield( L, -2, "Distance" );
     lua_pushnumber( L, info.m_flDamage );           lua_setfield( L, -2, "Damage" );
     lua_pushnumber( L, info.m_flDamageForceScale ); lua_setfield( L, -2, "Force" );
-    lua_pushentity( L, info.m_pAttacker );          lua_setfield( L, -2, "Attacker" );
+    if ( info.m_pAttacker && info.m_pAttacker->IsPlayer() ) CBaseEntity::PushLuaInstanceSafe( L, info.m_pAttacker );
+    else lua_pushentity( L, info.m_pAttacker );
+    lua_setfield( L, -2, "Attacker" );
     lua_pushentity( L, info.m_pAdditionalIgnoreEnt ); lua_setfield( L, -2, "IgnoreEntity" );
     lua_pushinteger( L, info.m_iAmmoType );         lua_setfield( L, -2, "AmmoType" );
   END_LUA_CALL_HOOK( 2, 1 );
@@ -799,7 +802,8 @@ void HL2SB_LuaPostEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInf
     return;
 
   BEGIN_LUA_CALL_HOOK( "PostEntityFireBullets" );
-    lua_pushentity( L, pShooter );
+    if ( pShooter && pShooter->IsPlayer() ) CBaseEntity::PushLuaInstanceSafe( L, pShooter );
+    else lua_pushentity( L, pShooter );
     lua_newtable( L );
     lua_pushinteger( L, info.m_iShots );            lua_setfield( L, -2, "Num" );
     lua_pushvector( L, info.m_vecSrc );             lua_setfield( L, -2, "Src" );
@@ -807,7 +811,9 @@ void HL2SB_LuaPostEntityFireBullets( CBaseEntity *pShooter, const FireBulletsInf
     lua_pushnumber( L, info.m_flDistance );         lua_setfield( L, -2, "Distance" );
     lua_pushnumber( L, info.m_flDamage );           lua_setfield( L, -2, "Damage" );
     lua_pushnumber( L, info.m_flDamageForceScale ); lua_setfield( L, -2, "Force" );
-    lua_pushentity( L, info.m_pAttacker );          lua_setfield( L, -2, "Attacker" );
+    if ( info.m_pAttacker && info.m_pAttacker->IsPlayer() ) CBaseEntity::PushLuaInstanceSafe( L, info.m_pAttacker );
+    else lua_pushentity( L, info.m_pAttacker );
+    lua_setfield( L, -2, "Attacker" );
     lua_pushentity( L, info.m_pAdditionalIgnoreEnt ); lua_setfield( L, -2, "IgnoreEntity" );
     lua_pushinteger( L, info.m_iAmmoType );         lua_setfield( L, -2, "AmmoType" );
   END_LUA_CALL_HOOK( 2, 0 );

@@ -6339,7 +6339,11 @@ static int CBaseEntity_SetDTAngle(lua_State *L) {
 static int CBaseEntity_GetDTEntity(lua_State *L) {
   CBaseEntity *entity = HL2SB_DTEntity(L);
   const int index = HL2SB_DTIndex(L,32,false);
-  CBaseEntity::PushLuaInstanceSafe(L,entity->m_GMOD_entity[index].Get());
+  CBaseEntity *value = entity->m_GMOD_entity[index].Get();
+  if (value && value->IsPlayer())
+    CBaseEntity::PushLuaInstanceSafe(L,value);
+  else
+    lua_pushentity(L,value);
   return 1;
 }
 
