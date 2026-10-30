@@ -4218,6 +4218,33 @@ static int CBaseEntity_GetNWVectorValue(lua_State *L) { return CBaseEntity_GetNW
 static int CBaseEntity_GetNWAngleValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_ANGLE); }
 static int CBaseEntity_GetNetworkedVar(lua_State *L) { return CBaseEntity_GetNWValue(L, 'N'); }
 
+#ifdef CLIENT_DLL
+extern void HL2SB_NWPushReplicatedTable(lua_State *L, int entindex, int tableIndex);
+#endif
+
+static int CBaseEntity_GetNWVarTable(lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  lua_newtable(L);
+  const int table = lua_gettop(L);
+#ifdef CLIENT_DLL
+  HL2SB_NWPushReplicatedTable(L, entity->entindex(), table);
+#endif
+  char prefix[32];
+  Q_snprintf(prefix, sizeof(prefix), "%d_", entity->entindex());
+  const size_t length = Q_strlen(prefix);
+  for (unsigned short i = g_HL2SB_NWVars.First(); g_HL2SB_NWVars.IsValidIndex(i); i = g_HL2SB_NWVars.Next(i)) {
+    const char *key = g_HL2SB_NWVars.GetElementName(i);
+    if (Q_strncmp(key, prefix, length) != 0) continue;
+    const char *name = key + length;
+    lua_pushcfunction(L, CBaseEntity_GetNetworkedVar);
+    lua_pushvalue(L, 1);
+    lua_pushstring(L, name);
+    lua_call(L, 2, 1);
+    lua_setfield(L, table, name);
+  }
+  return 1;
+}
+
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: the NW2 family (SetNW2*/GetNW2*).  GMod keeps NW and NW2
 // in separate tables, so the same key written through SetNWInt and SetNW2Int
@@ -7017,6 +7044,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetNetworkedAngle", CBaseEntity_GetNWAngleValue},
   {"SetNetworkedVar", CBaseEntity_SetNWValue},
   {"GetNetworkedVar", CBaseEntity_GetNetworkedVar},
+  {"GetNWVarTable", CBaseEntity_GetNWVarTable},
+  {"GetNetworkedVarTable", CBaseEntity_GetNWVarTable},
   // HL2SB GMod compat: NW2 family (issue #47) - separate store, same local
   // per-realm semantics as the NW1 entries above.
   {"SetNW2String", CBaseEntity_SetNW2String},

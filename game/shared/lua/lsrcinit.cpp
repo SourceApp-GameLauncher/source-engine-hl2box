@@ -2190,6 +2190,21 @@ bool HL2SB_NWReplicatedPushFamily( lua_State *L, int iFamily, int entindex,
 	}
 }
 
+void HL2SB_NWPushReplicatedTable(lua_State *L, int entindex, int tableIndex)
+{
+  tableIndex = lua_absindex(L, tableIndex);
+  char prefix[48];
+  Q_snprintf(prefix, sizeof(prefix), "%d|%d|", HL2SB_NWFAMILY_NW, entindex);
+  const size_t length = Q_strlen(prefix);
+  for (unsigned short i = s_NWReplicated.First(); s_NWReplicated.IsValidIndex(i); i = s_NWReplicated.Next(i)) {
+    const char *key = s_NWReplicated.GetElementName(i);
+    if (Q_strncmp(key, prefix, length) != 0) continue;
+    const char *name = key + length;
+    if (HL2SB_NWReplicatedPushFamily(L, HL2SB_NWFAMILY_NW, entindex, name))
+      lua_setfield(L, tableIndex, name);
+  }
+}
+
 // The "HL2SB_NW" user message: SHORT entindex, BYTE family, STRING name,
 // BYTE tag, BYTE len, BYTE[len] payload.  Family 0 is the legacy Lua
 // NetworkVar channel, 1/2 are the SetNW*/SetNW2* families (issue #47).
@@ -3851,14 +3866,17 @@ static int HL2SB_GetGlobalValue(lua_State *L) {
   if (fallback == 1) lua_pushnumber(L, 0);
   else if (fallback == 2) lua_pushboolean(L, false);
   else if (fallback == 3) lua_pushliteral(L, "");
+  else if (fallback == 4) lua_pushvector(L, Vector(0, 0, 0));
+  else if (fallback == 5) lua_pushangle(L, QAngle(0, 0, 0));
+  else if (fallback == 6) lua_pushentity(L, NULL);
   else lua_pushnil(L);
   return 1;
 }
 
 static void HL2SB_RegisterGlobalValues(lua_State *L) {
-  const char *setters[] = {"SetGlobalVar", "SetGlobalInt", "SetGlobalFloat", "SetGlobalBool", "SetGlobalString"};
-  const char *getters[] = {"GetGlobalVar", "GetGlobalInt", "GetGlobalFloat", "GetGlobalBool", "GetGlobalString"};
-  const int defaults[] = {0, 1, 1, 2, 3};
+  const char *setters[] = {"SetGlobalVar", "SetGlobalInt", "SetGlobalFloat", "SetGlobalBool", "SetGlobalString", "SetGlobalVector", "SetGlobalAngle", "SetGlobalEntity"};
+  const char *getters[] = {"GetGlobalVar", "GetGlobalInt", "GetGlobalFloat", "GetGlobalBool", "GetGlobalString", "GetGlobalVector", "GetGlobalAngle", "GetGlobalEntity"};
+  const int defaults[] = {0, 1, 1, 2, 3, 4, 5, 6};
   for (int i = 0; i < ARRAYSIZE(setters); ++i) {
     lua_pushcfunction(L, HL2SB_SetGlobalValue);
     lua_setglobal(L, setters[i]);
