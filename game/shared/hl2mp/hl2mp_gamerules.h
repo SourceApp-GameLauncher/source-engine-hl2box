@@ -168,6 +168,10 @@ public:
 #ifdef LUA_SDK
 #ifndef CLIENT_DLL
 	virtual float FlPlayerFallDamage( CBasePlayer *pPlayer );
+	// HL2SB: the reference game keeps the death view alive on lethal landings.
+	// The base-class default still answers true (single-player fade to black),
+	// so answer false here like the reference ruleset does.
+	virtual bool FlPlayerFallDeathDoesScreenFade( CBasePlayer *pPlayer ) { return false; }
 #endif
 #endif
 
