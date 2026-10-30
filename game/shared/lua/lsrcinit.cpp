@@ -3818,6 +3818,56 @@ static int HL2SB_UISavePresets(lua_State *L)
   return 0;
 }
 
+static void HL2SB_PushGlobalValues(lua_State *L) {
+  lua_getglobal(L, "__HL2SB_GLOBALS");
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_setglobal(L, "__HL2SB_GLOBALS");
+  }
+}
+
+static int HL2SB_SetGlobalValue(lua_State *L) {
+  const char *name = luaL_checkstring(L, 1);
+  luaL_checkany(L, 2);
+  HL2SB_PushGlobalValues(L);
+  lua_pushstring(L, name);
+  lua_pushvalue(L, 2);
+  lua_rawset(L, -3);
+  return 0;
+}
+
+static int HL2SB_GetGlobalValue(lua_State *L) {
+  const char *name = luaL_checkstring(L, 1);
+  lua_settop(L, 2);
+  HL2SB_PushGlobalValues(L);
+  lua_pushstring(L, name);
+  lua_rawget(L, -2);
+  if (!lua_isnil(L, -1)) return 1;
+  lua_pop(L, 1);
+  if (!lua_isnoneornil(L, 2)) { lua_pushvalue(L, 2); return 1; }
+  const int fallback = (int)lua_tointeger(L, lua_upvalueindex(1));
+  if (fallback == 1) lua_pushnumber(L, 0);
+  else if (fallback == 2) lua_pushboolean(L, false);
+  else if (fallback == 3) lua_pushliteral(L, "");
+  else lua_pushnil(L);
+  return 1;
+}
+
+static void HL2SB_RegisterGlobalValues(lua_State *L) {
+  const char *setters[] = {"SetGlobalVar", "SetGlobalInt", "SetGlobalFloat", "SetGlobalBool", "SetGlobalString"};
+  const char *getters[] = {"GetGlobalVar", "GetGlobalInt", "GetGlobalFloat", "GetGlobalBool", "GetGlobalString"};
+  const int defaults[] = {0, 1, 1, 2, 3};
+  for (int i = 0; i < ARRAYSIZE(setters); ++i) {
+    lua_pushcfunction(L, HL2SB_SetGlobalValue);
+    lua_setglobal(L, setters[i]);
+    lua_pushinteger(L, defaults[i]);
+    lua_pushcclosure(L, HL2SB_GetGlobalValue, 1);
+    lua_setglobal(L, getters[i]);
+  }
+}
+
 LUALIB_API void luasrc_openlibs (lua_State *L) {
   HL2SB_RefreshGameContentPaths();
   const luaL_Reg *lib = luasrclibs;
@@ -4494,6 +4544,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   lua_pushinteger( L, 3 );  lua_setglobal( L, "TEXT_FILTER_NAME" );
 #endif
 
+  HL2SB_RegisterGlobalValues(L);
   luaL_register(L, "_G", lua_metatable_funcs);
   lua_pop(L, 1);
 
