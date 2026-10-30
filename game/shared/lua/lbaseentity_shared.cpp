@@ -3924,6 +3924,7 @@ static bool HL2SB_NWGetterFallback( lua_State *L, int iFamily,
 #endif
 }
 
+
 static int CBaseEntity_SetNWString (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   const char *pszName = luaL_checkstring(L, 2);
@@ -4142,6 +4143,74 @@ static int CBaseEntity_GetNWAngle (lua_State *L) {
   lua_pushangle( L, angDefault );
   return 1;
 }
+
+static bool HL2SB_IsDTEntity(lua_State *L, int index);
+
+static int CBaseEntity_SetNWValue (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  switch (lua_type(L, 3)) {
+    case LUA_TNIL: {
+      HL2SB_NWValue *value = NWVarGetOrCreate(entity, name, true);
+      if (value) {
+        bool changed = value->tag != 'N';
+        value->tag = 'N';
+        HL2SB_NWSetterReplicate(HL2SB_NWFAMILY_NW, entity, name, 'N', L, changed);
+      }
+      return 0;
+    }
+    case LUA_TNUMBER: return CBaseEntity_SetNWFloat(L);
+    case LUA_TBOOLEAN: return CBaseEntity_SetNWBool(L);
+    case LUA_TSTRING: return CBaseEntity_SetNWString(L);
+    case LUA_TUSERDATA:
+      if (luaL_testudata(L, 3, "Vector")) return CBaseEntity_SetNWVector(L);
+      if (luaL_testudata(L, 3, "Angle")) return CBaseEntity_SetNWAngle(L);
+      if (HL2SB_IsDTEntity(L, 3)) return CBaseEntity_SetNWEntity(L);
+      break;
+    default: break;
+  }
+  return luaL_error(L, "SetNetworkedVar: Non-networkable type '%s' encountered!", luaL_typename(L, 3));
+}
+
+static int CBaseEntity_SetNetworkedNumber (lua_State *L) {
+  luaL_checkentity(L, 1);
+  luaL_checkstring(L, 2);
+  const float value = (float)luaL_checknumber(L, 3);
+  lua_pushnumber(L, value);
+  lua_replace(L, 3);
+  return CBaseEntity_SetNWFloat(L);
+}
+
+static int CBaseEntity_GetNWValue (lua_State *L, char defaultTag) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  HL2SB_NWValue *value = NWVarGetOrCreate(entity, name, false);
+  if (value && value->tag != 'N') {
+    switch (value->tag) {
+      case HL2SB_NWTAG_FLOAT: lua_pushnumber(L, value->f); return 1;
+      case HL2SB_NWTAG_INT: lua_pushinteger(L, value->i); return 1;
+      case HL2SB_NWTAG_BOOL: lua_pushboolean(L, value->b); return 1;
+      case HL2SB_NWTAG_STRING: lua_pushstring(L, value->s.Get()); return 1;
+      case HL2SB_NWTAG_ENTITY: lua_pushentity(L, value->hEnt.Get()); return 1;
+      case HL2SB_NWTAG_VECTOR: lua_pushvector(L, value->v); return 1;
+      case HL2SB_NWTAG_ANGLE: lua_pushangle(L, value->a); return 1;
+    }
+  }
+  if (!value && HL2SB_NWGetterFallback(L, HL2SB_NWFAMILY_NW, entity, name)) return 1;
+  if (!lua_isnoneornil(L, 3)) { lua_pushvalue(L, 3); return 1; }
+  switch (defaultTag) {
+    case HL2SB_NWTAG_BOOL: lua_pushboolean(L, false); break;
+    case HL2SB_NWTAG_STRING: lua_pushliteral(L, ""); break;
+    case HL2SB_NWTAG_ENTITY: lua_pushentity(L, NULL); break;
+    default: lua_pushnumber(L, 0); break;
+  }
+  return 1;
+}
+
+static int CBaseEntity_GetNWNumberValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_FLOAT); }
+static int CBaseEntity_GetNWBoolValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_BOOL); }
+static int CBaseEntity_GetNWStringValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_STRING); }
+static int CBaseEntity_GetNWEntityValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_ENTITY); }
 
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: the NW2 family (SetNW2*/GetNW2*).  GMod keeps NW and NW2
@@ -6908,16 +6977,26 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // variables; this is a local-per-realm store keyed by entindex + name so
   // scripts that call SetNWString/GetNWString (player_auth.lua's UserGroup)
   // stop crashing.  Values do NOT sync between client and server yet.
-  {"SetNWString", CBaseEntity_SetNWString},
-  {"GetNWString", CBaseEntity_GetNWString},
-  {"SetNWInt", CBaseEntity_SetNWInt},
-  {"GetNWInt", CBaseEntity_GetNWInt},
-  {"SetNWFloat", CBaseEntity_SetNWFloat},
-  {"GetNWFloat", CBaseEntity_GetNWFloat},
-  {"SetNWBool", CBaseEntity_SetNWBool},
-  {"GetNWBool", CBaseEntity_GetNWBool},
-  {"SetNWEntity", CBaseEntity_SetNWEntity},
-  {"GetNWEntity", CBaseEntity_GetNWEntity},
+  {"SetNWString", CBaseEntity_SetNWValue},
+  {"GetNWString", CBaseEntity_GetNWStringValue},
+  {"SetNWInt", CBaseEntity_SetNWValue},
+  {"GetNWInt", CBaseEntity_GetNWNumberValue},
+  {"SetNWFloat", CBaseEntity_SetNWValue},
+  {"GetNWFloat", CBaseEntity_GetNWNumberValue},
+  {"SetNWBool", CBaseEntity_SetNWValue},
+  {"GetNWBool", CBaseEntity_GetNWBoolValue},
+  {"SetNWEntity", CBaseEntity_SetNWValue},
+  {"GetNWEntity", CBaseEntity_GetNWEntityValue},
+  {"SetNetworkedInt", CBaseEntity_SetNetworkedNumber},
+  {"GetNetworkedInt", CBaseEntity_GetNWNumberValue},
+  {"SetNetworkedFloat", CBaseEntity_SetNetworkedNumber},
+  {"GetNetworkedFloat", CBaseEntity_GetNWNumberValue},
+  {"SetNetworkedBool", CBaseEntity_SetNWValue},
+  {"GetNetworkedBool", CBaseEntity_GetNWBoolValue},
+  {"SetNetworkedString", CBaseEntity_SetNWValue},
+  {"GetNetworkedString", CBaseEntity_GetNWStringValue},
+  {"SetNetworkedEntity", CBaseEntity_SetNWValue},
+  {"GetNetworkedEntity", CBaseEntity_GetNWEntityValue},
   {"SetNWVector", CBaseEntity_SetNWVector},
   {"GetNWVector", CBaseEntity_GetNWVector},
   {"SetNWAngle", CBaseEntity_SetNWAngle},

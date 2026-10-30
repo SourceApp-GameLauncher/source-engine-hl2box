@@ -1947,6 +1947,8 @@ static int HL2SB_NWSerialize( lua_State *L, int iValue, char tag, unsigned char 
 	bf_write w( "HL2SB_NW", pOut, nMax );
 	switch ( tag )
 	{
+		case 'N':
+			break;
 		case HL2SB_NWTAG_FLOAT:
 			w.WriteFloat( ( float )luaL_checknumber( L, iValue ) );
 			break;
@@ -2547,6 +2549,9 @@ void HL2SB_NWResyncClient (CBasePlayer *pPlayer)
       int len = -1;
       bf_write w( "HL2SB_NW", payload, sizeof( payload ) );
       switch ( v.tag ) {
+        case 'N':
+          len = 0;
+          break;
         case HL2SB_NWTAG_FLOAT:
           w.WriteFloat( v.f );
           len = w.GetNumBytesWritten();
