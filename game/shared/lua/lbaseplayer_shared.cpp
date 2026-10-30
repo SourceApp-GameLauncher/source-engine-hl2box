@@ -1911,14 +1911,16 @@ static int CBasePlayer_ConCommand (lua_State *L) {
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: Player:SelectWeapon( class ).  GMod's gmod_camera
 // registers a "gmod_camera" console command whose whole body is
-// ply:SelectWeapon( "gmod_camera" ).  Both realms have CBasePlayer::SelectItem.
+// ply:SelectWeapon( "gmod_camera" ).
 //-----------------------------------------------------------------------------
+#ifndef CLIENT_DLL
 static int CBasePlayer_SelectWeapon (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
   const char *pszClass = luaL_checkstring(L, 2);
   pPlayer->SelectItem( pszClass );
   return 0;
 }
+#endif
 
 static int CBasePlayer___tostring (lua_State *L) {
   CBasePlayer *pPlayer = lua_toplayer(L, 1);
@@ -3256,7 +3258,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"ClearZoomOwner", CBasePlayer_ClearZoomOwner},
   {"CurrentCommandNumber", CBasePlayer_CurrentCommandNumber},
   {"GetCurrentCommand", CBasePlayer_GetCurrentCommand},
+#ifndef CLIENT_DLL
   {"SelectWeapon", CBasePlayer_SelectWeapon},
+#endif
   {"DoMuzzleFlash", CBasePlayer_DoMuzzleFlash},
   {"MuzzleFlash", CBasePlayer_MuzzleFlash},
   {"ExitLadder", CBasePlayer_ExitLadder},
