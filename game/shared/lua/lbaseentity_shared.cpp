@@ -5029,22 +5029,23 @@ static int CBaseEntity_GetAngles (lua_State *L) {
   return 1;
 }
 
-// GMod sets the physics velocity when the entity has a physics object and the
-// absolute velocity otherwise.
 static int CBaseEntity_SetVelocity (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  Vector vecVelocity = luaL_checkvector(L, 2);
-  IPhysicsObject *pPhysics = pEntity->VPhysicsGetObject();
-
-  if ( pPhysics != NULL && !pPhysics->IsStatic() ) {
-    pPhysics->SetVelocity( &vecVelocity, NULL );
-  }
-  else {
-    pEntity->SetAbsVelocity( vecVelocity );
-  }
-
+  pEntity->SetBaseVelocity(luaL_checkvector(L, 2));
   return 0;
 }
+
+#ifdef CLIENT_DLL
+static int CBaseEntity_GetVelocity (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  Vector velocity = entity->GetAbsVelocity();
+  IPhysicsObject *physics = entity->VPhysicsGetObject();
+  if (entity->GetMoveType() == MOVETYPE_VPHYSICS && physics)
+    physics->GetVelocity(&velocity, NULL);
+  lua_pushvector(L, velocity);
+  return 1;
+}
+#endif
 
 // HL2SB GMod compat: the direction vectors GMod exposes on every entity.  GMod
 // weapon scripts build their knockback from them - weapon_fists/shared.lua:127
@@ -6674,7 +6675,11 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // the wiki use (Entity:GetAbsVelocity is the rarer twin).  ent_nyan_bomb's
   // ENT:Draw opens with self:GetVelocity() -- without this the draw died on
   // its first line every frame and the flying cat rendered as nothing at all.
+#ifdef CLIENT_DLL
+  {"GetVelocity", CBaseEntity_GetVelocity},
+#else
   {"GetVelocity", CBaseEntity_GetAbsVelocity},
+#endif
   {"GetAttachment", CBaseEntity_GetAttachment},
   {"GetAnimTime", CBaseEntity_GetAnimTime},
   {"GetPoseParameter", CBaseEntity_GetPoseParameter},
