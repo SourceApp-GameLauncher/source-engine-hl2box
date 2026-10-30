@@ -1818,7 +1818,7 @@ const QAngle& C_BaseEntity::GetRenderAngles( void )
 		lua_getref( L, m_nTableReference );
 		lua_getfield( L, -1, "m_angRenderAngles" );
 		lua_remove( L, -2 );
-		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) != NULL )
+		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) != NULL )
 		{
 			const QAngle& res = luaL_checkangle( L, -1 );
 			lua_pop( L, 1 );

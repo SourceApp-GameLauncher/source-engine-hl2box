@@ -2030,7 +2030,7 @@ void HL2SB_LuaCalcView( CBasePlayer *pPlayer, Vector &eyeOrigin, QAngle &eyeAngl
 		lua_pop( L, 1 );
 
 		lua_getfield( L, -1, "angles" );
-		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) )
 			eyeAngles = luaL_checkangle( L, -1 );
 		lua_pop( L, 1 );
 
@@ -2144,7 +2144,7 @@ void CBasePlayer::CalcPlayerView( Vector& eyeOrigin, QAngle& eyeAngles, float& f
 
 	if ( lua_isuserdata( L, -3 ) && luaL_checkudata( L, -3, "Vector" ) )
 		VectorCopy( luaL_checkvector( L, -3 ), eyeOrigin );
-	if ( lua_isuserdata( L, -2 ) && luaL_checkudata( L, -2, "QAngle" ) )
+	if ( lua_isuserdata( L, -2 ) && luaL_checkudata( L, -2, "Angle" ) )
 		VectorCopy( luaL_checkangle( L, -2 ), eyeAngles );
 	if ( lua_isnumber( L, -1 ) )
 		fov = luaL_checknumber( L, -1 );

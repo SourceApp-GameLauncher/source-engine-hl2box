@@ -708,7 +708,7 @@ static const luaL_Reg luasrclibs[] = {
 **
 ** GMod registers its metatables under the bare class names ("Entity", "Player",
 ** "Weapon", "Angle", ...); the Team Sandbox era code HL2SB inherited registers
-** them under the C++ class names ("CBaseEntity", "CBasePlayer", "QAngle", ...).
+** them under the C++ class names ("CBaseEntity", "CBasePlayer", ...).
 ** This table bridges the two, and the aliases are mirrored into the registry so
 ** that a plain `_R.Entity` works as well -- base_open already publishes the
 ** registry as `_R`, and Experiment's own Lua reads `_R.Entity` directly instead
@@ -2389,7 +2389,7 @@ static bool HL2SB_NWValueMatchesTag (lua_State *L, int iValue, char tag) {
     case HL2SB_NWTAG_FLOAT:
     case HL2SB_NWTAG_INT:		return lua_isnumber( L, iValue ) ? true : false;
     case HL2SB_NWTAG_VECTOR:	return luaL_testudata( L, iValue, "Vector" ) != NULL;
-    case HL2SB_NWTAG_ANGLE:		return luaL_testudata( L, iValue, "QAngle" ) != NULL;
+    case HL2SB_NWTAG_ANGLE:		return luaL_testudata( L, iValue, "Angle" ) != NULL;
     case HL2SB_NWTAG_BOOL:		return lua_isboolean( L, iValue ) ? true : false;
     case HL2SB_NWTAG_STRING:	return ( lua_isstring( L, iValue ) ) ? true : false;
     case HL2SB_NWTAG_ENTITY:	return ( lua_toentity( L, iValue ) != NULL );
@@ -2413,7 +2413,7 @@ static void HL2SB_NWDetailAppend (char *szDetail, size_t nMax, lua_State *L,
     }
     case HL2SB_NWTAG_ANGLE:
     {
-      QAngle *a = ( QAngle * )luaL_testudata( L, iValue, "QAngle" );
+			QAngle *a = ( QAngle * )luaL_testudata( L, iValue, "Angle" );
       if ( a != NULL ) {
         Q_snprintf( szOne, sizeof( szOne ), "%s=(%.2f %.2f %.2f) ", pszName, a->x, a->y, a->z );
       }

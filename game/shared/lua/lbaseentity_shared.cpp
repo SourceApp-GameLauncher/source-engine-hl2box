@@ -5499,7 +5499,7 @@ static bool HL2SB_ValueToSaveString (lua_State *L, int nArg, char *pOut, int nOu
       Q_snprintf( pOut, nOut, "%.6f %.6f %.6f", v.x, v.y, v.z );
       return true;
     }
-    if ( luaL_testudata( L, nArg, "QAngle" ) != NULL ) {
+    if ( luaL_testudata( L, nArg, "Angle" ) != NULL ) {
       const QAngle &a = luaL_checkangle( L, nArg );
       Q_snprintf( pOut, nOut, "%.6f %.6f %.6f", a.x, a.y, a.z );
       return true;

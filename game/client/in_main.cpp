@@ -1337,7 +1337,7 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 		if ( lua_istable( L, -1 ) )
 		{
 			lua_getfield( L, -1, "viewangles" );
-			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) )
 				cmd->viewangles = luaL_checkangle( L, -1 );
 			lua_pop( L, 1 );
 

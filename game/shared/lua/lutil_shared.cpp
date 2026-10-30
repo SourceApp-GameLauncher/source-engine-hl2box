@@ -1376,7 +1376,7 @@ static void JSON_EmitValue( lua_State *L, int idx, CUtlString &out, bool pretty,
 			luaL_getmetatable( L, "Vector" );
 			const bool bIsVector = lua_rawequal( L, -1, i ) != 0;
 			lua_pop( L, 1 );
-			luaL_getmetatable( L, "QAngle" );
+			luaL_getmetatable( L, "Angle" );
 			const bool bIsAngle = lua_rawequal( L, -1, i ) != 0;
 			lua_pop( L, 1 );
 

@@ -737,7 +737,7 @@ inline bool HL2SB_LuaPanelHasMethod( lua_State *pState, int iTableReference, con
 
 #define RETURN_LUA_ANGLE() \
   if (lua_gettop(L) > 0) { \
-    if (lua_isuserdata(L, -1) && luaL_checkudata(L, -1, "QAngle")) { \
+    if (lua_isuserdata(L, -1) && luaL_checkudata(L, -1, "Angle")) { \
 	  QAngle res = luaL_checkangle(L, -1); \
 	  lua_pop(L, 1); \
 	  return res; \
