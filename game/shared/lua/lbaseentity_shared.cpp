@@ -3944,7 +3944,7 @@ static int CBaseEntity_GetNWString (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 2);
   const char *pszDefault = luaL_optstring(L, 3, "");
   HL2SB_NWValue *p = NWVarGetOrCreate( pEntity, pszName, false );
-  if ( p && p->s.Length() ) {
+  if ( p && p->tag == HL2SB_NWTAG_STRING ) {
     lua_pushstring( L, p->s.Get() );
     return 1;
   }
