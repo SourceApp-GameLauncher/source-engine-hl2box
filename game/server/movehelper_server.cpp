@@ -359,10 +359,14 @@ void CMoveHelperServer::Con_NPrintf( int idx, char const* pFormat, ...)
 //-----------------------------------------------------------------------------
 bool CMoveHelperServer::PlayerFallingDamage( void )
 {
-	float flFallDamage = g_pGameRules->FlPlayerFallDamage( m_pHostPlayer );	
-	if ( flFallDamage > 0 )
-	{
-		m_pHostPlayer->TakeDamage( CTakeDamageInfo( GetContainingEntity(INDEXENT(0)), GetContainingEntity(INDEXENT(0)), flFallDamage, DMG_FALL ) ); 
+		float flFallDamage = g_pGameRules->FlPlayerFallDamage( m_pHostPlayer );
+		if ( flFallDamage > 0 )
+		{
+			// HL2SB: lethal falls are self-inflicted in the reference game -
+			// the kill feed shows only the suicide skull and the score counts
+			// as a suicide, so attribute the damage to the falling player
+			// instead of worldspawn.
+			m_pHostPlayer->TakeDamage( CTakeDamageInfo( m_pHostPlayer, m_pHostPlayer, flFallDamage, DMG_FALL ) );
 		StartSound( m_pHostPlayer->GetAbsOrigin(), "Player.FallDamage" );
 
         //=============================================================================
