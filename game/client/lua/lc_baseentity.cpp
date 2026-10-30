@@ -345,7 +345,17 @@ static int CBaseEntity_HasSpawnFlags (lua_State *L) {
 // this the entire context-menu property list went dead, not just ignite.
 // Extinguish stays server-only -- the reference publishes no client copy.
 static int CBaseEntity_IsWorld (lua_State *L) {
-  lua_pushboolean( L, luaL_checkentity( L, 1 )->IsWorld() );
+  if (lua_isnoneornil(L, 1)) { lua_pushboolean(L, false); return 1; }
+  bool isEntity = false;
+  if (lua_type(L, 1) == LUA_TUSERDATA && lua_getmetatable(L, 1)) {
+    lua_pushliteral(L, "MetaID");
+    lua_rawget(L, -2);
+    isEntity = lua_isnumber(L, -1) && lua_tointeger(L, -1) == 9;
+    lua_pop(L, 2);
+  }
+  if (!isEntity) return luaL_argerror(L, 1, "Entity expected");
+  CBaseEntity *entity = lua_toentity(L, 1);
+  lua_pushboolean(L, entity != NULL && entity->IsWorld());
   return 1;
 }
 
@@ -419,11 +429,28 @@ static const luaL_Reg CBaseEntitymeta[] = {
 ** library is opened when the client Lua state comes up, and the game never
 ** needs the hook before that.
 */
-extern "C" void VGUI_SetOnMousePressAllowed( bool ( *fn )( int mouseCode ) );
+extern "C" void VGUI_SetOnMousePressAllowed( bool ( *fn )( vgui::Panel *, int mouseCode ) );
+extern "C" void VGUI_SetOnMouseReleased( void ( *fn )( vgui::Panel *, int mouseCode ) );
+bool HL2SB_IsScreenClickPanel(vgui::Panel *panel);
 
 bool HL2SB_GetScreenClickDirection( Vector &direction, int x, int y, const CViewSetup *setup );
 
-static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
+static void HL2SB_VGUIOnMouseReleased( vgui::Panel *panel, int mouseCode )
+{
+	if ( !L || !HL2SB_IsScreenClickPanel( panel ) ) return;
+	const int top = lua_gettop( L );
+	int x = 0, y = 0;
+	vgui::input()->GetCursorPos( x, y );
+	Vector direction( 0, 0, 1 );
+	HL2SB_GetScreenClickDirection( direction, x, y, NULL );
+	BEGIN_LUA_CALL_HOOK( "GUIMouseReleased" );
+		lua_pushinteger( L, mouseCode );
+		lua_pushvector( L, direction );
+	END_LUA_CALL_HOOK( 2, 0 );
+	lua_settop( L, top );
+}
+
+static bool HL2SB_VGUIOnMousePressAllowed( vgui::Panel *panel, int mouseCode )
 {
 	if ( L == NULL )
 		return false;
@@ -436,21 +463,15 @@ static bool HL2SB_VGUIOnMousePressAllowed( int mouseCode )
 	const bool bBlocked = lua_toboolean( L, -1 );
 	lua_settop( L, iTop );
 	if (!bBlocked) {
-		vgui::VPANEL target = vgui::input()->GetMouseCapture();
-		if (!target) target = vgui::input()->GetMouseOver();
 		BEGIN_LUA_CALL_HOOK("VGUIMousePressed");
-			lua_pushpanel(L, target);
+			lua_pushpanel(L, panel);
 			lua_pushinteger(L, mouseCode);
 		END_LUA_CALL_HOOK(2, 0);
 		lua_settop(L, iTop);
 	}
 
-	// HL2SB: GMod's GUIMousePressed -- the properties module opens the entity
-	// context menu from this hook (its PropertiesClick handler).  The
-	// reference fires it with the mouse code and the world picking ray under
-	// the cursor and lets the Lua side gate world-clickers itself; without it
-	// the stock right-click menu can never appear.
-	{
+	// World screen clicks are distinct from ordinary control input.
+	if ( !bBlocked && HL2SB_IsScreenClickPanel( panel ) ) {
 		int x = 0, y = 0;
 		vgui::input()->GetCursorPos( x, y );
 		Vector vecDir( 0, 0, 1 );
@@ -475,6 +496,7 @@ LUALIB_API int luaopen_CBaseEntity (lua_State *L) {
   }
   luaL_register(L, NULL, CBaseEntitymeta);
   VGUI_SetOnMousePressAllowed( HL2SB_VGUIOnMousePressAllowed );
+  VGUI_SetOnMouseReleased( HL2SB_VGUIOnMouseReleased );
   return 1;
 }
 

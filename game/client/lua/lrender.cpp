@@ -51,6 +51,10 @@ class CMatCallQueue;
 #include "tier1/utlbuffer.h"
 #include "tier2/renderutils.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "c_rope.h"
+#if defined( _WIN32 )
+#include <windows.h>
+#endif
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -306,6 +310,45 @@ LUA_BINDING_BEGIN( Renders, GetMoBlurTex0, "library", "Get the motion blur rende
 }
 LUA_BINDING_END( "Texture", "The motion blur texture." )
 
+LUA_BINDING_BEGIN( Renders, GetMoBlurTex1, "library", "Get the second motion blur render target texture.", "client" )
+{
+    static ITexture *s_pMoBlurTex1 = NULL;
+    if ( !s_pMoBlurTex1 )
+    {
+        s_pMoBlurTex1 = materials->CreateNamedRenderTargetTextureEx(
+            "s_pMoBlurTex1", 256, 256, RT_SIZE_FULL_FRAME_BUFFER, materials->GetBackBufferFormat(),
+            MATERIAL_RT_DEPTH_SEPARATE,
+            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, CREATERENDERTARGETFLAGS_HDR );
+        if ( !s_pMoBlurTex1 || s_pMoBlurTex1->IsError() )
+        {
+            s_pMoBlurTex1 = NULL;
+            lua_pushnil( L );
+            return 1;
+        }
+    }
+    lua_pushitexture( L, s_pMoBlurTex1 );
+    return 1;
+}
+LUA_BINDING_END( "Texture", "The second motion blur texture." )
+
+LUA_BINDING_BEGIN( Renders, Spin, "library", "Presents the current frame and begins another.", "client" )
+{
+    materials->EndFrame();
+    materials->SwapBuffers();
+    RopeManager()->OnRenderStart();
+#if defined( _WIN32 )
+    MSG message;
+    while ( PeekMessage( &message, NULL, 0, 0, PM_REMOVE ) )
+    {
+        TranslateMessage( &message );
+        DispatchMessage( &message );
+    }
+#endif
+    materials->BeginFrame( gpGlobals->frametime );
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, GetResolvedFullFrameDepth, "library", "Returns the resolved full-frame depth texture.", "client" )
 {
     ITexture *pTexture = materials->FindTexture( "_rt_ResolvedFullFrameDepth", TEXTURE_GROUP_RENDER_TARGET, true, NULL );
@@ -548,6 +591,29 @@ static int luasrc_GetRenderTarget( lua_State *L )
     return 1;
 }
 
+static int luasrc_GetRenderTargetEx( lua_State *L )
+{
+    const char *name = luaL_checkstring( L, 1 );
+    const int width = (int)luaL_checknumber( L, 2 );
+    const int height = (int)luaL_checknumber( L, 3 );
+    const int sizeMode = clamp( (int)luaL_checknumber( L, 4 ), 0, 9 );
+    const int depthMode = clamp( (int)luaL_checknumber( L, 5 ), 0, 3 );
+    const int textureFlags = (int)luaL_checknumber( L, 6 );
+    const int targetFlags = (int)luaL_checknumber( L, 7 );
+    const int format = (int)luaL_checknumber( L, 8 );
+    if ( format < -1 || format >= NUM_IMAGE_FORMATS ||
+         ( textureFlags & ( TEXTUREFLAGS_PROCEDURAL | TEXTUREFLAGS_ENVMAP ) ) )
+        return 0;
+
+    ITexture *texture = materials->CreateNamedRenderTargetTextureEx(
+        name, width, height, (RenderTargetSizeMode_t)sizeMode,
+        format == -1 ? materials->GetBackBufferFormat() : (ImageFormat)format,
+        (MaterialRenderTargetDepth_t)depthMode, textureFlags, targetFlags );
+    if ( !texture || texture->IsError() ) return 0;
+    lua_pushitexture( L, texture );
+    return 1;
+}
+
 //-----------------------------------------------------------------------------
 // HL2SB (2026-09-22): the primitives GMod's halo.lua and the client render.lua
 // shim need.  The shim's load gate is render.GetAmbientLightColor -- without
@@ -753,24 +819,21 @@ LUA_BINDING_BEGIN( Renders, Capture, "library", "Captures a render target rectan
 LUA_BINDING_END()
 
 // render.GetSuperFPTex() / render.GetSuperFPTex2() -- GMod's portal-view
-// render targets.  Reference behaviour: two lazily created, name-keyed
-// literal-size render targets ("__rt_SuperTexture1" / "__rt_SuperTexture2",
-// 512x512), handed out as real ITexture userdata; repeat calls return the
-// same texture.  The portalgun renders the view through each portal into one
-// of these (SetRenderTarget -> Clear -> RenderView) and samples it back
-// through an UnlitGeneric $basetexture.
+// render targets. They use full-frame sizing and floating-point pixels.
 static ITexture *HL2SB_GetSuperFPTex( int nIndex )
 {
     static ITexture *s_pSuperFPTex[ 2 ] = { NULL, NULL };
     if ( s_pSuperFPTex[ nIndex ] == NULL )
     {
-        // Lua requests these after the engine's render-target allocation phase.
+        if ( !g_pMaterialSystemHardwareConfig || g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 90 )
+            return NULL;
         s_pSuperFPTex[ nIndex ] = materials->CreateNamedRenderTargetTextureEx(
             nIndex == 0 ? "__rt_SuperTexture1" : "__rt_SuperTexture2",
-            512, 512, RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA8888,
-            MATERIAL_RT_DEPTH_SEPARATE,
-            TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD,
-            0 );
+            512, 512, RT_SIZE_FULL_FRAME_BUFFER, IMAGE_FORMAT_RGBA16161616F,
+            MATERIAL_RT_DEPTH_SHARED, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT,
+            CREATERENDERTARGETFLAGS_HDR );
+        if ( s_pSuperFPTex[ nIndex ] && s_pSuperFPTex[ nIndex ]->IsError() )
+            s_pSuperFPTex[ nIndex ] = NULL;
     }
     return s_pSuperFPTex[ nIndex ];
 }
@@ -3180,6 +3243,14 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_setglobal(L, "GetViewEntity");
     lua_pushcfunction( L, luasrc_GetRenderTarget );
     lua_setglobal( L, "GetRenderTarget" );
+    lua_pushcfunction( L, luasrc_GetRenderTargetEx );
+    lua_setglobal( L, "GetRenderTargetEx" );
+    lua_pushinteger( L, RT_SIZE_FULL_FRAME_BUFFER );
+    lua_setglobal( L, "RT_SIZE_FULL_FRAME_BUFFER" );
+    lua_pushinteger( L, MATERIAL_RT_DEPTH_NONE );
+    lua_setglobal( L, "MATERIAL_RT_DEPTH_NONE" );
+    lua_pushinteger( L, -1 );
+    lua_setglobal( L, "IMAGE_FORMAT_DEFAULT" );
 
     // HL2SB: the cam library -- cam.Start( {type="3D"/"2D", ...} ) / cam.End() /
     // cam.IgnoreZ().  The content render.lua shim builds cam.Start3D/Start2D on

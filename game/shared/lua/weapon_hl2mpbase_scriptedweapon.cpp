@@ -1990,7 +1990,7 @@ void CHL2MPScriptedWeapon::CalcView( CBasePlayer *pPlayer, Vector &vecOrigin, QA
 	{
 		if ( lua_isuserdata( L, -3 ) && luaL_checkudata( L, -3, "Vector" ) )
 			vecOrigin = luaL_checkvector( L, -3 );
-		if ( lua_isuserdata( L, -2 ) && luaL_checkudata( L, -2, "QAngle" ) )
+		if ( lua_isuserdata( L, -2 ) && luaL_checkudata( L, -2, "Angle" ) )
 			vecAngles = luaL_checkangle( L, -2 );
 		if ( lua_isnumber( L, -1 ) )
 			flFOV = (float)lua_tonumber( L, -1 );

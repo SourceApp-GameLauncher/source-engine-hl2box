@@ -71,7 +71,7 @@ static void LuaEffect_WorldTransform(lua_State *state, matrix3x4_t &transform) {
 	Vector position = luaL_testudata(state, -1, LUA_VECTORLIBNAME) ? luaL_checkvector(state, -1) : vec3_origin;
 	lua_pop(state, 1);
 	lua_getfield(state, 1, "__hl2sb_angles");
-	QAngle angles = luaL_testudata(state, -1, "QAngle") ? luaL_checkangle(state, -1) : vec3_angle;
+	QAngle angles = luaL_testudata(state, -1, "Angle") ? luaL_checkangle(state, -1) : vec3_angle;
 	lua_pop(state, 1);
 	matrix3x4_t local, parent;
 	AngleMatrix(angles, position, local);

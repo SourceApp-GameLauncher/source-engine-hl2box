@@ -300,7 +300,7 @@ LUALIB_API int (luaopen_physenv) (lua_State *L);
 #define LUA_PREDICTIONLIBNAME			"prediction"
 LUALIB_API int (luaopen_prediction) (lua_State *L);
 
-#define LUA_QANGLELIBNAME				"QAngle"
+#define LUA_QANGLELIBNAME				"Angle"
 LUALIB_API int (luaopen_QAngle) (lua_State *L);
 
 #define LUA_RANDOMLIBNAME				"random"

@@ -966,6 +966,14 @@ bool CViewRender::ShouldDrawViewModel( bool bDrawViewmodel )
 	if ( !r_drawviewmodel.GetBool() )
 		return false;
 
+	// HL2SB: the reference game never draws a viewmodel for a dead local
+	// player.  Our death flow keeps the camera in a first-person position
+	// with no observer switch, so without this the viewmodel entity's last
+	// networked weapon model keeps rendering on the frozen death view.
+	C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( pLocalPlayer != NULL && !pLocalPlayer->IsAlive() )
+		return false;
+
 	if ( C_BasePlayer::ShouldDrawLocalPlayer() )
 		return false;
 
@@ -2084,10 +2092,7 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 				bFirstTime = false;
 				Msg( "This game has a minimum requirement of DirectX 8.0 to run properly.\n" );
 			}
-			if ( bNestedRenderView )
-			{
-				--s_nNestedRenderViewDepth;
-			}
+			--s_nNestedRenderViewDepth;
 			return;
 		}
 	}
@@ -2614,8 +2619,8 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 		m_CurrentView = savedCurrentView;
 		s_bCanAccessCurrentView = bSavedCanAccessCurrentView;
 		g_bRenderingView = bSavedRenderingView;
-		--s_nNestedRenderViewDepth;
 	}
+	--s_nNestedRenderViewDepth;
 }
 
 //-----------------------------------------------------------------------------

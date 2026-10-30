@@ -1278,6 +1278,18 @@ void ConVar_PrintFlags( const ConCommandBase *var )
 		any = true;
 	}
 
+	if ( var->IsFlagSet( 1 << 26 ) )
+	{
+		ConMsg( " lua_client" );
+		any = true;
+	}
+
+	if ( var->IsFlagSet( 1 << 27 ) )
+	{
+		ConMsg( " lua_server" );
+		any = true;
+	}
+
 	if ( any )
 	{
 		ConMsg( "\n" );

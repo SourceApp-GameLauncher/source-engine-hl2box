@@ -1337,7 +1337,7 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 		if ( lua_istable( L, -1 ) )
 		{
 			lua_getfield( L, -1, "viewangles" );
-			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) )
 				cmd->viewangles = luaL_checkangle( L, -1 );
 			lua_pop( L, 1 );
 
@@ -1364,6 +1364,14 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 		lua_pop( L, 1 );
 
 		luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
+	}
+	if ( L != NULL && vgui::surface()->IsCursorVisible() )
+	{
+		BEGIN_LUA_CALL_HOOK( "PreventScreenClicks" );
+		END_LUA_CALL_HOOK( 0, 1 );
+		const bool preventClicks = lua_toboolean( L, -1 ) != 0;
+		lua_pop( L, 1 );
+		if ( preventClicks ) cmd->buttons &= ~( IN_ATTACK | IN_ATTACK2 );
 	}
 #endif
 

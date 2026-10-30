@@ -14,6 +14,7 @@
 #include "luasrclib.h"
 #include "lvector.h"
 #include "mathlib.h"
+#include <stdio.h>
 // HL2SB: Angle:RotateAroundAxis needs MatrixBuildRotationAboutAxis( VMatrix&, ... ),
 // which is an inline in vmatrix.h (mathlib.h does not pull it in).
 #include "vmatrix.h"
@@ -36,7 +37,7 @@ LUA_API lua_Vector &lua_tovector (lua_State *L, int idx) {
 
 
 LUA_API lua_QAngle &lua_toangle (lua_State *L, int idx) {
-  lua_QAngle *v = (lua_QAngle *)luaL_checkudata(L, idx, "QAngle");
+  lua_QAngle *v = (lua_QAngle *)luaL_checkudata(L, idx, LUA_QANGLELIBNAME);
   return *v;
 }
 
@@ -58,7 +59,7 @@ LUA_API void lua_pushvector (lua_State *L, const lua_Vector &v) {
 LUA_API void lua_pushangle (lua_State *L, const lua_QAngle &v) {
   lua_QAngle *pVec = (lua_QAngle *)lua_newuserdata(L, sizeof(lua_QAngle));
   *pVec = v;
-  luaL_getmetatable(L, "QAngle");
+  luaL_getmetatable(L, LUA_QANGLELIBNAME);
   lua_setmetatable(L, -2);
 }
 
@@ -70,7 +71,7 @@ LUALIB_API lua_Vector &luaL_checkvector (lua_State *L, int narg) {
 
 
 LUALIB_API lua_QAngle &luaL_checkangle (lua_State *L, int narg) {
-  lua_QAngle *d = (lua_QAngle *)luaL_checkudata(L, narg, "QAngle");
+  lua_QAngle *d = (lua_QAngle *)luaL_checkudata(L, narg, LUA_QANGLELIBNAME);
   return *d;
 }
 
@@ -677,28 +678,81 @@ LUALIB_API int luaopen_Vector (lua_State *L) {
 }
 
 
-static int QAngle_Init (lua_State *L) {
-  luaL_checkangle(L, 1).Init(luaL_optnumber(L, 1, 0.0f), luaL_optnumber(L, 1, 0.0f), luaL_optnumber(L, 1, 0.0f));
+static int QAngle_Add (lua_State *L) {
+  luaL_checkangle(L, 1) += luaL_checkangle(L, 2);
   return 0;
 }
 
-static int QAngle_Invalidate (lua_State *L) {
-  luaL_checkangle(L, 1).Invalidate();
+static int QAngle_Sub (lua_State *L) {
+  luaL_checkangle(L, 1) -= luaL_checkangle(L, 2);
   return 0;
 }
 
-static int QAngle_IsValid (lua_State *L) {
-  lua_pushboolean(L, luaL_checkangle(L, 1).IsValid());
+static int QAngle_Mul (lua_State *L) {
+  luaL_checkangle(L, 1) *= luaL_checknumber(L, 2);
+  return 0;
+}
+
+static int QAngle_Div (lua_State *L) {
+  luaL_checkangle(L, 1) /= luaL_checknumber(L, 2);
+  return 0;
+}
+
+static int QAngle_IsEqualTol (lua_State *L) {
+  const QAngle &a = luaL_checkangle(L, 1);
+  const QAngle &b = luaL_checkangle(L, 2);
+  const float tolerance = (float)luaL_checknumber(L, 3);
+  lua_pushboolean(L, fabsf(a.x - b.x) <= tolerance && fabsf(a.y - b.y) <= tolerance && fabsf(a.z - b.z) <= tolerance);
   return 1;
 }
 
-static int QAngle_Length (lua_State *L) {
-  lua_pushnumber(L, luaL_checkangle(L, 1).Length());
+static int QAngle_Normalize (lua_State *L) {
+  QAngle &a = luaL_checkangle(L, 1);
+  a.x = AngleNormalize(a.x);
+  a.y = AngleNormalize(a.y);
+  a.z = AngleNormalize(a.z);
+  return 0;
+}
+
+static int QAngle_Zero (lua_State *L) {
+  luaL_checkangle(L, 1).Init(0.0f, 0.0f, 0.0f);
+  return 0;
+}
+
+static int QAngle_IsZero (lua_State *L) {
+  const QAngle &a = luaL_checkangle(L, 1);
+  lua_pushboolean(L, a.x == 0.0f && a.y == 0.0f && a.z == 0.0f);
   return 1;
 }
 
-static int QAngle_LengthSqr (lua_State *L) {
-  lua_pushnumber(L, luaL_checkangle(L, 1).LengthSqr());
+static int QAngle_Unpack (lua_State *L) {
+  const QAngle &a = luaL_checkangle(L, 1);
+  lua_pushnumber(L, a.x);
+  lua_pushnumber(L, a.y);
+  lua_pushnumber(L, a.z);
+  return 3;
+}
+
+static int QAngle_Random (lua_State *L) {
+  QAngle &a = luaL_checkangle(L, 1);
+  a.Random((vec_t)luaL_optnumber(L, 2, -360.0f), (vec_t)luaL_optnumber(L, 3, 360.0f));
+  return 0;
+}
+
+static int QAngle_SetUnpacked (lua_State *L) {
+  QAngle &a = luaL_checkangle(L, 1);
+  a.x = (vec_t)luaL_checknumber(L, 2);
+  a.y = (vec_t)luaL_checknumber(L, 3);
+  a.z = (vec_t)luaL_checknumber(L, 4);
+  return 0;
+}
+
+static int QAngle_ToTable (lua_State *L) {
+  const QAngle &a = luaL_checkangle(L, 1);
+  lua_createtable(L, 3, 0);
+  lua_pushnumber(L, a.x); lua_rawseti(L, -2, 1);
+  lua_pushnumber(L, a.y); lua_rawseti(L, -2, 2);
+  lua_pushnumber(L, a.z); lua_rawseti(L, -2, 3);
   return 1;
 }
 
@@ -715,11 +769,9 @@ static int QAngle_LengthSqr (lua_State *L) {
 */
 static bool QAngle_FieldToComponent (const char *field, int *out)
 {
-  // HL2SB GMod compat: case-insensitive -- gmod_camera's CalcView writes
-  // `angles.Roll` (capitalised), which strcmp silently dropped before.
-  if (Q_stricmp(field, "x") == 0 || Q_stricmp(field, "p") == 0 || Q_stricmp(field, "pitch") == 0) { *out = 0; return true; }
-  if (Q_stricmp(field, "y") == 0 || Q_stricmp(field, "yaw") == 0) { *out = 1; return true; }
-  if (Q_stricmp(field, "z") == 0 || Q_stricmp(field, "r") == 0 || Q_stricmp(field, "roll") == 0) { *out = 2; return true; }
+  if (field[0] == 'p' || field[0] == 'P' || field[0] == 'x' || field[0] == 'X') { *out = 0; return true; }
+  if (field[0] == 'y' || field[0] == 'Y') { *out = 1; return true; }
+  if (field[0] == 'r' || field[0] == 'R' || field[0] == 'z' || field[0] == 'Z') { *out = 2; return true; }
   return false;
 }
 
@@ -749,6 +801,15 @@ static int QAngle_Up (lua_State *L) {
 
 static int QAngle___index (lua_State *L) {
   QAngle v = luaL_checkangle(L, 1);
+
+  if (lua_getmetatable(L, 1)) {
+    lua_pushvalue(L, 2);
+    lua_rawget(L, -2);
+    if (!lua_isnil(L, -1))
+      return 1;
+    lua_pop(L, 2);
+  }
+
   int component = 0;
   bool bKnown = false;
   if (lua_type(L, 2) == LUA_TNUMBER) {
@@ -768,11 +829,8 @@ static int QAngle___index (lua_State *L) {
   }
   if (bKnown)
     lua_pushnumber(L, v[component]);
-  else {
-    lua_getmetatable(L, 1);
-    lua_pushvalue(L, 2);
-    lua_gettable(L, -2);
-  }
+  else
+    lua_pushnil(L);
   return 1;
 }
 
@@ -797,7 +855,10 @@ static int QAngle___newindex (lua_State *L) {
 }
 
 static int QAngle___tostring (lua_State *L) {
-  lua_pushfstring(L, VecToString( luaL_checkangle(L, 1) ));
+  const QAngle &a = luaL_checkangle(L, 1);
+  char text[128];
+  Q_snprintf(text, sizeof(text), "%.3f %.3f %.3f", a.x, a.y, a.z);
+  lua_pushstring(L, text);
   return 1;
 }
 
@@ -817,13 +878,7 @@ static int QAngle___sub (lua_State *L) {
 }
 
 static int QAngle___mul (lua_State *L) {
-  // HL2SB: both operand orders, like Vector___mul above.  `number * Angle` reaches this
-  // metamethod with the NUMBER first (cod_c4 throws its charge with
-  // `angvel:Rotate( -1 * ent:EyeAngles() )`, addons/cod_c4/lua/weapons/seal6-c4/shared.lua:244),
-  // and the one-order-only version answered
-  //     bad argument #1 to 'mul' (QAngle expected, got number)
-  // which aborted the throw timer before the charge was registered in Owner.C4s.
-  if (lua_isnumber(L, 1))
+  if (lua_type(L, 1) == LUA_TNUMBER)
     lua_pushangle(L, luaL_checknumber(L, 1) * luaL_checkangle(L, 2));
   else
     lua_pushangle(L, luaL_checkangle(L, 1) * luaL_checknumber(L, 2));
@@ -831,7 +886,10 @@ static int QAngle___mul (lua_State *L) {
 }
 
 static int QAngle___div (lua_State *L) {
-  lua_pushangle(L, luaL_checkangle(L, 1) / luaL_checknumber(L, 2));
+  if (lua_type(L, 1) == LUA_TNUMBER)
+    lua_pushangle(L, (1.0f / (float)luaL_checknumber(L, 1)) * luaL_checkangle(L, 2));
+  else
+    lua_pushangle(L, luaL_checkangle(L, 1) / luaL_checknumber(L, 2));
   return 1;
 }
 
@@ -874,16 +932,23 @@ static int QAngle_RotateAroundAxis (lua_State *L) {
 
 
 static const luaL_Reg QAnglemeta[] = {
-  {"Init", QAngle_Init},
-  {"Invalidate", QAngle_Invalidate},
-  {"IsValid", QAngle_IsValid},
-  {"Length", QAngle_Length},
-  {"LengthSqr", QAngle_LengthSqr},
+  {"Add", QAngle_Add},
+  {"Sub", QAngle_Sub},
+  {"Mul", QAngle_Mul},
+  {"Div", QAngle_Div},
+  {"IsEqualTol", QAngle_IsEqualTol},
   // HL2SB: GMod's Angle direction helpers.
   {"Forward", QAngle_Forward},
   {"Right", QAngle_Right},
   {"Up", QAngle_Up},
   {"RotateAroundAxis", QAngle_RotateAroundAxis},
+  {"Normalize", QAngle_Normalize},
+  {"Zero", QAngle_Zero},
+  {"IsZero", QAngle_IsZero},
+  {"Unpack", QAngle_Unpack},
+  {"Random", QAngle_Random},
+  {"SetUnpacked", QAngle_SetUnpacked},
+  {"ToTable", QAngle_ToTable},
   {"__index", QAngle___index},
   {"__newindex", QAngle___newindex},
   {"__tostring", QAngle___tostring},
@@ -898,17 +963,36 @@ static const luaL_Reg QAnglemeta[] = {
 
 
 static int luasrc_QAngle (lua_State *L) {
-  if ( lua_gettop( L ) >= 1 && lua_isuserdata( L, 1 ) )
-  {
-    void *pAngle = luaL_testudata( L, 1, "QAngle" );
-    if ( pAngle != NULL )
-    {
-      lua_pushangle( L, *(QAngle *)pAngle );
+  const int nArgs = lua_gettop(L);
+  const int firstType = lua_type(L, 1);
+  QAngle value(0.0f, 0.0f, 0.0f);
+  bool parsedString = false;
+
+  if (firstType == LUA_TSTRING) {
+    float pitch, yaw, roll;
+    const char *text = lua_tostring(L, 1);
+    if (text && sscanf(text, "%f %f %f", &pitch, &yaw, &roll) == 3) {
+      value.Init(pitch, yaw, roll);
+      parsedString = true;
+    }
+  }
+
+  if (nArgs > 0 && firstType == LUA_TUSERDATA) {
+    QAngle *source = (QAngle *)luaL_testudata(L, 1, LUA_QANGLELIBNAME);
+    if (source) {
+      value = *source;
+      lua_pushangle(L, value);
       return 1;
     }
   }
 
-  lua_pushangle(L, QAngle((vec_t)luaL_optnumber(L, 1, 0.0f), (vec_t)luaL_optnumber(L, 2, 0.0f), (vec_t)luaL_optnumber(L, 3, 0.0f)));
+  if (!parsedString && (firstType == LUA_TNUMBER || firstType == LUA_TSTRING)) {
+    value.x = (vec_t)lua_tonumber(L, 1);
+    value.y = (vec_t)lua_tonumber(L, 2);
+    value.z = (vec_t)lua_tonumber(L, 3);
+  }
+
+  lua_pushangle(L, value);
   return 1;
 }
 
@@ -926,7 +1010,6 @@ static const luaL_Reg QAnglemeta_extra[] = {
 };
 
 static const luaL_Reg QAngle_funcs[] = {
-  {"QAngle", luasrc_QAngle},
   {"Angle", luasrc_QAngle},
   {NULL, NULL}
 };
@@ -939,13 +1022,10 @@ LUALIB_API int luaopen_QAngle (lua_State *L) {
   luaL_newmetatable(L, LUA_QANGLELIBNAME);
   luaL_register(L, NULL, QAnglemeta);
   luaL_register(L, NULL, QAnglemeta_extra);
-  lua_pushstring(L, "angle");
-  lua_setfield(L, -2, "__type");  /* metatable.__type = "angle" */
+  lua_pushstring(L, "Angle");
+  lua_setfield(L, -2, "__type");  /* metatable.__type = "Angle" */
   luaL_register(L, "_G", QAngle_funcs);
   lua_pop(L, 1);
-  QAngle v = vec3_angle;
-  lua_pushangle(L, v);
-  lua_setglobal(L, "vec3_angle");  /* set global vec3_angle */
   return 1;
 }
 

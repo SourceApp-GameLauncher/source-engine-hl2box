@@ -74,7 +74,11 @@ LUA_BINDING_BEGIN( Entities, CreateByName, "library", "Creates an entity by the 
         // minecraft_block's PhysicsInit fail with no model set yet.
         pScripted->InitScriptedEntity( false );
 
-        DispatchSpawn( pEntity );
+        // GMod ents.Create returns an unspawned entity.  Initialize and the
+        // engine spawn lifecycle run only after the script calls ent:Spawn().
+        // Dispatching here changes the order for every SENT and breaks code
+        // that sets the model, parent or network values between Create and
+        // Spawn.
     }
     else if ( pEntity != NULL )
     {

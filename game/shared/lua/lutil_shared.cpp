@@ -940,11 +940,8 @@ static int luasrc_util_GetModelInfo (lua_State *L) {
 **
 ** GMod's util.Effect is the script-facing way to run an effect by name:
 **
-**   * on the CLIENT it runs a scripted effect (lua/effects/<name>.lua) right
-**     there.  DispatchEffect() is NOT the way to get there from a predicted
-**     weapon: CTempEnts::SuppressTE() removes the predicting player from the
-**     filter and drops the whole temp entity, so nothing would render (see
-**     AGENTS.md 5.3.1 -- the same trap the env_explosion fireball hit).
+**   * on the CLIENT it dispatches directly to Lua or native effects without
+**     entering the predicted temporary-entity path.
 **   * on the SERVER it dispatches the effect as a temp entity, which is how a
 **     non-predicted shooter (an NPC, a scripted entity) gets the effect onto
 **     every client's screen.
@@ -974,18 +971,20 @@ static int luasrc_UTIL_PixelVisible(lua_State *L) {
 }
 #endif
 
+#ifdef CLIENT_DLL
+void HL2SB_DispatchLocalEffect( const char *name, const CEffectData &data, bool allowOverride );
+#endif
+
 static int luasrc_UTIL_Effect (lua_State *L) {
   const char *pszName = luaL_checkstring(L, 1);
   CEffectData data = luaL_checkeffect(L, 2);
   int bAllowOverride = luaL_optboolean(L, 3, 1);
 
 #ifdef CLIENT_DLL
-  if ( bAllowOverride && HL2SB_CreateLuaEffect( pszName, data ) ) {
-    return 0;
-  }
-#endif
-
+  HL2SB_DispatchLocalEffect( pszName, data, bAllowOverride != 0 );
+#else
   DispatchEffect( pszName, data );
+#endif
   return 0;
 }
 
@@ -1377,7 +1376,7 @@ static void JSON_EmitValue( lua_State *L, int idx, CUtlString &out, bool pretty,
 			luaL_getmetatable( L, "Vector" );
 			const bool bIsVector = lua_rawequal( L, -1, i ) != 0;
 			lua_pop( L, 1 );
-			luaL_getmetatable( L, "QAngle" );
+			luaL_getmetatable( L, "Angle" );
 			const bool bIsAngle = lua_rawequal( L, -1, i ) != 0;
 			lua_pop( L, 1 );
 

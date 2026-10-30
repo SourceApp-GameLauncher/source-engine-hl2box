@@ -452,7 +452,7 @@ void CBaseViewModel::CalcViewModelView( CBasePlayer *owner, const Vector& eyePos
 		{
 			if ( lua_isuserdata( L, -2 ) && luaL_checkudata( L, -2, "Vector" ) )
 				vmorigin = luaL_checkvector( L, -2 );
-			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) )
 				vmangles = luaL_checkangle( L, -1 );
 		}
 		if ( nRet > 0 )

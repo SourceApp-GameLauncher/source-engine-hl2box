@@ -1263,8 +1263,9 @@ void ClientModeShared::Enable()
 		// rendered.
 		if ( m_pClientLuaPanel )
 		{
-			m_pClientLuaPanel->SetParent( pRoot );
-			m_pClientLuaPanel->SetZPos( 2 );
+			// GMod's world root sits above engine tools and below GameUI.
+			m_pClientLuaPanel->SetParent( enginevgui->GetPanel( PANEL_ROOT ) );
+			m_pClientLuaPanel->SetZPos( 90 );
 		}
 #endif
 	}

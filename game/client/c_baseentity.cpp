@@ -1792,41 +1792,43 @@ int C_BaseEntity::GetSoundSourceIndex() const
 //-----------------------------------------------------------------------------
 const Vector& C_BaseEntity::GetRenderOrigin( void )
 {
-#if 0
-	if ( m_nTableReference != LUA_NOREF )
+	if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
 	{
 		lua_getref( L, m_nTableReference );
-		lua_getfield( L, -1, "m_vecRenderOrigin" );
-		lua_remove( L, -2 );
-		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Vector" ) != NULL )
+		if ( lua_istable( L, -1 ) )
 		{
-			const Vector& res = luaL_checkvector( L, -1 );
+			lua_getfield( L, -1, "m_RenderOrigin" );
+			if ( luaL_testudata( L, -1, "Vector" ) != NULL )
+			{
+				const Vector& res = luaL_checkvector( L, -1 );
+				lua_pop( L, 2 );
+				return res;
+			}
 			lua_pop( L, 1 );
-			return res;
 		}
 		lua_pop( L, 1 );
 	}
-#endif	
 	return GetAbsOrigin();
 }
 
 const QAngle& C_BaseEntity::GetRenderAngles( void )
 {
-#if 0
-	if ( m_nTableReference != LUA_NOREF )
+	if ( L != NULL && m_nTableReference >= 0 && lua_isrefvalid( L, m_nTableReference ) )
 	{
 		lua_getref( L, m_nTableReference );
-		lua_getfield( L, -1, "m_angRenderAngles" );
-		lua_remove( L, -2 );
-		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) != NULL )
+		if ( lua_istable( L, -1 ) )
 		{
-			const QAngle& res = luaL_checkangle( L, -1 );
+			lua_getfield( L, -1, "m_RenderAngles" );
+			if ( luaL_testudata( L, -1, "Angle" ) != NULL )
+			{
+				const QAngle& res = luaL_checkangle( L, -1 );
+				lua_pop( L, 2 );
+				return res;
+			}
 			lua_pop( L, 1 );
-			return res;
 		}
 		lua_pop( L, 1 );
 	}
-#endif	
 	return GetAbsAngles();
 }
 

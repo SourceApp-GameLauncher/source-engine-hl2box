@@ -3827,7 +3827,7 @@ int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszH
 			CUserCmd *pMutCmd = ( pCmd != &fallbackCmd ) ? const_cast< CUserCmd * >( pCmd ) : NULL;
 
 			lua_getfield( L, -1, "viewangles" );
-			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+			if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) )
 			{
 				const QAngle ang = luaL_checkangle( L, -1 );
 				if ( pMutCmd != NULL )
@@ -3906,7 +3906,7 @@ void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd )
 		lua_pop( L, 1 );
 
 		lua_getfield( L, -1, "viewangles" );
-		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "QAngle" ) )
+		if ( lua_isuserdata( L, -1 ) && luaL_checkudata( L, -1, "Angle" ) )
 			pCmd->viewangles = luaL_checkangle( L, -1 );
 		lua_pop( L, 1 );
 
