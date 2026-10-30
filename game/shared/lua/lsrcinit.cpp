@@ -274,7 +274,7 @@ static int lua_game_GetWorld( lua_State *state )
 #ifdef CLIENT_DLL
   lua_pushentity(state, cl_entitylist->GetEnt(0));
 #else
-  lua_pushentity(state, UTIL_EntityByIndex(0));
+  lua_pushentity(state, CBaseEntity::Instance(0));
 #endif
   return 1;
 }
