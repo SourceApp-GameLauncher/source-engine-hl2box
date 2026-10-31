@@ -970,8 +970,14 @@ bool CViewRender::ShouldDrawViewModel( bool bDrawViewmodel )
 	// player.  Our death flow keeps the camera in a first-person position
 	// with no observer switch, so without this the viewmodel entity's last
 	// networked weapon model keeps rendering on the frozen death view.
+	//
+	// The death signal must be the networked health: the local player's
+	// m_lifeState does not land on the client in this build (CBaseEntity::
+	// IsAlive() keeps answering true after death, while the Lua realm's
+	// player resource correctly reports the death), so an alive-check built
+	// on it never fires.
 	C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-	if ( pLocalPlayer != NULL && !pLocalPlayer->IsAlive() )
+	if ( pLocalPlayer != NULL && pLocalPlayer->GetHealth() <= 0 )
 		return false;
 
 	if ( C_BasePlayer::ShouldDrawLocalPlayer() )

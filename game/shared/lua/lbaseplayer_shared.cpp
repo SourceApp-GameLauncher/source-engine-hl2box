@@ -202,7 +202,7 @@ static int CBasePlayer_CmdKeyDown (lua_State *L) {
   const int nButtons = lua_tointeger(L, -1);
   lua_pop(L, 1);
 
-  lua_pushboolean(L, (nButtons & luaL_checkint(L, 2)) != 0);
+  lua_pushboolean(L, (nButtons & (int)luaL_checknumber(L, 2)) != 0);
   return 1;
 }
 
@@ -222,13 +222,21 @@ static int CBasePlayer_CmdGetMouseX (lua_State *L) { lua_getfield(L, 1, "mousedx
 static int CBasePlayer_CmdGetMouseY (lua_State *L) { lua_getfield(L, 1, "mousedy"); return 1; }
 static int CBasePlayer_CmdGetButtons (lua_State *L) { lua_getfield(L, 1, "buttons"); return 1; }
 static int CBasePlayer_CmdGetImpulse (lua_State *L) { lua_getfield(L, 1, "impulse"); return 1; }
-static int CBasePlayer_CmdGetViewAngles (lua_State *L) { lua_getfield(L, 1, "viewangles"); return 1; }
+static int CBasePlayer_CmdGetViewAngles (lua_State *L) {
+  lua_getfield(L, 1, "viewangles");
+  const QAngle angles = luaL_checkangle(L, -1);
+  lua_pop(L, 1);
+  lua_pushangle(L, angles);
+  return 1;
+}
 static int CBasePlayer_CmdGetForwardMove (lua_State *L) { lua_getfield(L, 1, "forwardmove"); return 1; }
 static int CBasePlayer_CmdGetSideMove (lua_State *L) { lua_getfield(L, 1, "sidemove"); return 1; }
 static int CBasePlayer_CmdGetUpMove (lua_State *L) { lua_getfield(L, 1, "upmove"); return 1; }
 
 static int CBasePlayer_CmdSetViewAngles (lua_State *L) {
-  lua_setfield(L, 1, "viewangles");		// command table, angle
+  const QAngle angles = luaL_checkangle(L, 2);
+  lua_pushangle(L, angles);
+  lua_setfield(L, 1, "viewangles");
   return 0;
 }
 
@@ -276,7 +284,7 @@ static int CBasePlayer_CmdAddKey (lua_State *L) {
   lua_getfield(L, 1, "buttons");
   const int nButtons = lua_tointeger(L, -1);
   lua_pop(L, 1);
-  lua_pushinteger(L, nButtons | luaL_checkint(L, 2));
+  lua_pushinteger(L, nButtons | (int)luaL_checknumber(L, 2));
   lua_setfield(L, 1, "buttons");
   return 0;
 }
