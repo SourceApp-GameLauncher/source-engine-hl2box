@@ -1283,6 +1283,11 @@ static int lua_game_SinglePlayer (lua_State *L) {
   return 1;
 }
 
+static int lua_global_RealTime (lua_State *L) {
+  lua_pushnumber( L, gpGlobals ? gpGlobals->realtime : 0.0f );
+  return 1;
+}
+
 static int lua_game_MaxPlayers (lua_State *L) {
   lua_pushinteger( L, gpGlobals->maxClients );
   return 1;
@@ -3984,6 +3989,7 @@ static void HL2SB_RegisterGlobalValues(lua_State *L) {
 
 LUALIB_API void luasrc_openlibs (lua_State *L) {
   HL2SB_RefreshGameContentPaths();
+  lua_pushcfunction( L, lua_global_RealTime ); lua_setglobal( L, "RealTime" );
   const luaL_Reg *lib = luasrclibs;
   for (; lib->func; lib++) {
     // HL2SB (2026-09-21): log the module name FIRST so a failure names its
