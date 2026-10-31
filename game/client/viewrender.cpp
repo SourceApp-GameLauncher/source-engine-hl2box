@@ -966,14 +966,6 @@ bool CViewRender::ShouldDrawViewModel( bool bDrawViewmodel )
 	if ( !r_drawviewmodel.GetBool() )
 		return false;
 
-	// HL2SB: the reference game never draws a viewmodel for a dead local
-	// player.  Our death flow keeps the camera in a first-person position
-	// with no observer switch, so without this the viewmodel entity's last
-	// networked weapon model keeps rendering on the frozen death view.
-	C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-	if ( pLocalPlayer != NULL && !pLocalPlayer->IsAlive() )
-		return false;
-
 	if ( C_BasePlayer::ShouldDrawLocalPlayer() )
 		return false;
 
@@ -1064,49 +1056,6 @@ void CViewRender::DrawViewModels( const CViewSetup &view, bool drawViewmodel )
 		{
 			BEGIN_LUA_CALL_HOOK( "PreDrawViewModels" );
 			END_LUA_CALL_HOOK( 0, 0 );
-		}
-	}
-#endif
-
-	// HL2SB (2026-09-27): GMod contract -- the engine dispatches the GAMEMODE
-	// hook "PreDrawViewModel"( vm, ply, wep, flags ); GM:PreDrawViewModel
-	// (deathmatch cl_init) forwards to the SWEP method.  Literal true
-	// suppresses the viewmodel this frame, and per the wiki
-	// PostDrawViewModel/ViewModelDrawn are then NOT called either.
-	// HL2SB (2026-10-16): GMod dispatches this from the view model's own draw
-	// routine, gated on the viewmodel's weapon entity being resolvable and on
-	// a live local player, so the hook does not fire at all while no weapon
-	// is held and Lua never receives a nil weapon.  There is no
-	// draw-local-player gate on their side either (the hook fires whenever
-	// the viewmodel draw runs with STUDIO_RENDER), so ours is gone too.
-	bool bSuppressPostVMHooks = false;
-#if defined( LUA_SDK )
-	{
-		C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-		if ( bShouldDrawPlayerViewModel && pLocalPlayer != NULL )
-		{
-			CBaseCombatWeapon *pWep = pLocalPlayer->GetActiveWeapon();
-			C_BaseViewModel *pVM = pLocalPlayer->GetViewModel( 0 );
-			if ( pVM != NULL && pWep != NULL )
-			{
-				BEGIN_LUA_CALL_HOOK( "PreDrawViewModel" );
-					lua_pushentity( L, pVM );
-					lua_pushplayer( L, pLocalPlayer );
-					lua_pushweapon( L, pWep );
-					lua_pushinteger( L, STUDIO_RENDER );
-				END_LUA_CALL_HOOK( 4, 1 );
-
-				if ( lua_gettop( L ) > 0 )
-				{
-					bool bSuppress = lua_isboolean( L, -1 ) && lua_toboolean( L, -1 ) != 0;
-					lua_pop( L, 1 );
-					if ( bSuppress )
-					{
-						bShouldDrawPlayerViewModel = false;
-						bSuppressPostVMHooks = true;
-					}
-				}
-			}
 		}
 	}
 #endif
@@ -1202,67 +1151,6 @@ void CViewRender::DrawViewModels( const CViewSetup &view, bool drawViewmodel )
 		DrawRenderablesInList( opaqueViewModelList );
 		DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
 	}
-
-	// HL2SB (2026-09-27): GMod contract -- straight after the view model has
-	// been drawn, still inside the 3D view + depth hack.  The engine dispatches
-	// the GAMEMODE hooks (by ID there; the names live only in lua_shared).
-	// GM:PostDrawViewModel (deathmatch cl_init) draws the gmod_hands entity and
-	// forwards to the SWEP method, so the old direct SWEP-only dispatch is gone.
-	// ViewModelDrawn keeps both the hook and the direct SWEP call (GMod's
-	// SWEP:ViewModelDrawn( vm ) is documented and its base defines it).
-	// Neither runs when PreDrawViewModel suppressed the draw.
-	// HL2SB (2026-10-16): GMod gates the PostDrawViewModel dispatch itself on
-	// the viewmodel's weapon entity being resolvable, so the hook stays silent
-	// while no weapon is held instead of handing Lua a nil weapon (their base
-	// gamemode indexes wep unconditionally).
-#if defined( LUA_SDK )
-	if ( !bSuppressPostVMHooks )
-	{
-		C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
-		if ( pLocalPlayer != NULL )
-		{
-			CBaseCombatWeapon *pWep = pLocalPlayer->GetActiveWeapon();
-			C_BaseViewModel *pVM = pLocalPlayer->GetViewModel( 0 );
-			bool bDrewPlayerVM = bShouldDrawPlayerViewModel && pVM != NULL;
-			if ( bDrewPlayerVM && pVM->ShouldDraw() )
-			{
-				BEGIN_LUA_CALL_HOOK( "ViewModelDrawn" );
-					lua_pushentity( L, pVM );
-				END_LUA_CALL_HOOK( 1, 0 );
-
-				// GMod fires the weapon's RenderScreen callback from this same
-				// viewmodel draw path - the engine's weapon callback name table
-				// carries "RenderScreen" next to ViewModelDrawn, so the reference
-				// dispatches it by id and no name string appears in its client.dll.
-				// The toolgun paints its scrolling tool name into the screen render
-				// target from there (weapons/gmod_tool/cl_viewscreen.lua).
-				if ( pWep != NULL && pWep->IsScripted() )
-				{
-					BEGIN_LUA_CALL_WEAPON_HOOK( "RenderScreen", pWep );
-					END_LUA_CALL_WEAPON_HOOK( 0, 0 );
-				}
-
-				if ( pWep != NULL && pWep->IsScripted() )
-				{
-					BEGIN_LUA_CALL_WEAPON_HOOK( "ViewModelDrawn", pWep );
-						lua_pushentity( L, pVM );
-						lua_pushinteger( L, STUDIO_RENDER );
-					END_LUA_CALL_WEAPON_HOOK( 2, 0 );
-				}
-
-				if ( pWep != NULL )
-				{
-					BEGIN_LUA_CALL_HOOK( "PostDrawViewModel" );
-						lua_pushentity( L, pVM );
-						lua_pushplayer( L, pLocalPlayer );
-						lua_pushweapon( L, pWep );
-						lua_pushinteger( L, STUDIO_RENDER );
-					END_LUA_CALL_HOOK( 4, 0 );
-				}
-			}
-		}
-	}
-#endif
 
 	// Reset the depth range to the original values
 	if( bUseDepthHack )

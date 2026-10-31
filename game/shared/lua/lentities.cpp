@@ -751,6 +751,8 @@ LUA_BINDING_BEGIN( Entities, FindInBox, "library", "Finds all entities whose bou
 {
 	Vector mins = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "mins" );
 	Vector maxs = LUA_BINDING_ARGUMENT( luaL_checkvector, 2, "maxs" );
+	for ( int axis = 0; axis < 3; ++axis )
+		if ( mins[axis] > maxs[axis] ) { float temp = mins[axis]; mins[axis] = maxs[axis]; maxs[axis] = temp; }
 
 	lua_newtable( L );
 
@@ -761,24 +763,7 @@ LUA_BINDING_BEGIN( Entities, FindInBox, "library", "Finds all entities whose bou
 	// size above and below, which is exactly that case, so stacked blocks
 	// passed the overlap test and could be placed inside each other.
 	int i = 0;
-#ifdef CLIENT_DLL
-	CBaseEntity *pEnt = NULL;
-	while ( ( pEnt = ClientEntityList().NextBaseEntity( pEnt ) ) != NULL )
-	{
-		Vector vecEntMin, vecEntMax;
-		pEnt->CollisionProp()->WorldSpaceAABB( &vecEntMin, &vecEntMax );
-		if ( vecEntMin.x > maxs.x || vecEntMax.x < mins.x )
-			continue;
-		if ( vecEntMin.y > maxs.y || vecEntMax.y < mins.y )
-			continue;
-		if ( vecEntMin.z > maxs.z || vecEntMax.z < mins.z )
-			continue;
-		lua_pushinteger( L, ++i );
-		CBaseEntity::PushLuaInstanceSafe( L, pEnt );
-		lua_settable( L, -3 );
-	}
-#else
-	CBaseEntity *pList[1024];
+	CBaseEntity *pList[8192];
 	int count = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), mins, maxs, 0 );
 	for ( int k = 0; k < count; ++k )
 	{
@@ -788,11 +773,36 @@ LUA_BINDING_BEGIN( Entities, FindInBox, "library", "Finds all entities whose bou
 		CBaseEntity::PushLuaInstanceSafe( L, pList[ k ] );
 		lua_settable( L, -3 );
 	}
-#endif
 
 	return 1;
 }
 LUA_BINDING_END( "table", "A table of every entity whose bounding box intersects the box." )
+
+LUA_BINDING_BEGIN( Entities, FindInCone, "library", "Finds entities in a cone" )
+{
+	const Vector origin = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "origin" );
+	const Vector direction = LUA_BINDING_ARGUMENT( luaL_checkvector, 2, "direction" );
+	const float distance = (float)luaL_checknumber( L, 3 );
+	const float cosine = (float)luaL_checknumber( L, 4 );
+	const Vector extent( distance + 1.0f, distance + 1.0f, distance + 1.0f );
+	CBaseEntity *pList[8192];
+	int count = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), origin - extent, origin + extent, 0 );
+	lua_newtable( L );
+	int index = 0;
+	for ( int k = 0; k < count; ++k )
+	{
+		CBaseEntity *entity = pList[k];
+		if ( !entity ) continue;
+		Vector offset = entity->WorldSpaceCenter() - origin;
+		VectorNormalize( offset );
+		if ( DotProduct( direction, offset ) <= cosine ) continue;
+		lua_pushinteger( L, ++index );
+		CBaseEntity::PushLuaInstanceSafe( L, entity );
+		lua_settable( L, -3 );
+	}
+	return 1;
+}
+LUA_BINDING_END( "table", "Entities whose centers are inside the cone." )
 
 LUA_BINDING_BEGIN( Entities, NextInList, "library", "Gets the next entity in the list" )
 {

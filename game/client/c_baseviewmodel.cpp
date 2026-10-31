@@ -20,6 +20,8 @@
 #include "hltvcamera.h"
 #include "luamanager.h"	// HL2SB: sound.Add script lookup in FireEvent below
 #include "lbaseentity_shared.h"	// HL2SB: lua_pushentity (OnViewModelChanged hook dispatch)
+#include "lbaseplayer_shared.h"
+#include "lbasecombatweapon_shared.h"
 
 #if defined( REPLAY_ENABLED )
 #include "replay/replaycamera.h"
@@ -435,6 +437,15 @@ int C_BaseViewModel::DrawModel( int flags )
 	if ( !m_bReadyToDraw )
 		return 0;
 
+	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
+	C_BaseCombatWeapon *pWeapon = GetOwningWeapon();
+	if ( pWeapon == NULL )
+	{
+		CStudioHdr *pHdr = GetModelPtr();
+		if ( pHdr == NULL || Q_stricmp( pHdr->pszName(), "weapons/v_hands.mdl" ) != 0 )
+			return 0;
+	}
+
 	// HL2SB diagnostic (hl2sb_anim_debug): viewmodels reach DrawModel for
 	// remote owners too - once a second print owner/parent/positions and the
 	// played sequence, to split a detached viewmodel (weapon model lying in
@@ -485,8 +496,25 @@ int C_BaseViewModel::DrawModel( int flags )
 		render->SetColorModulation(	color );
 	}
 		
-	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
-	C_BaseCombatWeapon *pWeapon = GetOwningWeapon();
+#if defined( LUA_SDK )
+	if ( ( flags & STUDIO_RENDER ) && L != NULL && pPlayer != NULL && pWeapon != NULL )
+	{
+		const int top = lua_gettop( L );
+		BEGIN_LUA_CALL_HOOK( "PreDrawViewModel" );
+			lua_pushentity( L, this );
+			lua_pushplayer( L, pPlayer );
+			lua_pushweapon( L, pWeapon );
+			lua_pushinteger( L, flags );
+		END_LUA_CALL_HOOK( 4, 1 );
+		const bool suppress = lua_isboolean( L, -1 ) && lua_toboolean( L, -1 ) != 0;
+		lua_settop( L, top );
+		if ( suppress )
+			return 0;
+	}
+#endif
+
+	// Hooks and the draw use the weapon belonging to this viewmodel.
+	pWeapon = GetOwningWeapon();
 	int ret;
 	// If the local player's overriding the viewmodel rendering, let him do it
 	if ( pPlayer && pPlayer->IsOverridingViewmodel() )
@@ -510,10 +538,33 @@ int C_BaseViewModel::DrawModel( int flags )
 			m_nOldAnimationParity = m_nAnimationParity;
 		}
 		// Tell the weapon itself that we've rendered, in case it wants to do something
+		pWeapon = GetOwningWeapon();
 		if ( pWeapon )
 		{
+#if defined( LUA_SDK )
+			if ( L != NULL && pWeapon->IsScripted() )
+			{
+				BEGIN_LUA_CALL_WEAPON_HOOK( "RenderScreen", pWeapon );
+				END_LUA_CALL_WEAPON_HOOK( 0, 0 );
+			}
+#endif
 			pWeapon->ViewModelDrawn( this );
 		}
+
+#if defined( LUA_SDK )
+		pWeapon = GetOwningWeapon();
+		if ( L != NULL && pPlayer != NULL && pWeapon != NULL )
+		{
+			const int postFlags = ( flags & ( STUDIO_SHADOWDEPTHTEXTURE | STUDIO_SSAODEPTHTEXTURE ) )
+				? flags & ~STUDIO_TRANSPARENCY : flags | STUDIO_TRANSPARENCY;
+			BEGIN_LUA_CALL_HOOK( "PostDrawViewModel" );
+				lua_pushentity( L, this );
+				lua_pushplayer( L, pPlayer );
+				lua_pushweapon( L, pWeapon );
+				lua_pushinteger( L, postFlags );
+			END_LUA_CALL_HOOK( 4, 0 );
+		}
+#endif
 	}
 
 	// HL2SB: return the value BaseClass::DrawModel computed above. This was

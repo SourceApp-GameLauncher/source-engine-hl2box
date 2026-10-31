@@ -4117,6 +4117,16 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
   /* ...and the library tables themselves can be reachable under GMod's names. */
   luasrc_install_lib_aliases(L);
 
+#ifdef CLIENT_DLL
+  lua_getglobal(L, "render");
+  if (lua_istable(L, -1)) {
+    lua_getfield(L, -1, "DynamicLight");
+    if (lua_isfunction(L, -1)) lua_setglobal(L, "DynamicLight");
+    else lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+#endif
+
   lua_pushcfunction(L, HL2SB_UILoadPresets); lua_setglobal(L, "LoadPresets");
   lua_pushcfunction(L, HL2SB_UISavePresets); lua_setglobal(L, "SavePresets");
   lua_newtable(L);
