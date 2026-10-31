@@ -16,6 +16,7 @@
 #include "takedamageinfo.h"
 #include "luamanager.h"
 #include "luasrclib.h"
+#include "gamestringpool.h"
 #include "lbaseentity_shared.h"
 #include "basescripted.h"
 #include "mathlib/vmatrix.h"	// HL2SB: VMatrix for the transform matrix getters
@@ -3010,7 +3011,7 @@ static int CBaseEntity_SetModelIndex (lua_State *L) {
 }
 
 static int CBaseEntity_SetModelName (lua_State *L) {
-  string_t name = *(string_t *)luaL_checkstring(L, 2);
+  string_t name = AllocPooledString( luaL_checkstring( L, 2 ) );
   luaL_checkentity(L, 1)->SetModelName(name);
   return 0;
 }
