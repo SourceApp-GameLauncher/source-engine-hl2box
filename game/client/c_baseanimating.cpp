@@ -5046,14 +5046,33 @@ C_BaseAnimating *C_BaseAnimating::BecomeRagdollOnClient()
 {
 	MoveToLastReceivedPosition( true );
 	GetAbsOrigin();
+	const bool bWasNoDraw = IsEffectActive( EF_NODRAW );
+	const bool bWasBuiltRagdoll = m_builtRagdoll;
 	C_BaseAnimating *pRagdoll = CreateRagdollCopy();
+	if ( !pRagdoll )
+		return NULL;
 
 	matrix3x4_t boneDelta0[MAXSTUDIOBONES];
 	matrix3x4_t boneDelta1[MAXSTUDIOBONES];
 	matrix3x4_t currentBones[MAXSTUDIOBONES];
 	const float boneDt = 0.1f;
 	GetRagdollInitBoneArrays( boneDelta0, boneDelta1, currentBones, boneDt );
-	pRagdoll->InitAsClientRagdoll( boneDelta0, boneDelta1, currentBones, boneDt );
+	if ( !pRagdoll->InitAsClientRagdoll( boneDelta0, boneDelta1, currentBones, boneDt ) )
+	{
+		pRagdoll->Release();
+		m_builtRagdoll = bWasBuiltRagdoll;
+		if ( !bWasNoDraw ) RemoveEffects( EF_NODRAW );
+		return NULL;
+	}
+#if defined( LUA_SDK )
+	if ( L != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "CreateClientsideRagdoll" );
+			lua_pushentity( L, this );
+			lua_pushentity( L, pRagdoll );
+		END_LUA_CALL_HOOK( 2, 0 );
+	}
+#endif
 	return pRagdoll;
 }
 

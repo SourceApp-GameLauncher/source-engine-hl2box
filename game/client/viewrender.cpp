@@ -3261,6 +3261,14 @@ bool CViewRender::DrawOneMonitor( ITexture *pRenderTarget, int cameraNum, C_Poin
 
 void CViewRender::DrawMonitors( const CViewSetup &cameraView )
 {
+#if defined ( LUA_SDK )
+	if ( L != NULL && engine->IsInGame() )
+	{
+		BEGIN_LUA_CALL_HOOK( "DrawMonitors" );
+		END_LUA_CALL_HOOK( 0, 0 );
+	}
+#endif
+
 #ifdef PORTAL
 	g_pPortalRender->DrawPortalsToTextures( this, cameraView );
 #endif
@@ -4984,6 +4992,18 @@ sky3dparams_t *CSkyboxView::PreRender3dSkyboxWorld( SkyboxVisibility_t nSkyboxVi
 //-----------------------------------------------------------------------------
 void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostRender, ITexture *pRenderTarget, ITexture *pDepthTarget )
 {
+#if defined ( LUA_SDK )
+	if ( L != NULL && engine->IsInGame() )
+	{
+		BEGIN_LUA_CALL_HOOK( "PreDrawSkyBox" );
+		END_LUA_CALL_HOOK( 0, 1 );
+		const bool bSkipSkybox = lua_toboolean( L, -1 ) != 0;
+		lua_pop( L, 1 );
+		if ( bSkipSkybox )
+			return;
+	}
+#endif
+
 	unsigned char **areabits = render->GetAreaBits();
 	unsigned char *savebits;
 	unsigned char tmpbits[ 32 ];
@@ -5040,7 +5060,6 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 	g_pClientShadowMgr->ComputeShadowTextures( (*this), m_pWorldListInfo->m_LeafCount, m_pWorldListInfo->m_pLeafList );
 
 	DrawWorld( 0.0f );
-
 	// Iterate over all leaves and render objects in those leaves
 	DrawOpaqueRenderables( DEPTH_MODE_NORMAL );
 
@@ -5065,6 +5084,14 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 	}
 
 	render->PopView( GetFrustum() );
+
+#if defined ( LUA_SDK )
+	if ( L != NULL && engine->IsInGame() )
+	{
+		BEGIN_LUA_CALL_HOOK( "PostDrawSkyBox" );
+		END_LUA_CALL_HOOK( 0, 0 );
+	}
+#endif
 
 #if defined( _X360 )
 	pRenderContext.GetFrom( materials );

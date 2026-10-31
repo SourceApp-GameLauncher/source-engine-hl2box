@@ -20,6 +20,7 @@
 #include "smoke_fog_overlay.h"
 #include "view.h"
 #include "ienginevgui.h"
+#include "hl2sb_skybox_callback.h"
 #include "iefx.h"
 #include "enginesprite.h"
 #include "networkstringtable_clientdll.h"
@@ -845,6 +846,23 @@ private:
 
 CHLClient gHLClient;
 IBaseClientDLL *clientdll = &gHLClient;
+
+class CHL2SBSkyboxCallback : public IHL2SBSkyboxCallback
+{
+public:
+	virtual void PostDraw2DSkyBox()
+	{
+#if defined ( LUA_SDK )
+		if ( L != NULL && engine->IsInGame() && ThreadInMainThread() )
+		{
+			BEGIN_LUA_CALL_HOOK( "PostDraw2DSkyBox" );
+			END_LUA_CALL_HOOK( 0, 0 );
+		}
+#endif
+	}
+};
+static CHL2SBSkyboxCallback g_HL2SBSkyboxCallback;
+EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CHL2SBSkyboxCallback, IHL2SBSkyboxCallback, HL2SB_SKYBOX_CALLBACK_VERSION, g_HL2SBSkyboxCallback );
 
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CHLClient, IBaseClientDLL, CLIENT_DLL_INTERFACE_VERSION, gHLClient );
 
@@ -2239,7 +2257,6 @@ void CHLClient::VoiceLoudness( int entindex, float flLoudness )
 
 	GetClientVoiceMgr()->SetPlayerLoudness( entindex, flLoudness );
 }
-
 
 //-----------------------------------------------------------------------------
 // Called when the string table for materials changes

@@ -32,6 +32,7 @@ extern void CAM_ToFirstPerson( void );
 
 #if defined( LUA_SDK )
 #include "luamanager.h"
+#include "lbaseentity_shared.h"
 #include "weapon_hl2mpbase_scriptedweapon.h"	// HL2SB: SWEP:TranslateFOV / SWEP:CalcView dispatch
 #include "lgametrace.h"
 #include "lhl2mp_player_shared.h"
@@ -882,6 +883,37 @@ void C_HL2MP_Player::PostDataUpdate( DataUpdateType_t updateType )
 		m_iSpawnInterpCounterCache = m_iSpawnInterpCounter;
 	}
 
+	static EHANDLE s_hClassEntity[MAX_EDICTS];
+	static int s_iClassID[MAX_EDICTS] = {};
+	const int iEntityIndex = entindex();
+	bool bClassChanged = false;
+	if ( iEntityIndex > 0 && iEntityIndex < MAX_EDICTS )
+	{
+		if ( s_hClassEntity[iEntityIndex] != this )
+		{
+			s_hClassEntity[iEntityIndex] = this;
+			s_iClassID[iEntityIndex] = m_iHL2SBPlayerClassID;
+			bClassChanged = m_iHL2SBPlayerClassID != 0;
+		}
+		else if ( s_iClassID[iEntityIndex] != m_iHL2SBPlayerClassID )
+		{
+			s_iClassID[iEntityIndex] = m_iHL2SBPlayerClassID;
+			bClassChanged = true;
+		}
+	}
+	if ( bClassChanged )
+	{
+#if defined ( LUA_SDK )
+		if ( L != NULL )
+		{
+		BEGIN_LUA_CALL_HOOK( "PlayerClassChanged" );
+			lua_pushplayer( L, this );
+			lua_pushinteger( L, m_iHL2SBPlayerClassID );
+		END_LUA_CALL_HOOK( 2, 0 );
+		}
+#endif
+	}
+
 	BaseClass::PostDataUpdate( updateType );
 }
 
@@ -1337,7 +1369,16 @@ void C_HL2MPRagdoll::CreateHL2MPRagdoll( void )
 		GetRagdollInitBoneArrays( boneDelta0, boneDelta1, currentBones, boneDt );
 	}
 
-	InitAsClientRagdoll( boneDelta0, boneDelta1, currentBones, boneDt );
+	const bool bCreated = InitAsClientRagdoll( boneDelta0, boneDelta1, currentBones, boneDt );
+#if defined( LUA_SDK )
+	if ( bCreated && pPlayer && !pPlayer->IsDormant() && L != NULL )
+	{
+		BEGIN_LUA_CALL_HOOK( "CreateClientsideRagdoll" );
+			lua_pushplayer( L, pPlayer );
+			lua_pushentity( L, this );
+		END_LUA_CALL_HOOK( 2, 0 );
+	}
+#endif
 }
 
 

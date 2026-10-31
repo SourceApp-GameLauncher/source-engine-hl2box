@@ -199,7 +199,35 @@ static const char *s_PreserveEnts[] =
 	public:
 		virtual bool		CanPlayerHearPlayer( CBasePlayer *pListener, CBasePlayer *pTalker, bool &bProximity )
 		{
+			bProximity = false;
+#if defined ( LUA_SDK )
+			if ( !L )
+				return true;
+			const int nTop = lua_gettop( L );
+			bool bCanHear = true;
+			lua_checkstack( L, 8 );
+			lua_getglobal( L, "hook" );
+			if ( lua_istable( L, -1 ) )
+			{
+				lua_getfield( L, -1, "call" );
+				if ( lua_isfunction( L, -1 ) )
+				{
+					lua_pushstring( L, "PlayerCanHearPlayersVoice" );
+					lua_getglobal( L, "_GAMEMODE" );
+					lua_pushplayer( L, pListener );
+					lua_pushplayer( L, pTalker );
+					if ( luasrc_pcall( L, 4, 2, 0 ) == 0 )
+					{
+						if ( lua_isboolean( L, -2 ) ) bCanHear = lua_toboolean( L, -2 ) != 0;
+						if ( lua_isboolean( L, -1 ) ) bProximity = lua_toboolean( L, -1 ) != 0;
+					}
+				}
+			}
+			lua_settop( L, nTop );
+			return bCanHear;
+#else
 			return ( pListener->GetTeamNumber() == pTalker->GetTeamNumber() );
+#endif
 		}
 	};
 	CVoiceGameMgrHelper g_VoiceGameMgrHelper;

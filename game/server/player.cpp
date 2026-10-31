@@ -6449,9 +6449,22 @@ void CBasePlayer::ImpulseCommands( )
 
 		if ( tr.fraction != 1.0 )
 		{// line hit something, so paint a decal
-			m_flNextDecalTime = gpGlobals->curtime + decalfrequency.GetFloat();
-			CSprayCan *pCan = CREATE_UNSAVED_ENTITY( CSprayCan, "spraycan" );
-			pCan->Spawn( this );
+			bool bBlocked = false;
+#if defined ( LUA_SDK )
+			if ( L != NULL )
+			{
+				BEGIN_LUA_CALL_HOOK( "PlayerSpray" );
+					lua_pushplayer( L, this );
+				END_LUA_CALL_HOOK( 1, 1 );
+				bBlocked = lua_toboolean( L, -1 ) != 0;
+				lua_pop( L, 1 );
+			}
+#endif
+			if ( !bBlocked )
+			{
+				m_flNextDecalTime = gpGlobals->curtime + decalfrequency.GetFloat();
+				CSprayCan *pCan = CREATE_UNSAVED_ENTITY( CSprayCan, "spraycan" );
+				pCan->Spawn( this );
 
 #ifdef CSTRIKE_DLL
 			//=============================================================================
@@ -6471,6 +6484,7 @@ void CBasePlayer::ImpulseCommands( )
 			// HPE_END
 			//=============================================================================
 #endif			
+			}
 		}
 
 		break;

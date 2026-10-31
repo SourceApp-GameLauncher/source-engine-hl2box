@@ -1612,6 +1612,16 @@ void ClientModeShared::FireGameEvent( IGameEvent *event )
 		C_BasePlayer *pPlayer = UTIL_PlayerByIndex( iPlayerIndex );
 		int iAchievement = event->GetInt( "achievement" );
 
+#if defined ( LUA_SDK )
+		if ( pPlayer && L != NULL )
+		{
+			BEGIN_LUA_CALL_HOOK( "OnAchievementAchieved" );
+				lua_pushplayer( L, pPlayer );
+				lua_pushinteger( L, iAchievement );
+			END_LUA_CALL_HOOK( 2, 0 );
+		}
+#endif
+
 		if ( !hudChat || !pPlayer )
 			return;
 

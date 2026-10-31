@@ -156,6 +156,18 @@ void C_TEPlayerDecal::Precache( void )
 //-----------------------------------------------------------------------------
 IMaterial *CreateTempMaterialForPlayerLogo( int iPlayerIndex, player_info_t *info, char *texname, int nchars )
 {
+	if ( gpGlobals->maxClients < 2 && !info->customFiles[0] )
+	{
+		ConVarRef logoFile( "cl_logofile" );
+		const char *path = logoFile.IsValid() ? logoFile.GetString() : "";
+		if ( Q_strnicmp( path, "materials/", 10 ) != 0 || !path[10] )
+			return NULL;
+
+		Q_strncpy( texname, path + 10, nchars );
+		IMaterial *logo = materials->FindMaterial( VarArgs("decals/playerlogo%2.2d", iPlayerIndex), TEXTURE_GROUP_DECAL );
+		return IsErrorMaterial( logo ) ? NULL : logo;
+	}
+
 	// Doesn't have a logo?
 	if ( !info->customFiles[0] )	
 		return NULL;
@@ -210,8 +222,9 @@ void TE_PlayerDecal( IRecipientFilter& filter, float delay,
 		return;
 
 	// Find player logo for shooter
-	player_info_t info;
-	engine->GetPlayerInfo( player, &info );
+	player_info_t info = {};
+	if ( !engine->GetPlayerInfo( player, &info ) )
+		return;
 
 	// Make sure we've got the material for this player's logo
 	char texname[ 512 ];
