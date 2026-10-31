@@ -16,6 +16,7 @@
 #include "takedamageinfo.h"
 #include "luamanager.h"
 #include "luasrclib.h"
+#include "gamestringpool.h"
 #include "lbaseentity_shared.h"
 #include "basescripted.h"
 #include "mathlib/vmatrix.h"	// HL2SB: VMatrix for the transform matrix getters
@@ -24,6 +25,7 @@
 #include "lc_baseanimating.h"
 #include "lc_recipientfilter.h"
 #include "c_baseplayer.h"			// HL2SB: Entity:GetViewEntity (C_BasePlayer::GetLocalPlayer)
+#include "physpropclientside.h"
 #include "view.h"					// CurrentViewOrigin - the global EyePos()
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialsystem.h"
@@ -1039,7 +1041,14 @@ static int CBaseEntity_GetGroundEntity (lua_State *L) {
 }
 
 static int CBaseEntity_GetHealth (lua_State *L) {
-  lua_pushinteger(L, luaL_checkentity(L, 1)->GetHealth());
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+#ifdef CLIENT_DLL
+  if (!entity->IsPlayer() && !dynamic_cast<C_PhysPropClientside *>(entity)) {
+    lua_pushinteger(L, entity->m_iHealth);
+    return 1;
+  }
+#endif
+  lua_pushinteger(L, entity->GetHealth());
   return 1;
 }
 
@@ -2924,7 +2933,13 @@ static int CBaseEntity_SetGroundEntity (lua_State *L) {
 }
 
 static int CBaseEntity_SetHealth (lua_State *L) {
-  luaL_checkentity(L, 1)->SetHealth(luaL_checkint(L, 2));
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const double value = luaL_checknumber(L, 2);
+  const int health = value >= -2147483648.0 && value < 2147483648.0 ? (int)value : (-2147483647 - 1);
+#ifdef CLIENT_DLL
+  entity->m_iHealth = health;
+#endif
+  entity->SetHealth(health);
   return 0;
 }
 
@@ -2996,7 +3011,7 @@ static int CBaseEntity_SetModelIndex (lua_State *L) {
 }
 
 static int CBaseEntity_SetModelName (lua_State *L) {
-  string_t name = *(string_t *)luaL_checkstring(L, 2);
+  string_t name = AllocPooledString( luaL_checkstring( L, 2 ) );
   luaL_checkentity(L, 1)->SetModelName(name);
   return 0;
 }
@@ -4218,6 +4233,33 @@ static int CBaseEntity_GetNWVectorValue(lua_State *L) { return CBaseEntity_GetNW
 static int CBaseEntity_GetNWAngleValue(lua_State *L) { return CBaseEntity_GetNWValue(L, HL2SB_NWTAG_ANGLE); }
 static int CBaseEntity_GetNetworkedVar(lua_State *L) { return CBaseEntity_GetNWValue(L, 'N'); }
 
+#ifdef CLIENT_DLL
+extern void HL2SB_NWPushReplicatedTable(lua_State *L, int entindex, int tableIndex);
+#endif
+
+static int CBaseEntity_GetNWVarTable(lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  lua_newtable(L);
+  const int table = lua_gettop(L);
+#ifdef CLIENT_DLL
+  HL2SB_NWPushReplicatedTable(L, entity->entindex(), table);
+#endif
+  char prefix[32];
+  Q_snprintf(prefix, sizeof(prefix), "%d_", entity->entindex());
+  const size_t length = Q_strlen(prefix);
+  for (unsigned short i = g_HL2SB_NWVars.First(); g_HL2SB_NWVars.IsValidIndex(i); i = g_HL2SB_NWVars.Next(i)) {
+    const char *key = g_HL2SB_NWVars.GetElementName(i);
+    if (Q_strncmp(key, prefix, length) != 0) continue;
+    const char *name = key + length;
+    lua_pushcfunction(L, CBaseEntity_GetNetworkedVar);
+    lua_pushvalue(L, 1);
+    lua_pushstring(L, name);
+    lua_call(L, 2, 1);
+    lua_setfield(L, table, name);
+  }
+  return 1;
+}
+
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: the NW2 family (SetNW2*/GetNW2*).  GMod keeps NW and NW2
 // in separate tables, so the same key written through SetNWInt and SetNW2Int
@@ -4988,22 +5030,23 @@ static int CBaseEntity_GetAngles (lua_State *L) {
   return 1;
 }
 
-// GMod sets the physics velocity when the entity has a physics object and the
-// absolute velocity otherwise.
 static int CBaseEntity_SetVelocity (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  Vector vecVelocity = luaL_checkvector(L, 2);
-  IPhysicsObject *pPhysics = pEntity->VPhysicsGetObject();
-
-  if ( pPhysics != NULL && !pPhysics->IsStatic() ) {
-    pPhysics->SetVelocity( &vecVelocity, NULL );
-  }
-  else {
-    pEntity->SetAbsVelocity( vecVelocity );
-  }
-
+  pEntity->SetBaseVelocity(luaL_checkvector(L, 2));
   return 0;
 }
+
+#ifdef CLIENT_DLL
+static int CBaseEntity_GetVelocity (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  Vector velocity = entity->GetAbsVelocity();
+  IPhysicsObject *physics = entity->VPhysicsGetObject();
+  if (entity->GetMoveType() == MOVETYPE_VPHYSICS && physics)
+    physics->GetVelocity(&velocity, NULL);
+  lua_pushvector(L, velocity);
+  return 1;
+}
+#endif
 
 // HL2SB GMod compat: the direction vectors GMod exposes on every entity.  GMod
 // weapon scripts build their knockback from them - weapon_fists/shared.lua:127
@@ -6633,7 +6676,11 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // the wiki use (Entity:GetAbsVelocity is the rarer twin).  ent_nyan_bomb's
   // ENT:Draw opens with self:GetVelocity() -- without this the draw died on
   // its first line every frame and the flying cat rendered as nothing at all.
+#ifdef CLIENT_DLL
+  {"GetVelocity", CBaseEntity_GetVelocity},
+#else
   {"GetVelocity", CBaseEntity_GetAbsVelocity},
+#endif
   {"GetAttachment", CBaseEntity_GetAttachment},
   {"GetAnimTime", CBaseEntity_GetAnimTime},
   {"GetPoseParameter", CBaseEntity_GetPoseParameter},
@@ -7017,6 +7064,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetNetworkedAngle", CBaseEntity_GetNWAngleValue},
   {"SetNetworkedVar", CBaseEntity_SetNWValue},
   {"GetNetworkedVar", CBaseEntity_GetNetworkedVar},
+  {"GetNWVarTable", CBaseEntity_GetNWVarTable},
+  {"GetNetworkedVarTable", CBaseEntity_GetNWVarTable},
   // HL2SB GMod compat: NW2 family (issue #47) - separate store, same local
   // per-realm semantics as the NW1 entries above.
   {"SetNW2String", CBaseEntity_SetNW2String},

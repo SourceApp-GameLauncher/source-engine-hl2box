@@ -380,36 +380,19 @@ static int CBasePlayer_GetCurrentCommand (lua_State *L) {
     HL2SB_PushUserCmdTable(L, activeCommand);
     return 1;
   }
-  static CUserCmd s_HL2SBLiveCmd;
-  s_HL2SBLiveCmd.Reset();
-  if ( input != NULL )
-  {
-    s_HL2SBLiveCmd.buttons = input->GetButtonBits( 0 );
-    int dx = 0, dy = 0;
-    HL2SB_GetLastMouseDeltas( dx, dy );
-    s_HL2SBLiveCmd.mousedx = dx;
-    s_HL2SBLiveCmd.mousedy = dy;
-  }
-  s_HL2SBLiveCmd.command_number = pPlayer->CurrentCommandNumber();
-  s_HL2SBLiveCmd.tick_count = gpGlobals->tickcount;
-  const CUserCmd *pCmd = &s_HL2SBLiveCmd;
-  static int s_nCmdDiag = 0;
-  if ( s_nCmdDiag < 10 && ( pCmd->buttons & IN_ATTACK2 ) )
-  {
-    ++s_nCmdDiag;
-    luasrc_LuaInfoMsgF( "[HL2SB] GetCurrentCommand #%d: buttons=%d mousedx=%d mousedy=%d\n",
-      s_nCmdDiag, pCmd->buttons, pCmd->mousedx, pCmd->mousedy );
-  }
+  luasrc_LuaErrorMsgF( "Player:GetCurrentCommand called outside of command/prediction\n" );
+  lua_pushnil(L);
+  return 1;
 #else
   const CUserCmd *pCmd = pPlayer->GetCurrentUserCommand();
   if (pCmd == NULL) {
+    luasrc_LuaErrorMsgF( "Player:GetCurrentCommand called outside of command/prediction\n" );
     lua_pushnil(L);
     return 1;
   }
-#endif
-
   HL2SB_PushUserCmdTable(L, pCmd);
   return 1;
+#endif
 }
 
 static int CBasePlayer_DoMuzzleFlash (lua_State *L) {
@@ -1563,7 +1546,13 @@ static int CBasePlayer_WeaponCount (lua_State *L) {
 // Body addon captures PLAYER.Alive; this fork only had Entity:IsAlive and the
 // bare PLAYER metatable read does not fall through to it.
 static int CBasePlayer_Alive (lua_State *L) {
-  lua_pushboolean(L, lua_toplayer(L, 1)->IsAlive());
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+#ifdef CLIENT_DLL
+  if (!g_PR) return 0;
+  lua_pushboolean(L, g_PR->IsAlive(player->entindex()));
+#else
+  lua_pushboolean(L, player->IsAlive());
+#endif
   return 1;
 }
 
@@ -1905,14 +1894,16 @@ static int CBasePlayer_ConCommand (lua_State *L) {
 //-----------------------------------------------------------------------------
 // HL2SB GMod compat: Player:SelectWeapon( class ).  GMod's gmod_camera
 // registers a "gmod_camera" console command whose whole body is
-// ply:SelectWeapon( "gmod_camera" ).  Both realms have CBasePlayer::SelectItem.
+// ply:SelectWeapon( "gmod_camera" ).
 //-----------------------------------------------------------------------------
+#ifndef CLIENT_DLL
 static int CBasePlayer_SelectWeapon (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
   const char *pszClass = luaL_checkstring(L, 2);
   pPlayer->SelectItem( pszClass );
   return 0;
 }
+#endif
 
 static int CBasePlayer___tostring (lua_State *L) {
   CBasePlayer *pPlayer = lua_toplayer(L, 1);
@@ -3250,7 +3241,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"ClearZoomOwner", CBasePlayer_ClearZoomOwner},
   {"CurrentCommandNumber", CBasePlayer_CurrentCommandNumber},
   {"GetCurrentCommand", CBasePlayer_GetCurrentCommand},
+#ifndef CLIENT_DLL
   {"SelectWeapon", CBasePlayer_SelectWeapon},
+#endif
   {"DoMuzzleFlash", CBasePlayer_DoMuzzleFlash},
   {"MuzzleFlash", CBasePlayer_MuzzleFlash},
   {"ExitLadder", CBasePlayer_ExitLadder},
@@ -3283,7 +3276,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"GetVehicle", CBasePlayer_GetVehicle},
   {"KillSilent", CBasePlayer_KillSilent},
   {"Kill", CBasePlayer_Kill},
+#ifndef CLIENT_DLL
   {"SetTeam", CBasePlayer_SetTeam},
+#endif
   {"GetEyeTrace", CBasePlayer_GetEyeTrace},
   {"GetEyeTraceNoCursor", CBasePlayer_GetEyeTraceNoCursor},
   {"GetBonusChallenge", CBasePlayer_GetBonusChallenge},

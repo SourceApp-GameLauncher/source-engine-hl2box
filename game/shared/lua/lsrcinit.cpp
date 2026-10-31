@@ -274,7 +274,7 @@ static int lua_game_GetWorld( lua_State *state )
 #ifdef CLIENT_DLL
   lua_pushentity(state, cl_entitylist->GetEnt(0));
 #else
-  lua_pushentity(state, UTIL_EntityByIndex(0));
+  lua_pushentity(state, CBaseEntity::Instance(0));
 #endif
   return 1;
 }
@@ -1283,6 +1283,16 @@ static int lua_game_SinglePlayer (lua_State *L) {
   return 1;
 }
 
+static int lua_global_RealTime (lua_State *L) {
+  lua_pushnumber( L, gpGlobals ? gpGlobals->realtime : 0.0f );
+  return 1;
+}
+
+static int lua_game_MaxPlayers (lua_State *L) {
+  lua_pushinteger( L, gpGlobals->maxClients );
+  return 1;
+}
+
 static int lua_game_IsDedicated (lua_State *L) {
 #ifdef CLIENT_DLL
   lua_pushboolean( L, false );
@@ -1949,6 +1959,12 @@ static int HL2SB_NWSerialize( lua_State *L, int iValue, char tag, unsigned char 
 	{
 		case 'N':
 			break;
+		case 'D':
+		{
+			double number = luaL_checknumber(L, iValue);
+			w.WriteBytes(&number, sizeof(number));
+			break;
+		}
 		case HL2SB_NWTAG_FLOAT:
 			w.WriteFloat( ( float )luaL_checknumber( L, iValue ) );
 			break;
@@ -1997,6 +2013,38 @@ static int HL2SB_NWSerialize( lua_State *L, int iValue, char tag, unsigned char 
 }
 
 #ifndef CLIENT_DLL
+static bool HL2SB_GlobalSend(lua_State *state, const char *name, int value, CBasePlayer *player)
+{
+  char tag = 0;
+  switch (lua_type(state, value)) {
+    case LUA_TNIL: tag = 'N'; break;
+    case LUA_TNUMBER: tag = 'D'; break;
+    case LUA_TBOOLEAN: tag = HL2SB_NWTAG_BOOL; break;
+    case LUA_TSTRING: tag = HL2SB_NWTAG_STRING; break;
+    case LUA_TUSERDATA:
+      if (luaL_testudata(state, value, "Vector")) tag = HL2SB_NWTAG_VECTOR;
+      else if (luaL_testudata(state, value, "Angle")) tag = HL2SB_NWTAG_ANGLE;
+      else tag = HL2SB_NWTAG_ENTITY;
+      break;
+    default: return false;
+  }
+  unsigned char payload[512];
+  int len = HL2SB_NWSerialize(state, value, tag, payload, sizeof(payload));
+  if (len < 0 || len + (int)Q_strlen(name) + 7 > MAX_USER_MSG_DATA) return false;
+  CRecipientFilter filter;
+  filter.MakeReliable();
+  if (player) filter.AddRecipient(player); else filter.AddAllPlayers();
+  UserMessageBegin(filter, "HL2SB_NW");
+    WRITE_SHORT(0);
+    WRITE_BYTE(3);
+    WRITE_STRING(name);
+    WRITE_BYTE(tag);
+    WRITE_BYTE(len);
+    for (int i = 0; i < len; ++i) WRITE_BYTE(payload[i]);
+  MessageEnd();
+  return true;
+}
+
 // HL2SB (2026-10-11, issue #47): broadcast one SetNW*/SetNW2* value.  The
 // wire adds the family byte ahead of the name; the client receiver stores it
 // into the family-namespaced replicated copy and drops the realm-local entry.
@@ -2136,6 +2184,14 @@ bool HL2SB_NWReplicatedPushFamily( lua_State *L, int iFamily, int entindex,
 
 	switch ( tag )
 	{
+		case 'D':
+		{
+			double number = 0;
+			if (val.nBytes != 1 + sizeof(number)) return false;
+			r.ReadBytes(&number, sizeof(number));
+			lua_pushnumber(L, number);
+			return true;
+		}
 		case HL2SB_NWTAG_FLOAT:
 			lua_pushnumber( L, ( lua_Number )r.ReadFloat() );
 			return true;
@@ -2190,6 +2246,21 @@ bool HL2SB_NWReplicatedPushFamily( lua_State *L, int iFamily, int entindex,
 	}
 }
 
+void HL2SB_NWPushReplicatedTable(lua_State *L, int entindex, int tableIndex)
+{
+  tableIndex = lua_absindex(L, tableIndex);
+  char prefix[48];
+  Q_snprintf(prefix, sizeof(prefix), "%d|%d|", HL2SB_NWFAMILY_NW, entindex);
+  const size_t length = Q_strlen(prefix);
+  for (unsigned short i = s_NWReplicated.First(); s_NWReplicated.IsValidIndex(i); i = s_NWReplicated.Next(i)) {
+    const char *key = s_NWReplicated.GetElementName(i);
+    if (Q_strncmp(key, prefix, length) != 0) continue;
+    const char *name = key + length;
+    if (HL2SB_NWReplicatedPushFamily(L, HL2SB_NWFAMILY_NW, entindex, name))
+      lua_setfield(L, tableIndex, name);
+  }
+}
+
 // The "HL2SB_NW" user message: SHORT entindex, BYTE family, STRING name,
 // BYTE tag, BYTE len, BYTE[len] payload.  Family 0 is the legacy Lua
 // NetworkVar channel, 1/2 are the SetNW*/SetNW2* families (issue #47).
@@ -2210,6 +2281,19 @@ static void __MsgFunc_HL2SB_NW( bf_read &read )
 
 	if ( read.IsOverflowed() )
 		return;
+	if (iFamily == 3) {
+		if (!L) return;
+		int top = lua_gettop(L);
+		lua_getglobal(L, "__HL2SB_GLOBALS");
+		if (lua_istable(L, -1)) {
+			HL2SB_NWReplicatedStore(iFamily, 0, szName, tag, payload, len);
+			lua_pushstring(L, szName);
+			if (tag == 'N' || !HL2SB_NWReplicatedPushFamily(L, iFamily, 0, szName)) lua_pushnil(L);
+			lua_rawset(L, -3);
+		}
+		lua_settop(L, top);
+		return;
+	}
 
 	// HL2SB GMod compat (2026-10-21): the reference client raises the
 	// "EntityNetworkedVarChanged" hook when a networked value really changes.
@@ -2450,6 +2534,16 @@ void HL2SB_NWResyncClient (CBasePlayer *pPlayer)
     return;
 
   const int iBase = lua_gettop( L );
+
+  lua_getglobal(L, "__HL2SB_GLOBALS");
+  if (lua_istable(L, -1)) {
+    lua_pushnil(L);
+    while (lua_next(L, -2)) {
+      if (lua_type(L, -2) == LUA_TSTRING) HL2SB_GlobalSend(L, lua_tostring(L, -2), -1, pPlayer);
+      lua_pop(L, 1);
+    }
+  }
+  lua_settop(L, iBase);
 
   for ( int i = 0; i < s_NWEntityRegistry.Count(); ++i ) {
     CBaseEntity *pEnt = s_NWEntityRegistry[ i ];
@@ -3831,10 +3925,30 @@ static void HL2SB_PushGlobalValues(lua_State *L) {
 static int HL2SB_SetGlobalValue(lua_State *L) {
   const char *name = luaL_checkstring(L, 1);
   luaL_checkany(L, 2);
+  const int type = lua_type(L, 2);
+  bool allowed = type == LUA_TNIL || type == LUA_TBOOLEAN ||
+                 type == LUA_TNUMBER || type == LUA_TSTRING;
+  if (type == LUA_TUSERDATA && lua_getmetatable(L, 2)) {
+    lua_getfield(L, -1, "MetaID");
+    const int id = (int)lua_tointeger(L, -1);
+    allowed = id == LUA_TYPE_ENTITY || id == LUA_TYPE_VECTOR || id == LUA_TYPE_ANGLE;
+    lua_pop(L, 2);
+  }
+  if (!allowed)
+    return luaL_error(L, "SetNetworkedVar: Non-networkable type '%s' encountered!", luaL_typename(L, 2));
+  if (type == LUA_TSTRING && lua_rawlen(L, 2) > 200)
+    return luaL_error(L, "SetNetworkedVar: string exceeds 200 bytes");
   HL2SB_PushGlobalValues(L);
+  lua_pushstring(L, name);
+  lua_rawget(L, -2);
+  const bool changed = !lua_compare(L, -1, 2, LUA_OPEQ);
+  lua_pop(L, 1);
   lua_pushstring(L, name);
   lua_pushvalue(L, 2);
   lua_rawset(L, -3);
+#ifndef CLIENT_DLL
+  if (changed) HL2SB_GlobalSend(L, name, 2, NULL);
+#endif
   return 0;
 }
 
@@ -3851,14 +3965,19 @@ static int HL2SB_GetGlobalValue(lua_State *L) {
   if (fallback == 1) lua_pushnumber(L, 0);
   else if (fallback == 2) lua_pushboolean(L, false);
   else if (fallback == 3) lua_pushliteral(L, "");
+  else if (fallback == 4) lua_pushvector(L, Vector(0, 0, 0));
+  else if (fallback == 5) lua_pushangle(L, QAngle(0, 0, 0));
+  else if (fallback == 6) lua_pushentity(L, NULL);
   else lua_pushnil(L);
   return 1;
 }
 
 static void HL2SB_RegisterGlobalValues(lua_State *L) {
-  const char *setters[] = {"SetGlobalVar", "SetGlobalInt", "SetGlobalFloat", "SetGlobalBool", "SetGlobalString"};
-  const char *getters[] = {"GetGlobalVar", "GetGlobalInt", "GetGlobalFloat", "GetGlobalBool", "GetGlobalString"};
-  const int defaults[] = {0, 1, 1, 2, 3};
+  HL2SB_PushGlobalValues(L);
+  lua_pop(L, 1);
+  const char *setters[] = {"SetGlobalVar", "SetGlobalInt", "SetGlobalFloat", "SetGlobalBool", "SetGlobalString", "SetGlobalVector", "SetGlobalAngle", "SetGlobalEntity"};
+  const char *getters[] = {"GetGlobalVar", "GetGlobalInt", "GetGlobalFloat", "GetGlobalBool", "GetGlobalString", "GetGlobalVector", "GetGlobalAngle", "GetGlobalEntity"};
+  const int defaults[] = {0, 1, 1, 2, 3, 4, 5, 6};
   for (int i = 0; i < ARRAYSIZE(setters); ++i) {
     lua_pushcfunction(L, HL2SB_SetGlobalValue);
     lua_setglobal(L, setters[i]);
@@ -3870,6 +3989,7 @@ static void HL2SB_RegisterGlobalValues(lua_State *L) {
 
 LUALIB_API void luasrc_openlibs (lua_State *L) {
   HL2SB_RefreshGameContentPaths();
+  lua_pushcfunction( L, lua_global_RealTime ); lua_setglobal( L, "RealTime" );
   const luaL_Reg *lib = luasrclibs;
   for (; lib->func; lib++) {
     // HL2SB (2026-09-21): log the module name FIRST so a failure names its
@@ -4373,6 +4493,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     lua_pushcfunction( L, lua_game_GetMap );       lua_setfield( L, -2, "GetMap" );
     lua_pushcfunction( L, lua_game_GetWorld );     lua_setfield( L, -2, "GetWorld" );
     lua_pushcfunction( L, lua_game_SinglePlayer ); lua_setfield( L, -2, "SinglePlayer" );
+    lua_pushcfunction( L, lua_game_MaxPlayers );   lua_setfield( L, -2, "MaxPlayers" );
     lua_pushcfunction( L, lua_game_IsDedicated );  lua_setfield( L, -2, "IsDedicated" );
     lua_pushcfunction( L, lua_game_GetAmmoName );  lua_setfield( L, -2, "GetAmmoName" );
     lua_pushcfunction( L, lua_game_GetAmmoID );    lua_setfield( L, -2, "GetAmmoID" );
