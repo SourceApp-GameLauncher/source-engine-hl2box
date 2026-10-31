@@ -1148,8 +1148,8 @@ static int CBaseAnimating_GetNumPoseParameters (lua_State *L) {
 static int CBaseAnimating_GetModelRenderBounds (lua_State *L) {
   C_BaseAnimating *pEntity = luaL_checkanimating(L, 1);
   const model_t *pModel = pEntity->GetModel();
-  Vector mins, maxs;
-  if ( pModel )
+  Vector mins( 0, 0, 0 ), maxs( 0, 0, 0 );
+  if ( pModel && modelinfo )
     modelinfo->GetModelRenderBounds( pModel, mins, maxs );
   lua_pushvector(L, mins);
   lua_pushvector(L, maxs);

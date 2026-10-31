@@ -1388,6 +1388,16 @@ static int CBaseEntity_GetMoveParent (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_GetModelRenderBounds (lua_State *L) {
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  const model_t *model = entity->GetModel();
+  Vector mins(0, 0, 0), maxs(0, 0, 0);
+  if (model && modelinfo) modelinfo->GetModelRenderBounds(model, mins, maxs);
+  lua_pushvector(L, mins);
+  lua_pushvector(L, maxs);
+  return 2;
+}
+
 static int CBaseEntity_GetMoveCollide (lua_State *L) {
   lua_pushinteger( L, luaL_checkentity( L, 1 )->GetMoveCollide() );
   return 1;
@@ -6728,6 +6738,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetModelIndex", CBaseEntity_GetModelIndex},
   {"GetModelName", CBaseEntity_GetModelName},
   {"GetModel", CBaseEntity_GetModel},
+  {"GetModelRenderBounds", CBaseEntity_GetModelRenderBounds},
   {"GetMoveParent", CBaseEntity_GetMoveParent},
   {"GetMoveCollide", CBaseEntity_GetMoveCollide},
   {"GetMoveType", CBaseEntity_GetMoveType},

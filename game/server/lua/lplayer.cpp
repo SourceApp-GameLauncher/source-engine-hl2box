@@ -43,6 +43,19 @@ static int CBasePlayer_GetAll (lua_State *L) {
   return 1;
 }
 
+static int CBasePlayer_GetHumans (lua_State *L) {
+  lua_newtable( L );
+  int n = 0;
+  for ( int index = 1; index <= gpGlobals->maxClients; ++index ) {
+    CBasePlayer *player = UTIL_PlayerByIndex( index );
+    if ( !player || player->IsMarkedForDeletion() || player->IsFakeClient() ) continue;
+    lua_pushinteger( L, ++n );
+    lua_pushplayer( L, player );
+    lua_rawset( L, -3 );
+  }
+  return 1;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: HL2SB - player:UniqueID()
 //
@@ -861,6 +874,8 @@ LUALIB_API int luaopen_CBasePlayer (lua_State *L) {
   }
   lua_pushcfunction( L, CBasePlayer_GetAll );
   lua_setfield( L, -2, "GetAll" );
+  lua_pushcfunction( L, CBasePlayer_GetHumans );
+  lua_setfield( L, -2, "GetHumans" );
   lua_setglobal( L, "player" );
 
   return 1;
