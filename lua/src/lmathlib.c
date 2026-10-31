@@ -13,6 +13,7 @@
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -629,9 +630,76 @@ static int math_randomseed (lua_State *L) {
 }
 
 
+typedef struct {
+  uint64_t state[4];
+  int valid;
+} GModRandomState;
+
+typedef union {
+  uint64_t bits;
+  double value;
+} GModRandomValue;
+
+static uint64_t gmod_random_step (GModRandomState *state) {
+  static const int k[] = {63, 58, 55, 47};
+  static const int q[] = {31, 19, 24, 21};
+  static const int s[] = {18, 28, 7, 8};
+  uint64_t result = 0;
+  int i;
+  for (i = 0; i < 4; i++) {
+    uint64_t z = state->state[i];
+    z = (((z << q[i]) ^ z) >> (k[i] - s[i])) ^
+        ((z & (UINT64_MAX << (64 - k[i]))) << s[i]);
+    result ^= z;
+    state->state[i] = z;
+  }
+  return (result & UINT64_C(0x000fffffffffffff)) | UINT64_C(0x3ff0000000000000);
+}
+
+static void gmod_random_init (GModRandomState *state, double seed) {
+  unsigned int shifts = 0x11090601u;
+  int i;
+  for (i = 0; i < 4; i++) {
+    GModRandomValue value;
+    uint64_t minimum = UINT64_C(1) << (shifts & 255u);
+    shifts >>= 8;
+    value.value = seed = seed * 3.14159265358979323846 + 2.7182818284590452354;
+    if (value.bits < minimum) value.bits += minimum;
+    state->state[i] = value.bits;
+  }
+  state->valid = 1;
+  for (i = 0; i < 10; i++) (void)gmod_random_step(state);
+}
+
+static int gmod_math_random (lua_State *L) {
+  GModRandomState *state = (GModRandomState *)lua_touserdata(L, lua_upvalueindex(1));
+  int n = lua_gettop(L);
+  GModRandomValue value;
+  double result;
+  if (!state->valid) gmod_random_init(state, 0.0);
+  value.bits = gmod_random_step(state);
+  result = value.value - 1.0;
+  if (n > 0) {
+    double low = luaL_checknumber(L, 1);
+    if (n == 1) result = floor(result * low) + 1.0;
+    else {
+      double high = luaL_checknumber(L, 2);
+      result = floor(result * (high - low + 1.0)) + low;
+    }
+  }
+  lua_pushnumber(L, (lua_Number)result);
+  return 1;
+}
+
+static int gmod_math_randomseed (lua_State *L) {
+  GModRandomState *state = (GModRandomState *)lua_touserdata(L, lua_upvalueindex(1));
+  gmod_random_init(state, luaL_checknumber(L, 1));
+  return 0;
+}
+
 static const luaL_Reg randfuncs[] = {
-  {"random", math_random},
-  {"randomseed", math_randomseed},
+  {"random", gmod_math_random},
+  {"randomseed", gmod_math_randomseed},
   {NULL, NULL}
 };
 
@@ -640,9 +708,8 @@ static const luaL_Reg randfuncs[] = {
 ** Register the random functions and initialize their state.
 */
 static void setrandfunc (lua_State *L) {
-  RanState *state = (RanState *)lua_newuserdatauv(L, sizeof(RanState), 0);
-  randseed(L, state);  /* initialize with a "random" seed */
-  lua_pop(L, 2);  /* remove pushed seeds */
+  GModRandomState *state = (GModRandomState *)lua_newuserdatauv(L, sizeof(GModRandomState), 0);
+  state->valid = 0;
   luaL_setfuncs(L, randfuncs, 1);
 }
 
