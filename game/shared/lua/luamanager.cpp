@@ -1157,7 +1157,7 @@ void luasrc_LuaLogToFile( const char *pszText, char cSeverity )
 	g_pFullFileSystem->Close( fh );
 }
 
-static void HL2SB_LuaConsoleError( const char *pszText, bool bNewline )
+static void HL2SB_LuaConsoleError( const char *pszText, bool bNewline, bool bFullError = false )
 {
 	if ( pszText == NULL )
 		return;
@@ -1165,6 +1165,18 @@ static void HL2SB_LuaConsoleError( const char *pszText, bool bNewline )
 	const char *pszMessage = pszText;
 	if ( !Q_strnicmp( pszMessage, "[ERROR] ", 8 ) )
 		pszMessage += 8;
+	if ( bFullError )
+	{
+#ifdef CLIENT_DLL
+		const Color clrError( 255, 241, 122, 255 );
+#else
+		const Color clrError( 156, 241, 255, 255 );
+#endif
+		const int nTextLength = Q_strlen( pszMessage );
+		const bool bAppendNewline = bNewline && ( nTextLength == 0 || pszMessage[ nTextLength - 1 ] != '\n' );
+		ConColorMsg( 0, clrError, "[ERROR] %s%s", pszMessage, bAppendNewline ? "\n" : "" );
+		return;
+	}
 	const char *pszLineEnd = strchr( pszMessage, '\n' );
 	const int nLineLength = pszLineEnd ? (int)( pszLineEnd - pszMessage ) : Q_strlen( pszMessage );
 
@@ -1258,7 +1270,7 @@ LUA_API void luasrc_LuaErrorMsg (const char *pszText)
 	}
 #endif
 
-	HL2SB_LuaConsoleError( pszText, true );
+	HL2SB_LuaConsoleError( pszText, true, true );
 	luasrc_LuaLogToFile( pszText, 'E' );
 }
 

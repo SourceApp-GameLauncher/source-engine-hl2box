@@ -10492,6 +10492,15 @@ CBaseEntity *CAI_BaseNPC::DropItem ( const char *pszItemName, Vector vecPos, QAn
 			pItem->ApplyLocalAngularVelocityImpulse( AngularImpulse( 0, random->RandomFloat( 0, 100 ), 0 ) );
 		}
 
+#if defined( LUA_SDK )
+		if ( L != NULL )
+		{
+			BEGIN_LUA_CALL_HOOK( "OnNPCDropItem" );
+				lua_pushentity( L, this );
+				lua_pushentity( L, pItem );
+			END_LUA_CALL_HOOK( 2, 0 );
+		}
+#endif
 		return pItem;
 	}
 	else

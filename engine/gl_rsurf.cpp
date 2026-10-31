@@ -24,6 +24,8 @@
 #include "tier2/tier2.h"
 #include "collisionutils.h"
 #include "cdll_int.h"
+#include "cdll_engine_int.h"
+#include "hl2sb_skybox_callback.h"
 #include "utllinkedlist.h"
 #include "r_areaportal.h"
 #include "bsptreedata.h"
@@ -2149,6 +2151,12 @@ static void Shader_WorldEnd( CWorldRenderList *pRenderList, unsigned long flags,
 				R_DrawSkyBox( g_EngineRenderer->GetZFar() );
 				pRenderContext->SetHeightClipMode( nClipMode );
 			}
+
+			CreateInterfaceFn clientFactory = ClientDLL_GetFactory();
+			IHL2SBSkyboxCallback *skyboxCallback = clientFactory
+				? static_cast<IHL2SBSkyboxCallback *>( clientFactory( HL2SB_SKYBOX_CALLBACK_VERSION, NULL ) ) : NULL;
+			if ( skyboxCallback )
+				skyboxCallback->PostDraw2DSkyBox();
 		}
 	}
 

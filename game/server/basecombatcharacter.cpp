@@ -1643,6 +1643,16 @@ void CBaseCombatCharacter::Event_Killed( const CTakeDamageInfo &info )
 	{
 		Weapon_Drop( m_hActiveWeapon );
 	}
+
+#if defined( LUA_SDK )
+	if ( L != NULL && !IsPlayer() && pDroppedWeapon )
+	{
+		BEGIN_LUA_CALL_HOOK( "OnNPCDropItem" );
+			lua_pushentity( L, this );
+			lua_pushentity( L, pDroppedWeapon );
+		END_LUA_CALL_HOOK( 2, 0 );
+	}
+#endif
 	
 	// if flagged to drop a health kit
 	if (HasSpawnFlags(SF_NPC_DROP_HEALTHKIT))
