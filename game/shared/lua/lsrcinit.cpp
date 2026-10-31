@@ -1283,6 +1283,11 @@ static int lua_game_SinglePlayer (lua_State *L) {
   return 1;
 }
 
+static int lua_game_MaxPlayers (lua_State *L) {
+  lua_pushinteger( L, gpGlobals->maxClients );
+  return 1;
+}
+
 static int lua_game_IsDedicated (lua_State *L) {
 #ifdef CLIENT_DLL
   lua_pushboolean( L, false );
@@ -4482,6 +4487,7 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
     lua_pushcfunction( L, lua_game_GetMap );       lua_setfield( L, -2, "GetMap" );
     lua_pushcfunction( L, lua_game_GetWorld );     lua_setfield( L, -2, "GetWorld" );
     lua_pushcfunction( L, lua_game_SinglePlayer ); lua_setfield( L, -2, "SinglePlayer" );
+    lua_pushcfunction( L, lua_game_MaxPlayers );   lua_setfield( L, -2, "MaxPlayers" );
     lua_pushcfunction( L, lua_game_IsDedicated );  lua_setfield( L, -2, "IsDedicated" );
     lua_pushcfunction( L, lua_game_GetAmmoName );  lua_setfield( L, -2, "GetAmmoName" );
     lua_pushcfunction( L, lua_game_GetAmmoID );    lua_setfield( L, -2, "GetAmmoID" );
