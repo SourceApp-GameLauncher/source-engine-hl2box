@@ -1335,6 +1335,7 @@ void CViewRender::Render( vrect_t *rect )
 
 		render->Push2DView( view2d, 0, NULL, GetFrustum() );
 		render->VGui_Paint( PAINT_UIPANELS | PAINT_CURSOR );
+		g_pClientMode->PostRenderVGui();
 		render->PopView( GetFrustum() );
 	}
 }
