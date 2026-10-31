@@ -1156,6 +1156,38 @@ void luasrc_LuaLogToFile( const char *pszText, char cSeverity )
 	g_pFullFileSystem->FPrintf( fh, "%s\n", pszOut );
 	g_pFullFileSystem->Close( fh );
 }
+
+static void HL2SB_LuaConsoleError( const char *pszText, bool bNewline )
+{
+	if ( pszText == NULL )
+		return;
+
+	const char *pszMessage = pszText;
+	if ( !Q_strnicmp( pszMessage, "[ERROR] ", 8 ) )
+		pszMessage += 8;
+	const char *pszLineEnd = strchr( pszMessage, '\n' );
+	const int nLineLength = pszLineEnd ? (int)( pszLineEnd - pszMessage ) : Q_strlen( pszMessage );
+
+#ifdef CLIENT_DLL
+	const Color clrRealm( 185, 174, 88, 255 );
+#else
+	const Color clrRealm( 113, 174, 185, 255 );
+#endif
+	ConColorMsg( 0, clrRealm, "[ERROR] %.*s", nLineLength, pszMessage );
+
+	if ( pszLineEnd != NULL )
+	{
+		Msg( "\n%s", pszLineEnd + 1 );
+		const int nTextLength = Q_strlen( pszText );
+		if ( bNewline && nTextLength > 0 && pszText[ nTextLength - 1 ] != '\n' )
+			Msg( "\n" );
+	}
+	else if ( bNewline )
+	{
+		Msg( "\n" );
+	}
+}
+
 // HL2SB: ONE console write per message.  These helpers used to print twice --
 // ConColorMsg for the colour and Warning/Msg for the engine log -- and the
 // console showed every Lua line doubled.  The file channel is hl2sb_lua.log
@@ -1226,7 +1258,7 @@ LUA_API void luasrc_LuaErrorMsg (const char *pszText)
 	}
 #endif
 
-	ConColorMsg( 0, Color( 255, 64, 64, 255 ), "%s\n", pszText );	// red
+	HL2SB_LuaConsoleError( pszText, true );
 	luasrc_LuaLogToFile( pszText, 'E' );
 }
 
@@ -1251,7 +1283,7 @@ LUA_API void luasrc_LuaInfoMsg (const char *pszText)
 	if ( pszText == NULL )
 		return;
 
-	ConColorMsg( 0, Color( 200, 236, 255, 255 ), "%s\n", pszText );	// ice blue
+	Msg( "%s\n", pszText );
 	luasrc_LuaLogToFile( pszText, 'I' );
 }
 
@@ -1273,13 +1305,12 @@ LUA_API void luasrc_LuaConsoleMsg (const char *pszText, char cSeverity, bool bNe
 	if ( pszText == NULL )
 		return;
 
-	Color clr = Color( 200, 236, 255, 255 );	// info: ice blue
-	if ( cSeverity == 'E' )
-		clr = Color( 255, 64, 64, 255 );		// error: red
-	else if ( cSeverity == 'W' )
-		clr = Color( 255, 165, 0, 255 );		// warning: orange
-
-	ConColorMsg( 0, clr, "%s%s", pszText, bNewline ? "\n" : "" );
+	if ( cSeverity == 'I' )
+		Msg( "%s%s", pszText, bNewline ? "\n" : "" );
+	else if ( cSeverity == 'E' )
+		HL2SB_LuaConsoleError( pszText, bNewline );
+	else
+		ConColorMsg( 0, Color( 255, 165, 0, 255 ), "%s%s", pszText, bNewline ? "\n" : "" );
 
 	// The console write above is the ONLY one (see luasrc_LuaErrorMsg).
 	if ( bNewline )

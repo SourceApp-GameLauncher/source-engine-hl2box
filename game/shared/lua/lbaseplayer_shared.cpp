@@ -380,36 +380,19 @@ static int CBasePlayer_GetCurrentCommand (lua_State *L) {
     HL2SB_PushUserCmdTable(L, activeCommand);
     return 1;
   }
-  static CUserCmd s_HL2SBLiveCmd;
-  s_HL2SBLiveCmd.Reset();
-  if ( input != NULL )
-  {
-    s_HL2SBLiveCmd.buttons = input->GetButtonBits( 0 );
-    int dx = 0, dy = 0;
-    HL2SB_GetLastMouseDeltas( dx, dy );
-    s_HL2SBLiveCmd.mousedx = dx;
-    s_HL2SBLiveCmd.mousedy = dy;
-  }
-  s_HL2SBLiveCmd.command_number = pPlayer->CurrentCommandNumber();
-  s_HL2SBLiveCmd.tick_count = gpGlobals->tickcount;
-  const CUserCmd *pCmd = &s_HL2SBLiveCmd;
-  static int s_nCmdDiag = 0;
-  if ( s_nCmdDiag < 10 && ( pCmd->buttons & IN_ATTACK2 ) )
-  {
-    ++s_nCmdDiag;
-    luasrc_LuaInfoMsgF( "[HL2SB] GetCurrentCommand #%d: buttons=%d mousedx=%d mousedy=%d\n",
-      s_nCmdDiag, pCmd->buttons, pCmd->mousedx, pCmd->mousedy );
-  }
+  luasrc_LuaErrorMsgF( "Player:GetCurrentCommand called outside of command/prediction\n" );
+  lua_pushnil(L);
+  return 1;
 #else
   const CUserCmd *pCmd = pPlayer->GetCurrentUserCommand();
   if (pCmd == NULL) {
+    luasrc_LuaErrorMsgF( "Player:GetCurrentCommand called outside of command/prediction\n" );
     lua_pushnil(L);
     return 1;
   }
-#endif
-
   HL2SB_PushUserCmdTable(L, pCmd);
   return 1;
+#endif
 }
 
 static int CBasePlayer_DoMuzzleFlash (lua_State *L) {
