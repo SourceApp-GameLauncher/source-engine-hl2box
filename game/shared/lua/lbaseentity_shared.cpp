@@ -7246,6 +7246,25 @@ static int luasrc_ents_GetByIndex (lua_State *L) {
   return 1;
 }
 
+static int luasrc_GlobalEntity (lua_State *L) {
+  double number = luaL_checknumber( L, 1 );
+  CBaseEntity *entity = NULL;
+  if ( IsFinite( number ) && number > -1.0 && number < NUM_ENT_ENTRIES ) {
+    int index = (int)number;
+#ifdef CLIENT_DLL
+    entity = CBaseEntity::Instance( index );
+#else
+    edict_t *edict = INDEXENT( index );
+    if ( edict ) entity = GetContainingEntity( edict );
+#endif
+  }
+  if ( entity )
+    CBaseEntity::PushLuaInstanceSafe( L, entity );
+  else
+    lua_getglobal( L, "NULL" );
+  return 1;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: HL2SB GMod compat - the global EyePos(), answering the origin of the
 // current render context exactly as the wiki documents it ("Vector EyePos()", no
@@ -7261,23 +7280,25 @@ static int luasrc_ents_GetByIndex (lua_State *L) {
 // 'EyePos')" once per frame (234 in one session) and drew nothing -- while the
 // bot, its script, its render group and its render bounds were all correct.
 //
-// The server has no render context, so it answers with the local player's eye
-// position; scripts that share code between realms then still get a Vector.
+// The current render view is available only in the client realm.
 //-----------------------------------------------------------------------------
+#ifdef CLIENT_DLL
 static int luasrc_EyePos( lua_State *L )
 {
-#ifdef CLIENT_DLL
-	Vector vecEyes = CurrentViewOrigin();
-#else
-	CBasePlayer *pPlayer = UTIL_GetLocalPlayer();
-	Vector vecEyes = ( pPlayer != NULL ) ? pPlayer->EyePosition() : vec3_origin;
-#endif
-
-	lua_pushvector( L, vecEyes );
+	static Vector cached = vec3_origin;
+	if ( IsCurrentViewAccessAllowed() ) cached = CurrentViewOrigin();
+	lua_pushvector( L, cached );
 	return 1;
 }
 
-#ifdef CLIENT_DLL
+static int luasrc_EyeAngles( lua_State *L )
+{
+	static QAngle cached = vec3_angle;
+	if ( IsCurrentViewAccessAllowed() ) cached = CurrentViewAngles();
+	lua_pushangle( L, cached );
+	return 1;
+}
+
 static int luasrc_MainEyePos( lua_State *L )
 {
 	lua_pushvector( L, MainViewOrigin() );
@@ -7299,10 +7320,12 @@ static const luaL_Reg ents_funcs[] = {
 
 
 static const luaL_Reg CBaseEntity_funcs[] = {
+  {"Entity", luasrc_GlobalEntity},
   {"CreateEntityByName", luasrc_CreateEntityByName},
   {"SetPhysConstraintSystem", Lua_SetPhysConstraintSystem},
-  {"EyePos", luasrc_EyePos},
 #ifdef CLIENT_DLL
+  {"EyePos", luasrc_EyePos},
+  {"EyeAngles", luasrc_EyeAngles},
   {"MainEyePos", luasrc_MainEyePos},
   {"MainEyeAngles", luasrc_MainEyeAngles},
 #endif
