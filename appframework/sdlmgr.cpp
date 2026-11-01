@@ -82,8 +82,10 @@ t_eglQueryString _eglQueryString;
 // Declared as ordinary C++ external symbols so the linker enforces
 // the launcher provides them at build time.
 // -----------------------------------------------------------------------------
+#if defined ANDROID
 extern void NotifyMouseVisibilityChanged(bool bVisible);
 extern void NotifyCursorChanged(SDL_Cursor *hCursor);
+#endif
 
 /*
 From Ryan Gordon:
@@ -1124,7 +1126,9 @@ void CSDLMgr::SetMouseVisible( bool bState )
 	{
 		m_bCursorVisible = bState;
 		m_bSetMouseVisibleCalled = true;
+#if defined ANDROID		
 		NotifyMouseVisibilityChanged(bState);
+#endif
 	}
 }
 
@@ -1142,7 +1146,9 @@ void CSDLMgr::SetMouseCursor( SDL_Cursor *hCursor )
 		else
 		{
 			m_hCursor = hCursor;
+#if defined ANDROID
 			NotifyCursorChanged(hCursor);
+#endif
 		}
 		m_bSetMouseCursorCalled = true;
 	}
