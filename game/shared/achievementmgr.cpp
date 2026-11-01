@@ -32,7 +32,9 @@
 #include "steam/isteamutils.h"
 #include "steam/steam_api.h"
 #include "steam/isteamremotestorage.h"
-#include "SourceApp/sourceapp_userstats.h"
+#ifdef ANDROID
+ #include "SourceApp/sourceapp_userstats.h"
+#endif
 #else
 #include "xbox/xbox_win32stubs.h"
 #endif
@@ -966,10 +968,12 @@ void CAchievementMgr::AwardAchievement( int iAchievementID )
 		}
 		m_AchievementsAwarded.AddToTail( iAchievementID );
 #endif
+#ifdef ANDROID
     	if ( SourceAppApicontext && SourceAppApicontext->SourceAppUserStats() )
     	{
     		SourceAppApicontext->SourceAppUserStats()->SetAchievement( pAchievement->GetName() );
     	}
+#endif
 	}
 	else if ( IsX360() )
 	{
