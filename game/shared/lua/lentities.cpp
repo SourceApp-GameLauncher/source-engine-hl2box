@@ -4,11 +4,28 @@
 #include "lbaseentity_shared.h"
 #include "basescripted.h"
 #include "mathlib/lvector.h"
+#ifdef CLIENT_DLL
+#include "physpropclientside.h"
+extern C_PhysPropClientside *HL2SB_CreateClientPhysicsProp( const char *modelName );
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 LUA_REGISTRATION_INIT( Entities );
+
+#ifdef CLIENT_DLL
+LUA_BINDING_BEGIN( Entities, CreateClientProp, "library", "Creates a clientside physics prop.", "client" )
+{
+    const char *model = luaL_optstring( L, 1, "models/error.mdl" );
+    if ( !model[0] ) model = "models/error.mdl";
+    C_PhysPropClientside *prop = HL2SB_CreateClientPhysicsProp( model );
+    if ( !prop ) return 0;
+    lua_pushentity( L, prop );
+    return 1;
+}
+LUA_BINDING_END( "Entity", "The created clientside prop." )
+#endif
 
 #define MAX_ENTITYARRAY 1024
 
@@ -22,6 +39,35 @@ static bool HL2SB_EntityNameMatch( const char *pszName, const char *pszPattern )
 	if ( nPattern > 0 && pszPattern[ nPattern - 1 ] == '*' )
 		return !Q_strncmp( pszName, pszPattern, nPattern - 1 );
 	return !Q_strcmp( pszName, pszPattern );
+}
+
+static bool HL2SB_ClassPatternMatch( const char *name, const char *pattern )
+{
+    const char *star = NULL;
+    const char *retry = NULL;
+    while ( *name )
+    {
+        if ( *pattern == '*' )
+        {
+            star = ++pattern;
+            retry = name;
+        }
+        else if ( *pattern == '?' || ( *pattern && Q_strnicmp( pattern, name, 1 ) == 0 ) )
+        {
+            ++pattern;
+            ++name;
+        }
+        else if ( star )
+        {
+            pattern = star;
+            name = ++retry;
+        }
+        else
+            return false;
+    }
+    while ( *pattern == '*' )
+        ++pattern;
+    return *pattern == '\0';
 }
 
 LUA_BINDING_BEGIN( Entities, Find, "library", "Finds the entity by its entity index" )
@@ -288,10 +334,7 @@ LUA_BINDING_END()
 // right after the shared pair's registration.
 #endif // GAME_DLL
 
-// HL2SB GMod compat: ents.FindByClass( pattern ) answers a TABLE of every
-// matching entity and accepts GMod's trailing-asterisk wildcard
-// ("minecraft_block*", "mcblock*").  SHARED -- the minecraft addon filters
-// entities on the client too.
+// ents.FindByClass returns matching entities and accepts wildcard patterns.
 LUA_BINDING_BEGIN( Entities, FindAllByClass, "library", "Finds all entities whose class name matches (trailing * = prefix wildcard)" )
 {
     const char *pszPattern = LUA_BINDING_ARGUMENT( luaL_checkstring, 1, "className" );
@@ -306,7 +349,7 @@ LUA_BINDING_BEGIN( Entities, FindAllByClass, "library", "Finds all entities whos
     while ( ( pEnt = gEntList.NextEnt( pEnt ) ) != NULL )
 #endif
     {
-        if ( HL2SB_EntityNameMatch( pEnt->GetClassname(), pszPattern ) )
+        if ( HL2SB_ClassPatternMatch( pEnt->GetClassname(), pszPattern ) )
         {
             lua_pushinteger( L, ++i );
             CBaseEntity::PushLuaInstanceSafe( L, pEnt );
@@ -651,10 +694,21 @@ LUA_BINDING_END( "boolean", "True if the entity is valid, false otherwise." )
 // exist there at all.
 LUA_BINDING_BEGIN( Entities, FindInSphere, "library", "Finds all entities within a radius" )
 {
-    CBaseEntity *pList[MAX_ENTITYARRAY];
-
     Vector position = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "position" );
     float radius = LUA_BINDING_ARGUMENT( luaL_checknumber, 2, "radius" );
+
+#ifdef GAME_DLL
+    lua_newtable( L );
+    CBaseEntity *pEntity = NULL;
+    int index = 0;
+    while ( ( pEntity = gEntList.FindEntityInSphere( pEntity, position, radius ) ) != NULL )
+    {
+        CBaseEntity::PushLuaInstanceSafe( L, pEntity );
+        lua_rawseti( L, -2, ++index );
+    }
+    return 1;
+#else
+    CBaseEntity *pList[MAX_ENTITYARRAY];
 
     // HL2SB: the flag mask must default to 0 ("do not filter").  The server's
     // UTIL_EntitiesInSphere() reads a non-zero mask as a requirement --
@@ -667,26 +721,22 @@ LUA_BINDING_BEGIN( Entities, FindInSphere, "library", "Finds all entities within
     // hits me" survived every other fix.
     int flagMask = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optinteger, 3, 0, "flagMask" );
 
-#ifdef CLIENT_DLL
     int partitionMask = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optinteger, 4, PARTITION_CLIENT_NON_STATIC_EDICTS, "partitionMask" );
     int count = UTIL_EntitiesInSphere( pList, MAX_ENTITYARRAY, position, radius, flagMask, partitionMask );
-#else
-    int count = UTIL_EntitiesInSphere( pList, MAX_ENTITYARRAY, position, radius, flagMask );
-#endif
 
     lua_newtable( L );
 
     for ( int i = 0; i < count; i++ )
     {
-        lua_pushinteger( L, i );
+        lua_pushinteger( L, i + 1 );
         CBaseEntity::PushLuaInstanceSafe( L, pList[i] );
         lua_settable( L, -3 );
     }
 
-    lua_pushinteger( L, count );
-    return 2;
+    return 1;
+#endif
 }
-LUA_BINDING_END( "table", "A table of every entity found, plus the count." )
+LUA_BINDING_END( "table", "A table of every entity found." )
 
 LUA_BINDING_BEGIN( Entities, FirstInList, "library", "Gets the first entity in the list" )
 {

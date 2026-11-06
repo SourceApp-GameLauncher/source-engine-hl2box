@@ -17,8 +17,11 @@
 #include "luamanager.h"
 #include "luasrclib.h"
 #include "gamestringpool.h"
+#include "materialsystem/imaterial.h"
+#include "model_types.h"
 #include "lbaseentity_shared.h"
 #include "basescripted.h"
+#include "hl2sb_transmit_parent.h"
 #include "mathlib/vmatrix.h"	// HL2SB: VMatrix for the transform matrix getters
 #include "mathlib/lvmatrix.h"	// HL2SB: lua_pushvmatrix for Entity:GetWorldTransformMatrix
 #ifdef CLIENT_DLL
@@ -114,6 +117,10 @@ LUA_API bool lua_pushnextbotentity (lua_State *L, CBaseEntity *pEntity);
 static bool lua_hasmetatable (lua_State *L, const char *pszMetatableName);
 
 LUA_API void lua_pushentity (lua_State *L, CBaseEntity *pEntity) {
+  if (pEntity != NULL && pEntity->IsPlayer() && lua_hasmetatable(L, "CBasePlayer")) {
+    lua_pushplayer(L, ToBasePlayer(pEntity));
+    return;
+  }
   /* HL2SB: GMod hands each entity class family its own metatable, and that
   ** has to happen for EVERY entity push -- ents.FindByClass, trace results,
   ** Player:GetVehicle(), any binding that returns an entity -- not only for
@@ -754,8 +761,13 @@ static int CBaseEntity_EndTouch (lua_State *L) {
   return 0;
 }
 
+static bool HL2SB_IsDTEntity(lua_State *L, int index);
+
 static int CBaseEntity_entindex (lua_State *L) {
-  lua_pushinteger(L, luaL_checkentity(L, 1)->entindex());
+  if (!lua_isnil(L, 1) && !HL2SB_IsDTEntity(L, 1))
+    return luaL_typerror(L, 1, "Entity");
+  CBaseEntity *entity = lua_isnil(L, 1) ? NULL : lua_toentity(L, 1);
+  lua_pushinteger(L, entity ? entity->entindex() : 0);
   return 1;
 }
 
@@ -1729,30 +1741,34 @@ static int CBaseEntity_IsAlive (lua_State *L) {
 //
 // and the nil-method raise killed its behaviour coroutine mid-attack, which is
 // what "still not working normally" looked like once the kill itself stopped
-// crashing the server.  FL_ONGROUND is what the engine maintains; the ground
-// entity test covers the frame it is being set in.
+// crashing the server.
 static int CBaseEntity_IsOnGround (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
 
-  lua_pushboolean(L, ( ( pEntity->GetFlags() & FL_ONGROUND ) != 0 ) || ( pEntity->GetGroundEntity() != NULL ) );
+  lua_pushboolean(L, (pEntity->GetFlags() & FL_ONGROUND) != 0);
   return 1;
 }
 
 // HL2SB GMod compat (2026-09-24): Entity:OnGround() - the First Person Body
 // addon captures ENTITY.OnGround (this fork only had IsOnGround; GMod
 // community addons use both spellings).  Same predicate, second name.
-// HL2SB GMod compat (2026-09-25): Entity:PhysicsDestroy() - GMod destroys the
-// entity's physics object.  Clientside entities in this fork carry no physics
-// at all, and First Person Body calls it defensively on its fresh body clone,
-// so a no-op answers the only real use; the PhysObj bindings remain the
-// sandbox-facing API.
+extern bool PhysIsInCallback();
 static int CBaseEntity_PhysicsDestroy (lua_State *L) {
-  luaL_checkentity(L, 1);
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  CBaseAnimating *anim = entity->GetBaseAnimating();
+  if ( entity->IsWorld() || ( anim && anim->IsRagdoll() ) ) return 0;
+  if ( entity->VPhysicsGetObject() && PhysIsInCallback() ) {
+    Warning( "Cannot destroy physics in a physics callback!\n" );
+    lua_pushboolean( L, false );
+    return 1;
+  }
+  entity->VPhysicsDestroyObject();
   return 0;
 }
 
 static int CBaseEntity_OnGround (lua_State *L) {
-  return CBaseEntity_IsOnGround(L);
+  lua_pushboolean(L, (luaL_checkentity(L, 1)->GetFlags() & FL_ONGROUND) != 0);
+  return 1;
 }
 
 // HL2SB GMod compat (2026-09-24): Entity:SetIK( bool ) - accepted as a safe
@@ -1827,18 +1843,23 @@ static int CBaseEntity_SetFlexScale (lua_State *L)
 // reaches it (lua_toanimating() RTTI-casts the handle and answers NULL for
 // entities that are not animating, e.g. a brush).
 static int CBaseEntity_SetModelScale (lua_State *L) {
-  lua_CBaseAnimating *pAnimating = lua_toanimating(L, 1);
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  lua_CBaseAnimating *pAnimating = pEntity->GetBaseAnimating();
 
-  if (pAnimating != NULL)
-    pAnimating->SetModelScale((float)luaL_checknumber(L, 2), (float)luaL_optnumber(L, 3, 0.0f));
+  if (pAnimating != NULL && !pEntity->IsMarkedForDeletion())
+    pAnimating->SetModelScale((float)luaL_checknumber(L, 2),
+      lua_type(L, 3) == LUA_TNUMBER ? (float)lua_tonumber(L, 3) : 0.0f);
 
   return 0;
 }
 
 static int CBaseEntity_GetModelScale (lua_State *L) {
-  lua_CBaseAnimating *pAnimating = lua_toanimating(L, 1);
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  lua_CBaseAnimating *pAnimating = pEntity->GetBaseAnimating();
 
-  lua_pushnumber(L, (pAnimating != NULL) ? pAnimating->GetModelScale() : 1.0f);
+  if (pAnimating == NULL || pEntity->IsMarkedForDeletion())
+    return 0;
+  lua_pushnumber(L, pAnimating->GetModelScale());
   return 1;
 }
 
@@ -1989,8 +2010,7 @@ static int CBaseEntity_LocalToWorld (lua_State *L) {
   Vector vecLocal = luaL_checkvector(L, 2);
   Vector vecWorld;
 
-  VectorRotate(vecLocal, pEntity->GetAbsAngles(), vecWorld);
-  vecWorld += pEntity->GetAbsOrigin();
+  pEntity->EntityToWorldSpace( vecLocal, &vecWorld );
 
   lua_pushvector(L, vecWorld);
   return 1;
@@ -2039,10 +2059,9 @@ static int CBaseEntity_LocalToWorldAngles (lua_State *L) {
   QAngle angLocal = luaL_checkangle(L, 2);
   QAngle angWorld;
 
-  matrix3x4_t mEntity, mLocal, mWorld;
-  AngleMatrix( pEntity->GetAbsAngles(), pEntity->GetAbsOrigin(), mEntity );
+  matrix3x4_t mLocal, mWorld;
   AngleMatrix( angLocal, mLocal );
-  ConcatTransforms( mEntity, mLocal, mWorld );
+  ConcatTransforms( pEntity->EntityToWorldTransform(), mLocal, mWorld );
   MatrixAngles( mWorld, angWorld );
 
   lua_pushangle(L, angWorld);
@@ -2307,26 +2326,16 @@ static int CBaseEntity_MapCreationID (lua_State *L) {
   return 1;
 }
 
-/* HL2SB GMod compat: Entity:GetModelBounds() (GMod wiki: returns the model's
-** min/max bounding box, animation bboxes included, NOT scaled by
-** SetModelScale).  The studio path is the engine's own sequence bbox helper,
-** which is exactly "bounds that account for the animations compiled into the
-** model"; non-studio models answer the collision OBB. */
-#include "animation.h"					// HL2SB: Entity:GetModelBounds (ExtractBbox)
+/* Entity:GetModelBounds returns the unscaled bounds of the model itself. */
+#include "animation.h"
 
 static int CBaseEntity_GetModelBounds (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const model_t *pModel = pEntity->GetModel();
+  if ( !pModel || !modelinfo )
+    return 0;
   Vector mins, maxs;
-  CBaseAnimating *pAnim = pEntity->GetBaseAnimating();
-  if ( pAnim != NULL && pAnim->GetModelPtr() != NULL )
-  {
-    ExtractBbox( pAnim->GetModelPtr(), pAnim->GetSequence(), mins, maxs );
-  }
-  else
-  {
-    mins = pEntity->CollisionProp()->OBBMins();
-    maxs = pEntity->CollisionProp()->OBBMaxs();
-  }
+  modelinfo->GetModelBounds( pModel, mins, maxs );
   lua_pushvector(L, mins);
   lua_pushvector(L, maxs);
   return 2;
@@ -3199,6 +3208,59 @@ static int CBaseEntity_GetColor (lua_State *L) {
   return 1;
 }
 
+static int CBaseEntity_GetCycle (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  lua_CBaseAnimating *pAnimating = pEntity->GetBaseAnimating();
+  lua_pushnumber( L, pAnimating && !pEntity->IsMarkedForDeletion() ? pAnimating->GetCycle() : 0 );
+  return 1;
+}
+
+static int CBaseEntity_GetSequence (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  lua_CBaseAnimating *pAnimating = pEntity->GetBaseAnimating();
+  lua_pushinteger( L, pAnimating && !pEntity->IsMarkedForDeletion() ? pAnimating->GetSequence() : 0 );
+  return 1;
+}
+
+static int CBaseEntity_GetSequenceName (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  lua_CBaseAnimating *pAnimating = pEntity->GetBaseAnimating();
+  if ( !pAnimating || pEntity->IsMarkedForDeletion() ) {
+    lua_pushstring( L, "" );
+    return 1;
+  }
+  lua_pushstring( L, pAnimating->GetSequenceName( luaL_checkint( L, 2 ) ) );
+  return 1;
+}
+
+int HL2SB_EntityGetMaterials (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  const model_t *pModel = pEntity->GetModel();
+  lua_newtable( L );
+  if ( pModel == NULL || modelinfo == NULL )
+    return 1;
+
+  const int modelType = modelinfo->GetModelType( pModel );
+  if ( modelType != mod_studio && modelType != mod_brush )
+    return 1;
+  if ( modelType == mod_studio && modelinfo->GetStudiomodel( pModel ) == NULL )
+    return 1;
+  int count = modelType == mod_studio ? 128 : modelinfo->GetModelMaterialCount( pModel );
+  count = clamp( count, 0, 128 );
+  if ( count == 0 )
+    return 1;
+  CUtlVector<IMaterial *> materials;
+  materials.SetCount( count + 1 );
+  for ( int i = 0; i <= count; ++i )
+    materials[i] = NULL;
+  modelinfo->GetModelMaterials( pModel, count, materials.Base() );
+  for ( int i = 0; i < count && materials[i] != NULL; ++i ) {
+    lua_pushstring( L, materials[i]->GetName() );
+    lua_rawseti( L, -2, i + 1 );
+  }
+  return 1;
+}
+
 static int CBaseEntity_SetColor (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
   lua_Color clr = luaL_checkcolor(L, 2);
@@ -3318,39 +3380,11 @@ static int CBaseEntity_SetSize (lua_State *L) {
       {
         lua_pop( L, 1 );
       }
-      lua_pushnumber( L, size );
-      lua_setfield( L, -2, "__hl2sb_widget_size" );
       lua_pop( L, 1 );
     }
     return 0;
   }
   entity->SetSize(luaL_checkvector(L, 2), luaL_checkvector(L, 3));
-  return 0;
-}
-
-static int CBaseEntity_GetWidgetSize (lua_State *L) {
-  CBaseEntity *entity = luaL_checkentity( L, 1 );
-  if ( entity->m_nTableReference >= 0 && lua_isrefvalid( L, entity->m_nTableReference ) )
-  {
-    lua_getref( L, entity->m_nTableReference );
-    lua_getfield( L, -1, "__hl2sb_widget_size" );
-    if ( lua_isnumber( L, -1 ) ) { lua_remove( L, -2 ); return 1; }
-    lua_pop( L, 2 );
-  }
-  lua_pushnumber( L, 0.0f );
-  return 1;
-}
-
-static int CBaseEntity_SetWidgetSize (lua_State *L) {
-  CBaseEntity *entity = luaL_checkentity( L, 1 );
-  const float size = (float)luaL_checknumber( L, 2 );
-  if ( entity->m_nTableReference >= 0 && lua_isrefvalid( L, entity->m_nTableReference ) )
-  {
-    lua_getref( L, entity->m_nTableReference );
-    lua_pushnumber( L, size );
-    lua_setfield( L, -2, "__hl2sb_widget_size" );
-    lua_pop( L, 1 );
-  }
   return 0;
 }
 
@@ -3426,11 +3460,6 @@ static int CBaseEntity_SUB_Remove (lua_State *L) {
   return 0;
 }
 
-static int CBaseEntity_Think (lua_State *L) {
-  luaL_checkentity(L, 1)->Think();
-  return 0;
-}
-
 static int CBaseEntity_ToggleFlag (lua_State *L) {
   luaL_checkentity(L, 1)->ToggleFlag(luaL_checkint(L, 2));
   return 0;
@@ -3489,14 +3518,12 @@ static int CBaseEntity_GetPhysicsObjectCount (lua_State *L) {
 // GMod hands back the body of physics bone #n; the ragdoll's object list is
 // in physics-bone order, so indexing the list is the same mapping GMod uses.
 static int CBaseEntity_GetPhysicsObjectNum (lua_State *L) {
-  int nNum = luaL_checkint(L, 2);
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  int nNum = (int)luaL_checknumber(L, 2);
   IPhysicsObject *pList[VPHYSICS_MAX_OBJECT_LIST_COUNT];
-  int count = luaL_checkentity(L, 1)->VPhysicsGetObjectList( pList, ARRAYSIZE(pList) );
-  if ( nNum < 0 || nNum >= count || nNum >= ARRAYSIZE(pList) || pList[nNum] == NULL )
-  {
-    lua_pushnil(L);
-    return 1;
-  }
+  int count = pEntity->VPhysicsGetObjectList( pList, ARRAYSIZE(pList) );
+  if ( nNum < 0 || nNum >= count || nNum >= ARRAYSIZE(pList) )
+    return 0;
   lua_pushphysicsobject(L, pList[nNum]);
   return 1;
 }
@@ -3853,12 +3880,138 @@ static int CBaseEntity_SetMaterial( lua_State *L )
   return 0;
 }
 
+// HL2SB (2026-11-05) GMod compat: Entity:SetSubMaterial( index, material ).
+// Reference behavior / GMod does: a non-numeric index clears all 32 slots,
+// only slots 0..31 are writable (out-of-range indices are ignored), and an
+// empty material clears the slot.  Keep the names in the same native NW2 store
+// as Entity:SetMaterial so a server write is replicated to clients.
+static void HL2SB_EntitySubMaterialKey( CBaseEntity *pEntity, int nSlot, char *key, size_t size )
+{
+#ifdef CLIENT_DLL
+  // Client-only models share entindex -1 but have distinct entity handles.
+  if ( pEntity->entindex() < 0 )
+  {
+    Q_snprintf( key, size, "__hl2sb_submat_%d_%u", nSlot, pEntity->GetRefEHandle().ToInt() );
+    return;
+  }
+#endif
+  Q_snprintf( key, size, "__hl2sb_submat_%d", nSlot );
+}
+
+static void HL2SB_EntitySubMaterialName( CBaseEntity *pEntity, int nSlot, CUtlString &name )
+{
+  name = "";
+  if ( nSlot < 0 || nSlot > 31 )
+    return;
+  char key[64];
+  HL2SB_EntitySubMaterialKey( pEntity, nSlot, key, sizeof( key ) );
+  HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, key, false );
+  if ( p && p->tag == HL2SB_NWTAG_STRING )
+  {
+    name = p->s;
+    return;
+  }
+#ifdef CLIENT_DLL
+  if ( pEntity->entindex() >= 0 )
+  {
+    char replicatedKey[64];
+    Q_snprintf( replicatedKey, sizeof( replicatedKey ), "__hl2sb_submat_%d", nSlot );
+    HL2SB_NWReplicatedString( HL2SB_NWFAMILY_NW2, pEntity->entindex(), replicatedKey, name );
+  }
+#endif
+}
+
+#ifdef CLIENT_DLL
+static CUtlDict<CMaterialReference, unsigned short> s_EntitySubMaterialRefs;
+
+IMaterial *HL2SB_EntitySubMaterialOverride( CBaseEntity *pEntity, int nSlot )
+{
+  CUtlString name;
+  HL2SB_EntitySubMaterialName( pEntity, nSlot, name );
+  char key[64];
+  Q_snprintf( key, sizeof( key ), "%u_%d", pEntity->GetRefEHandle().ToInt(), nSlot );
+  IMaterial *pMaterial = name.IsEmpty() ? NULL : materials->FindMaterial( name.Get(), TEXTURE_GROUP_MODEL, false );
+  if ( !pMaterial || pMaterial->IsErrorMaterial() ) {
+    s_EntitySubMaterialRefs.Remove( key );
+    return NULL;
+  }
+  unsigned short index = s_EntitySubMaterialRefs.Find( key );
+  if ( !s_EntitySubMaterialRefs.IsValidIndex( index ) )
+    index = s_EntitySubMaterialRefs.Insert( key );
+  s_EntitySubMaterialRefs[index].Init( pMaterial );
+  return pMaterial;
+}
+#endif
+
+// Reference behavior / GMod does: GetSubMaterial returns the override name for
+// the slot, or an empty string when the slot is not overridden.
+static int CBaseEntity_GetSubMaterial( lua_State *L )
+{
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  const int nSlot = (int)luaL_checknumber( L, 2 );
+  CUtlString name;
+  HL2SB_EntitySubMaterialName( pEntity, nSlot, name );
+  lua_pushstring( L, name.Get() );
+  return 1;
+}
+
+static int CBaseEntity_SetSubMaterial( lua_State *L )
+{
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  const bool bClearAll = lua_isnoneornil( L, 2 ) || !lua_isnumber( L, 2 );
+  const int nSlot = bClearAll ? -1 : (int)lua_tonumber( L, 2 );
+  // GMod compares the index as unsigned against 31; negative indices are ignored.
+  if ( !bClearAll && (unsigned int)nSlot > 31u )
+    return 0;
+  const char *pszMaterial = bClearAll ? "" : luaL_optstring( L, 3, "" );
+  char szMaterial[256];
+  Q_strncpy( szMaterial, pszMaterial ? pszMaterial : "", sizeof( szMaterial ) );
+
+  const int nFirst = bClearAll ? 0 : nSlot;
+  const int nLast = bClearAll ? 31 : nSlot;
+  for ( int i = nFirst; i <= nLast; ++i )
+  {
+    char key[64];
+    HL2SB_EntitySubMaterialKey( pEntity, i, key, sizeof( key ) );
+    HL2SB_NWValue *p = NW2VarGetOrCreate( pEntity, key, true );
+    if ( !p )
+      continue;
+#ifndef CLIENT_DLL
+    const bool bChanged = p->tag != HL2SB_NWTAG_STRING || Q_strcmp( p->s.Get(), szMaterial ) != 0;
+#endif
+    p->s = szMaterial;
+    p->tag = HL2SB_NWTAG_STRING;
+#ifndef CLIENT_DLL
+    if ( bChanged )
+    {
+      char replicatedKey[64];
+      Q_snprintf( replicatedKey, sizeof( replicatedKey ), "__hl2sb_submat_%d", i );
+      lua_pushstring( L, szMaterial );
+      HL2SB_NWReplicateValue( HL2SB_NWFAMILY_NW2, pEntity, replicatedKey,
+        HL2SB_NWTAG_STRING, L, -1 );
+      lua_pop( L, 1 );
+    }
+#endif
+  }
+  return 0;
+}
+
 #ifdef CLIENT_DLL
 void HL2SB_EntityMaterialReleased( CBaseEntity *pEntity )
 {
   char refKey[32];
   HL2SB_EntityMaterialRefKey( pEntity, refKey, sizeof( refKey ) );
   s_EntityMaterialRefs.Remove( refKey );
+  for ( int slot = 0; slot < 32; ++slot ) {
+    char subKey[64];
+    Q_snprintf( subKey, sizeof( subKey ), "%u_%d", pEntity->GetRefEHandle().ToInt(), slot );
+    s_EntitySubMaterialRefs.Remove( subKey );
+    if ( pEntity->entindex() < 0 ) {
+      char key[64];
+      HL2SB_EntitySubMaterialKey( pEntity, slot, key, sizeof( key ) );
+      HL2SB_NWDropLocalVar( HL2SB_NWFAMILY_NW2, pEntity->entindex(), key );
+    }
+  }
   if ( pEntity->entindex() >= 0 )
     HL2SB_NWFreeEntityVars( pEntity->entindex() );
   else
@@ -4702,8 +4855,8 @@ void HL2SB_PushNullEntityIndex (lua_State *L, const char *pszField) {
     bKnown = HL2SB_PushClassField( L, s_pszNullIndexParents[i], pszField );
 
   if ( bKnown ) {
-    // DT methods validate NULL receivers themselves.
-    if (lua_isfunction(L,-1) && (!Q_strncmp(pszField,"GetDT",5) || !Q_strncmp(pszField,"SetDT",5))) return;
+    // These methods handle NULL receivers themselves.
+    if (lua_isfunction(L,-1) && (!Q_strncmp(pszField,"GetDT",5) || !Q_strncmp(pszField,"SetDT",5) || !Q_strcmp(pszField,"EntIndex") || !Q_strcmp(pszField,"entindex"))) return;
     lua_pop( L, 1 );   /* drop the looked-up value; answer the call-safe stub */
     lua_pushcfunction( L, HL2SB_NullEntityMethod );
   } else {
@@ -4848,7 +5001,8 @@ static int CBaseEntity___index (lua_State *L) {
     else if ( pEntity->IsWeapon() )
       bAnswered = HL2SB_PushClassField( L, "CBaseCombatWeapon", field );
 
-    if ( !bAnswered && pEntity->GetBaseAnimating() != NULL )
+    if ( !bAnswered && ( pEntity->GetBaseAnimating() != NULL ||
+         !Q_strcmp( field, "GetBoneCount" ) || !Q_strcmp( field, "GetBoneName" ) ) )
       bAnswered = HL2SB_PushClassField( L, "CBaseAnimating", field );
 
     if ( !bAnswered )
@@ -5044,17 +5198,19 @@ static int CBaseEntity_SetVelocity (lua_State *L) {
   return 0;
 }
 
-#ifdef CLIENT_DLL
 static int CBaseEntity_GetVelocity (lua_State *L) {
   CBaseEntity *entity = luaL_checkentity(L, 1);
   Vector velocity = entity->GetAbsVelocity();
   IPhysicsObject *physics = entity->VPhysicsGetObject();
-  if (entity->GetMoveType() == MOVETYPE_VPHYSICS && physics)
-    physics->GetVelocity(&velocity, NULL);
+  if (entity->GetMoveType() == MOVETYPE_VPHYSICS) {
+#ifndef CLIENT_DLL
+    velocity.Init();
+#endif
+    if (physics) physics->GetVelocity(&velocity, NULL);
+  }
   lua_pushvector(L, velocity);
   return 1;
 }
-#endif
 
 // HL2SB GMod compat: the direction vectors GMod exposes on every entity.  GMod
 // weapon scripts build their knockback from them - weapon_fists/shared.lua:127
@@ -5108,12 +5264,9 @@ static int CBaseEntity_TakeDamageInfo (lua_State *L) {
 //-----------------------------------------------------------------------------
 static int CBaseEntity_GetOwner (lua_State *L) {
   CBaseEntity *entity = luaL_checkentity( L, 1 );
-  CBaseCombatWeapon *weapon = dynamic_cast<CBaseCombatWeapon *>( entity );
-  CBaseEntity *owner = weapon ? weapon->GetOwner() : entity->GetOwnerEntity();
-  if ( owner == NULL )
-    lua_pushnil( L );
-  else
-    CBaseEntity::PushLuaInstanceSafe( L, owner );
+  CBaseViewModel *viewModel = dynamic_cast<CBaseViewModel *>( entity );
+  CBaseEntity *owner = viewModel ? viewModel->GetOwner() : entity->GetOwnerEntity();
+  CBaseEntity::PushLuaInstanceSafe( L, owner );
   return 1;
 }
 
@@ -5230,9 +5383,8 @@ static int CBaseEntity_GetRenderGroup (lua_State *L) {
 
 //-----------------------------------------------------------------------------
 // HL2SB (2026-09-21): Entity:GetAimVector() -- wiki: Player:GetAimVector is the
-// player form (already bound in lbaseplayer_shared); NPC:GetAimVector aims at
-// the NPC's current enemy and defaults to Entity:GetForward with none (the
-// engine's weapon-spread noise is deliberately not reproduced).  scp173 reads
+// player form (already bound in lbaseplayer_shared); NPC:GetAimVector uses
+// the NPC's shooting trajectory.  scp173 reads
 // each NPC victim's aim to build its vision cone; with no binding the call
 // raised once per victim per think.
 //-----------------------------------------------------------------------------
@@ -5243,11 +5395,9 @@ static int CBaseEntity_GetAimVector (lua_State *L) {
   CAI_BaseNPC *pNPC = pEntity->MyNPCPointer();
   if ( pNPC != NULL )
   {
-    CBaseEntity *pEnemy = pNPC->GetEnemy();
-    if ( pEnemy != NULL )
-      vecAim = pEnemy->WorldSpaceCenter() - pNPC->EyePosition();
-    else
-      AngleVectors( pNPC->GetAbsAngles(), &vecAim );
+    vecAim = pNPC->GetActualShootTrajectory( pNPC->Weapon_ShootPosition() );
+    lua_pushvector( L, vecAim );
+    return 1;
   }
   else
 #endif
@@ -5339,7 +5489,7 @@ static int CBaseEntity_SetEnemy (lua_State *L) {
   CAI_BaseNPC *pNPC = pEntity->MyNPCPointer();
   if ( pNPC == NULL )
     return 0;
-  pNPC->SetEnemy( lua_toentity( L, 2 ) );
+  pNPC->SetEnemy( lua_toentity( L, 2 ), luaL_optboolean( L, 3, true ) != 0 );
   return 0;
 }
 
@@ -5714,6 +5864,64 @@ static bool HL2SB_PushClientFieldFallback (lua_State *L, CBaseEntity *pEntity, c
 }
 #endif // CLIENT_DLL
 
+#if defined( GAME_DLL )
+static int CBaseEntity_GetKeyValues (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity( L, 1 );
+  lua_newtable( L );
+
+  for ( datamap_t *pMap = pEntity->GetDataDescMap(); pMap != NULL; pMap = pMap->baseMap ) {
+    for ( int i = 0; i < pMap->dataNumFields; ++i ) {
+      const char *pName = pMap->dataDesc[i].externalName;
+      variant_t value;
+      if ( pName == NULL || !pEntity->ReadKeyField( pName, &value ) )
+        continue;
+
+      switch ( value.FieldType() ) {
+      case FIELD_VOID:
+        continue;
+      case FIELD_FLOAT:
+        lua_pushnumber( L, value.Float() );
+        break;
+      case FIELD_STRING:
+      case FIELD_SOUNDNAME:
+        lua_pushstring( L, value.String() );
+        break;
+      case FIELD_INTEGER:
+      case FIELD_SHORT:
+      case FIELD_CHARACTER:
+        lua_pushnumber( L, value.Int() );
+        break;
+      case FIELD_BOOLEAN:
+        lua_pushnumber( L, value.Bool() ? 1 : 0 );
+        break;
+      case FIELD_COLOR32: {
+        color32 color = value.Color32();
+        char text[32];
+        Q_snprintf( text, sizeof( text ), "%d %d %d %d", color.r, color.g, color.b, color.a );
+        lua_pushstring( L, text );
+        break;
+      }
+      case FIELD_EHANDLE:
+        CBaseEntity::PushLuaInstanceSafe( L, value.Entity().Get() );
+        break;
+      case FIELD_VECTOR:
+      case FIELD_POSITION_VECTOR: {
+        Vector vector;
+        value.Vector3D( vector );
+        lua_pushvector( L, vector );
+        break;
+      }
+      default:
+        lua_pushstring( L, "<UNHANDLED>" );
+        break;
+      }
+      lua_setfield( L, -2, pName );
+    }
+  }
+  return 1;
+}
+#endif
+
 static int CBaseEntity_GetSaveTable (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity( L, 1 );
 
@@ -5943,25 +6151,22 @@ static int CBaseEntity_SetDSP (lua_State *L) {
   return 0;
 }
 
+#ifndef CLIENT_DLL
+extern void HL2SB_SetScriptedUseCaps( CBaseScripted *entity, int caps );
 static int CBaseEntity_SetUseType (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  (void)luaL_checkint(L, 2);  // USE_* / SIMPLE_USE -- accepted and kept on the
-                              // entity's Lua field table for read-back; this
-                              // fork's Use dispatch behaviour is unchanged.
-  if ( pEntity->m_nTableReference < 0 ||
-       !lua_isrefvalid( L, pEntity->m_nTableReference ) )
-  {
-    if ( pEntity->m_nTableReference > 0 )
-      lua_unref( L, pEntity->m_nTableReference );
-    lua_newtable( L );
-    pEntity->m_nTableReference = luaL_ref( L, LUA_REGISTRYINDEX );
+  const int type = (int)luaL_checknumber(L, 2);
+  CBaseScripted *pScripted = dynamic_cast<CBaseScripted *>(pEntity);
+  if ( pScripted ) {
+    int caps = FCAP_CONTINUOUS_USE;
+    if ( type == 1 ) caps = FCAP_ONOFF_USE;
+    else if ( type == 2 ) caps = FCAP_DIRECTIONAL_USE;
+    else if ( type == 3 ) caps = FCAP_IMPULSE_USE;
+    HL2SB_SetScriptedUseCaps( pScripted, caps );
   }
-  lua_getref( L, pEntity->m_nTableReference );
-  lua_pushvalue( L, 2 );
-  lua_setfield( L, -2, "UseType" );
-  lua_pop( L, 1 );
   return 0;
 }
+#endif
 
 static int CBaseEntity_PhysicsInitBox (lua_State *L) {
   /* HL2SB fix (2026-09-20, two rounds):
@@ -6047,24 +6252,43 @@ static int CBaseEntity_StopParticles (lua_State *L) {
 // ent:GetAttachment( data:GetAttachment() ); with the method missing, every
 // CS-style muzzle flash fell through to EffectData origin (0,0,0) and drew at
 // world origin - invisible at the gun.  1-based ids (0 == none); returns the
-// AngPos table { Ang, Pos } or nil when the attachment does not exist, per
-// wiki.  Bone is not filled - CAttachmentData does not carry it here.
-static int CBaseEntity_GetAttachment (lua_State *L) {
+// AngPos table { Ang, Pos, Bone } or nil when the attachment does not exist.
+static int CBaseEntity_GetAttachments (lua_State *L) {
   CBaseEntity *pEntity = luaL_checkentity(L, 1);
-  const int nAttachment = luaL_checkinteger(L, 2);
+  CBaseAnimating *pAnim = pEntity ? pEntity->GetBaseAnimating() : NULL;
+  CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
+  lua_newtable(L);
+  if ( !pHdr )
+    return 1;
+  for ( int i = 0; i < pHdr->GetNumAttachments(); ++i ) {
+    lua_createtable(L, 0, 2);
+    lua_pushstring(L, pHdr->pAttachment(i).pszName());
+    lua_setfield(L, -2, "name");
+    lua_pushinteger(L, i + 1);
+    lua_setfield(L, -2, "id");
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
+
+int CBaseEntity_GetAttachment (lua_State *L) {
+  CBaseEntity *pEntity = luaL_checkentity(L, 1);
+  const int nAttachment = (int)luaL_checknumber(L, 2);
   CBaseAnimating *pAnim = pEntity ? dynamic_cast<CBaseAnimating *>( pEntity ) : NULL;
   Vector vecPos;
   QAngle angPos;
-  if ( pAnim == NULL || nAttachment < 1
+  CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
+  if ( pHdr == NULL || nAttachment < 1 || nAttachment > pHdr->GetNumAttachments()
        || !pAnim->GetAttachment( nAttachment, vecPos, angPos ) ) {
-    lua_pushnil(L);
-    return 1;
+    return 0;
   }
   lua_newtable(L);
   lua_pushvector(L, vecPos);
   lua_setfield(L, -2, "Pos");
   lua_pushangle(L, angPos);
   lua_setfield(L, -2, "Ang");
+  lua_pushinteger(L, pHdr->GetAttachmentBone(nAttachment - 1));
+  lua_setfield(L, -2, "Bone");
   return 1;
 }
 
@@ -6107,18 +6331,15 @@ static int CBaseEntity_SetPoseParameter (lua_State *L) {
     : (int)luaL_checknumber(L, 2);
   float flValue = (float)luaL_checknumber(L, 3);
   if ( pAnim == NULL || nIndex < 0 )
-  {
-    lua_pushnumber( L, 0 );
-    return 1;
-  }
-  lua_pushnumber( L, pAnim->SetPoseParameter( nIndex, flValue ) );
+    return 0;
+  pAnim->SetPoseParameter( nIndex, flValue );
 #ifdef CLIENT_DLL
   // HL2SB (2026-10-04) GMod contract: a pose write must be visible to the next
   // bone build -- see the twin binding in lc_baseanimating.cpp for the jitter
   // this per-frame bone cache dedup caused with pose-manipulating addons.
   pAnim->InvalidateBoneCache();
 #endif
-  return 1;
+  return 0;
 }
 
 static int CBaseEntity_LookupPoseParameter (lua_State *L) {
@@ -6157,23 +6378,32 @@ static int CBaseEntity_GetFlexWeight (lua_State *L) {
   return 1;
 }
 
-// HL2SB (2026-10-02): GMod Entity:SetTransmitWithParent( transmit = nil ) and
-// Entity:GetTransmitWithParent().  GMod's own bindings (reference, both
-// realms) just set/clear/test one flag bit on the entity; the server-side bit
-// is what the transmit loop consumes - this fork carries it as
-// EFL_TRANSMIT_WITH_PARENT and CServerGameEnts::CheckTransmit makes the entity
-// ride its move-parent's transmit decision.
+static CUtlMap<CBaseEntity *, bool> s_TransmitWithParent( DefLessFunc(CBaseEntity *) );
+
+bool HL2SB_GetTransmitWithParent( CBaseEntity *entity )
+{
+  const unsigned short index = s_TransmitWithParent.Find( entity );
+  return index != s_TransmitWithParent.InvalidIndex();
+}
+
+void HL2SB_SetTransmitWithParent( CBaseEntity *entity, bool enabled )
+{
+  if ( !entity ) return;
+  const unsigned short index = s_TransmitWithParent.Find( entity );
+  if ( enabled && index == s_TransmitWithParent.InvalidIndex() )
+    s_TransmitWithParent.Insert( entity, true );
+  else if ( !enabled && index != s_TransmitWithParent.InvalidIndex() )
+    s_TransmitWithParent.RemoveAt( index );
+}
+
 static int CBaseEntity_SetTransmitWithParent (lua_State *L) {
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
   if ( lua_isnone(L, 2) )
   {
-    lua_pushboolean( L, ( pEnt->GetEFlags() & EFL_TRANSMIT_WITH_PARENT ) != 0 );
+    lua_pushboolean( L, HL2SB_GetTransmitWithParent( pEnt ) );
     return 1;
   }
-  if ( lua_toboolean(L, 2) )
-    pEnt->AddEFlags( EFL_TRANSMIT_WITH_PARENT );
-  else
-    pEnt->RemoveEFlags( EFL_TRANSMIT_WITH_PARENT );
+  HL2SB_SetTransmitWithParent( pEnt, lua_toboolean(L, 2) != 0 );
 #ifdef GAME_DLL
   pEnt->DispatchUpdateTransmitState();
 #endif
@@ -6182,7 +6412,7 @@ static int CBaseEntity_SetTransmitWithParent (lua_State *L) {
 
 static int CBaseEntity_GetTransmitWithParent (lua_State *L) {
   CBaseEntity *pEnt = luaL_checkentity(L, 1);
-  lua_pushboolean( L, ( pEnt->GetEFlags() & EFL_TRANSMIT_WITH_PARENT ) != 0 );
+  lua_pushboolean( L, HL2SB_GetTransmitWithParent( pEnt ) );
   return 1;
 }
 
@@ -6515,6 +6745,29 @@ static int CBaseEntity_GetActiveWeapon( lua_State *L ) {
   return 1;
 }
 
+static int CBaseEntity_BoneMethod( lua_State *L, const char *name, bool isName ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  if ( !entity->GetBaseAnimating() ) {
+    if ( isName ) lua_pushstring( L, "__INVALIDBONE__" );
+    else lua_pushinteger( L, 0 );
+    return 1;
+  }
+  const int args = lua_gettop( L );
+  if ( !HL2SB_PushClassField( L, "CBaseAnimating", name ) )
+    return luaL_error( L, "missing animation method %s", name );
+  lua_insert( L, 1 );
+  lua_call( L, args, 1 );
+  return 1;
+}
+
+static int CBaseEntity_GetBoneCount( lua_State *L ) {
+  return CBaseEntity_BoneMethod( L, "GetBoneCount", false );
+}
+
+static int CBaseEntity_GetBoneName( lua_State *L ) {
+  return CBaseEntity_BoneMethod( L, "GetBoneName", true );
+}
+
 static int CBaseEntity_SetBodyGroups( lua_State *L ) {
   CBaseAnimating *anim = luaL_checkentity( L, 1 )->GetBaseAnimating();
   if ( !anim ) return 0;
@@ -6568,6 +6821,13 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"IsConstraint", CBaseEntity_IsConstraint},
   {"SendLua", CBaseEntity_SendLua},
   {"GetSaveTable", CBaseEntity_GetSaveTable},
+  {"GetCycle", CBaseEntity_GetCycle},
+  {"GetSequence", CBaseEntity_GetSequence},
+  {"GetSequenceName", CBaseEntity_GetSequenceName},
+  {"GetMaterials", HL2SB_EntityGetMaterials},
+#ifdef GAME_DLL
+  {"GetKeyValues", CBaseEntity_GetKeyValues},
+#endif
   {"SetSaveValue", CBaseEntity_SetSaveValue},
   {"TakeDamageInfo", CBaseEntity_TakeDamageInfo},
   {"GetOwner", CBaseEntity_GetOwner},
@@ -6684,12 +6944,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   // the wiki use (Entity:GetAbsVelocity is the rarer twin).  ent_nyan_bomb's
   // ENT:Draw opens with self:GetVelocity() -- without this the draw died on
   // its first line every frame and the flying cat rendered as nothing at all.
-#ifdef CLIENT_DLL
   {"GetVelocity", CBaseEntity_GetVelocity},
-#else
-  {"GetVelocity", CBaseEntity_GetAbsVelocity},
-#endif
   {"GetAttachment", CBaseEntity_GetAttachment},
+  {"GetAttachments", CBaseEntity_GetAttachments},
   {"GetAnimTime", CBaseEntity_GetAnimTime},
   {"GetPoseParameter", CBaseEntity_GetPoseParameter},
   {"SetPoseParameter", CBaseEntity_SetPoseParameter},
@@ -6776,6 +7033,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetColor", CBaseEntity_GetColor},
   {"GetPersistent", CBaseEntity_GetPersistent},
   {"GetActiveWeapon", CBaseEntity_GetActiveWeapon},
+  {"GetBoneCount", CBaseEntity_GetBoneCount},
+  {"GetBoneName", CBaseEntity_GetBoneName},
   {"GetColor4Part", CBaseEntity_GetColor4Part},
   {"GetMaterial", CBaseEntity_GetMaterial},
   {"GetSimulatingPlayer", CBaseEntity_GetSimulatingPlayer},
@@ -6948,9 +7207,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetEFlags", CBaseEntity_SetEFlags},
   {"SetFriction", CBaseEntity_SetFriction},
   {"SetGravity", CBaseEntity_SetGravity},
-  // HL2SB GMod compat: minecraft addon (SetUseType(SIMPLE_USE) storage,
-  // box-built water blocks, waterizer point tests).
+#ifndef CLIENT_DLL
   {"SetUseType", CBaseEntity_SetUseType},
+#endif
   {"SetDSP", CBaseEntity_SetDSP},
   {"PhysicsInitBox", CBaseEntity_PhysicsInitBox},
   {"IsPointInside", CBaseEntity_IsPointInside},
@@ -6987,6 +7246,8 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetBodyGroups", CBaseEntity_SetBodyGroups},
   {"SetColor4Part", CBaseEntity_SetColor4Part},
   {"SetMaterial", CBaseEntity_SetMaterial},
+  {"SetSubMaterial", CBaseEntity_SetSubMaterial},
+  {"GetSubMaterial", CBaseEntity_GetSubMaterial},
   {"SetSkin", CBaseEntity_SetSkin},
   {"SetRenderColorA", CBaseEntity_SetRenderColorA},
   {"SetRenderColorB", CBaseEntity_SetRenderColorB},
@@ -6995,8 +7256,6 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"SetSimulatedEveryTick", CBaseEntity_SetSimulatedEveryTick},
   {"SetSimulationTime", CBaseEntity_SetSimulationTime},
   {"SetSize", CBaseEntity_SetSize},
-  {"GetSizeVar", CBaseEntity_GetWidgetSize},
-  {"SetSizeVar", CBaseEntity_SetWidgetSize},
   {"SetSolid", CBaseEntity_SetSolid},
   {"SetSolidFlags", CBaseEntity_SetSolidFlags},
   {"SetTextureFrameIndex", CBaseEntity_SetTextureFrameIndex},
@@ -7010,7 +7269,6 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"StartTouch", CBaseEntity_StartTouch},
   {"StopFollowingEntity", CBaseEntity_StopFollowingEntity},
   {"SUB_Remove", CBaseEntity_SUB_Remove},
-  {"Think", CBaseEntity_Think},
   {"ToggleFlag", CBaseEntity_ToggleFlag},
   {"Touch", CBaseEntity_Touch},
   {"TraceBleed", CBaseEntity_TraceBleed},
@@ -7297,6 +7555,14 @@ static int luasrc_EyeAngles( lua_State *L )
 	return 1;
 }
 
+static int luasrc_EyeVector( lua_State *L )
+{
+	static Vector cached = vec3_origin;
+	if ( IsCurrentViewAccessAllowed() ) cached = CurrentViewForward();
+	lua_pushvector( L, cached );
+	return 1;
+}
+
 static int luasrc_MainEyePos( lua_State *L )
 {
 	lua_pushvector( L, MainViewOrigin() );
@@ -7324,6 +7590,7 @@ static const luaL_Reg CBaseEntity_funcs[] = {
 #ifdef CLIENT_DLL
   {"EyePos", luasrc_EyePos},
   {"EyeAngles", luasrc_EyeAngles},
+  {"EyeVector", luasrc_EyeVector},
   {"MainEyePos", luasrc_MainEyePos},
   {"MainEyeAngles", luasrc_MainEyeAngles},
 #endif

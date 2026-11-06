@@ -7934,8 +7934,6 @@ void CBasePlayer::Weapon_DropSlot( int weaponSlot )
 //-----------------------------------------------------------------------------
 void CBasePlayer::Weapon_Equip( CBaseCombatWeapon *pWeapon )
 {
-	BaseClass::Weapon_Equip( pWeapon );
-
 #if defined( LUA_SDK )
 	// HL2SB GMod compat (2026-10-13): GM:WeaponEquip( weapon, owner ) -- GMod
 	// fires this from the PLAYER-side Weapon_Equip (one call per player weapon),
@@ -7950,6 +7948,8 @@ void CBasePlayer::Weapon_Equip( CBaseCombatWeapon *pWeapon )
 		END_LUA_CALL_HOOK( 2, 0 );
 	}
 #endif
+
+	BaseClass::Weapon_Equip( pWeapon );
 
 	bool bShouldSwitch = g_pGameRules->FShouldSwitchWeapon( this, pWeapon );
 
@@ -8576,11 +8576,7 @@ void SendProxy_CropFlagsToPlayerFlagBitsLength( const SendProp *pProp, const voi
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecVelocity, 1), 32, SPROP_NOSCALE|SPROP_CHANGES_OFTEN ),
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecVelocity, 2), 32, SPROP_NOSCALE|SPROP_CHANGES_OFTEN ),
 
-#if PREDICTION_ERROR_CHECK_LEVEL > 1 
-		SendPropVector		( SENDINFO( m_vecBaseVelocity ), -1, SPROP_COORD ),
-#else
-		SendPropVector		( SENDINFO( m_vecBaseVelocity ), 20, 0, -1000, 1000 ),
-#endif
+		SendPropVector		( SENDINFO( m_vecBaseVelocity ), 0, SPROP_NOSCALE ),
 
 		SendPropEHandle		( SENDINFO( m_hConstraintEntity)),
 		SendPropVector		( SENDINFO( m_vecConstraintCenter), 0, SPROP_NOSCALE ),

@@ -58,6 +58,7 @@ public:
 	virtual void CreateLightEffects( void ) {}
 	virtual bool ShouldReceiveProjectedTextures( int flags );
 	virtual void PostDataUpdate( DataUpdateType_t updateType );
+	virtual void ReceiveMessage( int classID, bf_read &msg );
 	virtual void PlayStepSound( Vector &vecOrigin, surfacedata_t *psurface, float fvol, bool force );
 	virtual void PreThink( void );
 	virtual void DoImpactEffect( trace_t &tr, int nDamageType );
@@ -122,6 +123,7 @@ public:
 	CNetworkHandle( C_BaseEntity, m_hHands );
 
 	bool			HL2SB_IsPlayingTaunt( void );
+	void			HL2SB_RestartActGesture( Activity activity );
 	C_BaseEntity	*HL2SB_GetHandsEntity( void ) { return m_hHands; }
 	void			HL2SB_SetHandsEntity( C_BaseEntity *pEnt ) { m_hHands = pEnt; }
 
@@ -188,6 +190,14 @@ private:
 	CNetworkVar( HL2MPPlayerState, m_iPlayerState );	
 
 	bool m_fIsWalking;
+
+public:
+	CNetworkVar( int, m_iHL2SBPlayerFlags );
+	bool HL2SB_GetAvoidPlayers() const { return ( m_iHL2SBPlayerFlags & 8 ) != 0; }
+	void HL2SB_SetAvoidPlayers( bool enabled ) { m_iHL2SBPlayerFlags = enabled ? ( m_iHL2SBPlayerFlags | 8 ) : ( m_iHL2SBPlayerFlags & ~8 ); }
+	bool HL2SB_GetNoCollideWithTeammates() const { return ( m_iHL2SBPlayerFlags & 2 ) != 0; }
+	void HL2SB_SetNoCollideWithTeammates( bool enabled ) { m_iHL2SBPlayerFlags = enabled ? ( m_iHL2SBPlayerFlags | 2 ) : ( m_iHL2SBPlayerFlags & ~2 ); }
+	virtual bool ShouldCollide( int collisionGroup, int contentsMask ) const;
 };
 
 inline C_HL2MP_Player *ToHL2MPPlayer( CBaseEntity *pEntity )

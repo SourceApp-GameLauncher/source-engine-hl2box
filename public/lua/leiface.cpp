@@ -15,6 +15,12 @@
 #include "lbaseplayer_shared.h"
 #include "linetchannelinfo.h"
 
+static int engine_ActiveGamemode (lua_State *L) {
+  ConVarRef mode( "gamemode" );
+  lua_pushstring( L, mode.IsValid() ? mode.GetString() : "sandbox" );
+  return 1;
+}
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -291,9 +297,15 @@ static int engine_TickCount( lua_State *L ) {
 }
 
 extern int HL2SB_EngineGetGames( lua_State *L );
+extern int HL2SB_EngineGetContentSources( lua_State *L );
+extern int HL2SB_EngineMountContentSource( lua_State *L );
+extern int HL2SB_EngineSetContentMounted( lua_State *L );
 
 static const luaL_Reg enginelib[] = {
   {"GetGames", HL2SB_EngineGetGames},
+  {"GetContentSources", HL2SB_EngineGetContentSources},
+  {"MountContentSource", HL2SB_EngineMountContentSource},
+  {"SetContentMounted", HL2SB_EngineSetContentMounted},
   {"TickCount", engine_TickCount},
   {"AllowImmediateEdictReuse",   engine_AllowImmediateEdictReuse},
   {"ChangeLevel",  engine_ChangeLevel},
@@ -313,6 +325,7 @@ static const luaL_Reg enginelib[] = {
   // lua/autorun/mount_games.lua:10 calls it at file scope, which took that whole
   // file (and therefore the gamecontent.txt mounts) down on the server.
   {"GetGameDirectory", engine_GetGameDir},
+  {"ActiveGamemode", engine_ActiveGamemode},
   {"GetMapEntitiesString", engine_GetMapEntitiesString},
   {"GetMostRecentlyLoadedFileName", engine_GetMostRecentlyLoadedFileName},
   {"GetPlayerNetInfo", engine_GetPlayerNetInfo},

@@ -13,6 +13,7 @@
 #include "takedamageinfo.h"
 #include "hl2mp_gamerules.h"
 #include "in_buttons.h"
+#include "Multiplayer/multiplayer_animstate.h"
 #include "iviewrender_beams.h"			// flashlight beam
 #include "r_efx.h"
 #include "dlight.h"
@@ -21,6 +22,7 @@
 #include "in_main.h"			// HL2SB: in_duck, for the in-vehicle camera toggle
 #include "iinput.h"				// HL2SB: input->CAM_ToThirdPerson() / KeyState()
 #include "activitylist.h"		// HL2SB: ActivityList_NameForIndex() for the act command
+#include "collisionutils.h"
 
 // HL2SB: the in_camera.cpp free wrappers. These are what the `thirdperson` /
 // `firstperson` console commands call; unlike CInput::CAM_ToThirdPerson() they also
@@ -57,11 +59,11 @@ class CBasePlayer;
 LUA_API void lua_pushplayer( lua_State *L, CBasePlayer *pPlayer );
 
 // ============================================================================
-// HL2SB (2026-10-02): GMod gesture broadcast receiver - C_TEPlayerAnimEvent.
+// HL2SB (2026-10-02): player animation event transport used by non-act paths.
 //
 // The server excludes DT_BaseAnimatingOverlay::overlay_vars from
-// DT_HL2MP_Player, so this temp entity is the ONLY thing that makes other
-// players' gestures (attacks/reloads/act/land/chat) appear: it carries
+// DT_HL2MP_Player, so this temp entity carries other fork gesture events
+// (attacks/reloads/land/chat): it carries
 // (player handle, event, data) - zero layer data - and the client rebuilds
 // the layer locally via HL2SB_ClientDoAnimationEvent.  Structure mirrors the
 // in-tree CS/DOD C_TEPlayerAnimEvent; the body mirrors GMod's reference
@@ -117,6 +119,7 @@ IMPLEMENT_CLIENTCLASS_DT(C_HL2MP_Player, DT_HL2MP_Player, CHL2MP_Player)
 	RecvPropFloat( RECVINFO( m_flHL2SBUnDuckSpeed ) ),
 	RecvPropFloat( RECVINFO( m_flHL2SBTauntEnd ) ),
 	RecvPropInt( RECVINFO( m_iHL2SBPlayerClassID ) ),
+	RecvPropInt( RECVINFO( m_iHL2SBPlayerFlags ) ),
 	RecvPropEHandle( RECVINFO( m_hHands ) ),
 END_RECV_TABLE()
 
@@ -151,14 +154,17 @@ static ConVar cl_defaultweapon( "cl_defaultweapon", "weapon_physgun", FCVAR_USER
 ** FCVAR_USERINFO is what makes engine->GetClientConVarValue() (server,
 ** game/server/hl2sb_player_model_manager.cpp) able to read them.
 **
-** Defaults: "1 1 1" is no tint at all (see HL2SB_ApplyClientAppearance), so a player who
-** never opens the editor looks exactly like before, and an empty bodygroup string means
-** "leave the bodygroups alone" instead of resetting them to 0.
+** Defaults: the reference values (player_sandbox.lua's CreateConVar lines) --
+** "0.24 0.34 0.41" for the body tint and "0.30 1.80 2.10" for the weapon,
+** the latter deliberately above 1 because the PlayerWeaponColor proxy pulses
+** it up to double.  FCVAR_DONTRECORD matches the reference too: the colours
+** are editor state, not config state, and an unstyled player must wear the
+** reference defaults on a fresh install.
 */
 static ConVar cl_playerbodygroups( "cl_playerbodygroups", "", FCVAR_USERINFO | FCVAR_ARCHIVE, "Player model bodygroups (space separated)" );
 static ConVar cl_playerskin( "cl_playerskin", "0", FCVAR_USERINFO | FCVAR_ARCHIVE, "Player model skin" );
-static ConVar cl_playercolor( "cl_playercolor", "1 1 1", FCVAR_USERINFO | FCVAR_ARCHIVE, "Player model color (r g b, 0-1)" );
-static ConVar cl_weaponcolor( "cl_weaponcolor", "1 1 1", FCVAR_USERINFO | FCVAR_ARCHIVE, "Weapon color (r g b, 0-1)" );
+static ConVar cl_playercolor( "cl_playercolor", "0.24 0.34 0.41", FCVAR_USERINFO | FCVAR_ARCHIVE | FCVAR_DONTRECORD, "Player model color (r g b, 0-1)" );
+static ConVar cl_weaponcolor( "cl_weaponcolor", "0.30 1.80 2.10", FCVAR_USERINFO | FCVAR_ARCHIVE | FCVAR_DONTRECORD, "Weapon color (r g b, may exceed 1 - the weapon proxy pulses it)" );
 
 void SpawnBlood (Vector vecSpot, const Vector &vecDir, int bloodColor, float flDamage);
 
@@ -182,6 +188,7 @@ C_HL2MP_Player::C_HL2MP_Player() : m_PlayerAnimState( this ), m_iv_angEyeAngles(
 	m_flHL2SBRunSpeed = 400.0f;
 	m_flHL2SBSlowWalkSpeed = 100.0f;
 	m_flHL2SBJumpPower = 200.0f;
+	m_iHL2SBPlayerFlags = 0;
 
 	// HL2SB: stored-only GMod knobs (see the server header).
 	m_flHL2SBCrouchedWalkSpeed = 0.34f;
@@ -190,6 +197,33 @@ C_HL2MP_Player::C_HL2MP_Player() : m_PlayerAnimState( this ), m_iv_angEyeAngles(
 	m_flHL2SBLadderClimbSpeed = 100.0f;
 	m_flHL2SBStepSize = 18.0f;
 	m_bHL2SBAllowWeaponsInVehicle = false;
+}
+
+void C_HL2MP_Player::HL2SB_RestartActGesture( Activity activity )
+{
+	m_PlayerAnimState.RestartGesture( GESTURE_SLOT_VCD, activity, true );
+}
+
+void C_HL2MP_Player::ReceiveMessage( int classID, bf_read &msg )
+{
+	if ( classID != GetClientClass()->m_ClassID )
+	{
+		BaseClass::ReceiveMessage( classID, msg );
+		return;
+	}
+
+	const int nStartBit = msg.GetNumBitsRead();
+	const int nMessageType = msg.ReadByte();
+	if ( nMessageType == 8 )
+	{
+		const Activity activity = (Activity)msg.ReadLong();
+		if ( !msg.IsOverflowed() )
+			HL2SB_RestartActGesture( activity );
+		return;
+	}
+
+	msg.Seek( nStartBit );
+	BaseClass::ReceiveMessage( classID, msg );
 }
 
 // HL2SB (2026-09-27): GMod movement - the client-side prediction twin of
@@ -451,16 +485,91 @@ bool HL2SB_CustomThirdPersonActive( void )
 // toggle was one of the reasons CTRL double-fired against the ConCommand and
 // the Lua Think edge of the same era.
 
+static void HL2SB_AvoidTeammates( C_HL2MP_Player *player, CUserCmd *cmd )
+{
+	if ( !player->HL2SB_GetAvoidPlayers() || !player->IsAlive() || player->GetMoveType() == MOVETYPE_NOCLIP )
+		return;
+
+	Vector center = player->GetAbsOrigin();
+	Vector mins = player->GetPlayerMins();
+	Vector maxs = player->GetPlayerMaxs();
+	center.z += ( maxs.z - mins.z ) * 0.5f;
+	mins += center;
+	maxs += center;
+
+	for ( int i = 1; i <= gpGlobals->maxClients; ++i )
+	{
+		C_HL2MP_Player *other = ToHL2MPPlayer( UTIL_PlayerByIndex( i ) );
+		if ( !other || other == player || other->GetTeamNumber() != player->GetTeamNumber() ||
+			 other->IsDormant() || other->IsSolidFlagSet( FSOLID_NOT_SOLID ) || other->GetMoveType() == MOVETYPE_NOCLIP )
+			continue;
+
+		Vector otherCenter = other->GetAbsOrigin();
+		Vector otherMins = other->GetPlayerMins();
+		Vector otherMaxs = other->GetPlayerMaxs();
+		otherCenter.z += ( otherMaxs.z - otherMins.z ) * 0.5f;
+		otherMins += otherCenter;
+		otherMaxs += otherCenter;
+		if ( !IsBoxIntersectingBox( mins, maxs, otherMins, otherMaxs ) )
+			continue;
+
+		Vector delta = other->WorldSpaceCenter() - center;
+		Vector radius = other->WorldAlignMaxs() - other->WorldAlignMins();
+		radius.z = 0.0f;
+		const float radiusLength = radius.Length();
+		const float strength = radiusLength == 0.0f ? 256.0f :
+			clamp( ( radiusLength - delta.Length() ) / radiusLength, 0.0f, 1.0f ) * 256.0f;
+		if ( strength < 0.01f )
+			return;
+
+		Vector push;
+		if ( player->GetAbsVelocity().Length2DSqr() > 0.1f )
+		{
+			Vector velocity = player->GetAbsVelocity();
+			velocity.z = 0.0f;
+			CrossProduct( Vector( 0, 0, 1 ), velocity, push );
+			VectorNormalize( push );
+		}
+		else
+		{
+			QAngle view = cmd->viewangles;
+			view.x = 0.0f;
+			AngleVectors( view, NULL, &push, NULL );
+		}
+		Vector separation = push * ( delta.Dot( push ) < 0.0f ? strength : -strength );
+		float maxSpeed = player->MaxSpeed();
+		if ( ( player->GetFlags() & FL_DUCKING ) && player->GetGroundEntity() ) maxSpeed *= 1.33333333f;
+		if ( separation.LengthSqr() > maxSpeed * maxSpeed )
+		{
+			VectorNormalize( separation );
+			separation *= maxSpeed;
+		}
+		QAngle view = cmd->viewangles;
+		view.x = 0.0f;
+		Vector forward, right;
+		AngleVectors( view, &forward, &right, NULL );
+		VectorNormalize( separation );
+		float moveForward = cmd->forwardmove + forward.Dot( separation ) * strength;
+		float moveSide = cmd->sidemove + right.Dot( separation ) * strength;
+		float scaleForward = fabsf( moveForward ) > 400.0f ? 400.0f / fabsf( moveForward ) : 1.0f;
+		float scaleSide = fabsf( moveSide ) > 400.0f ? 400.0f / fabsf( moveSide ) : 1.0f;
+		float scale = MIN( scaleForward, scaleSide );
+		cmd->forwardmove = moveForward * scale;
+		cmd->sidemove = moveSide * scale;
+		return;
+	}
+}
+
 bool C_HL2MP_Player::CreateMove( float flInputSampleTime, CUserCmd *pCmd )
 {
-	if ( !BaseClass::CreateMove( flInputSampleTime, pCmd ) )
-		return false;
+	const bool result = BaseClass::CreateMove( flInputSampleTime, pCmd );
+	HL2SB_AvoidTeammates( this, pCmd );
 
 	// (The old C++ act-camera body lock lived here; the GMod-parity act now runs
 	// the lock through Lua -- GM:CreateMove in gamemodes/deathmatch/gamemode --
 	// exactly like taunt_camera.lua's CAM.CreateMove.)
 
-	return true;
+	return result;
 }
 
 // HL2SB: explicit first/third person toggle (bindable, e.g. bind F "hl2sb_vcam").
@@ -1203,6 +1312,11 @@ END_RECV_TABLE()
 C_HL2MPRagdoll::C_HL2MPRagdoll()
 {
 
+}
+
+int C_HL2MPRagdoll::GetPlayerEntIndex() const
+{
+	return m_hPlayer.Get() ? m_hPlayer->entindex() : 0;
 }
 
 C_HL2MPRagdoll::~C_HL2MPRagdoll()

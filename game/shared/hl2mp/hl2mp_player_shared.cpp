@@ -55,6 +55,36 @@ const char *g_ppszPlayerSoundPrefixNames[PLAYER_SOUNDS_MAX] =
 	"NPC_MetroPolice",
 };
 
+bool CHL2MP_Player::ShouldCollide( int collisionGroup, int contentsMask ) const
+{
+	if ( HL2SB_GetNoCollideWithTeammates() &&
+		( collisionGroup == COLLISION_GROUP_PLAYER || collisionGroup == COLLISION_GROUP_PLAYER_MOVEMENT ||
+		  ( collisionGroup == COLLISION_GROUP_PROJECTILE && !( contentsMask & CONTENTS_MONSTER ) ) ) )
+	{
+		int teamMask = 0;
+		switch ( GetTeamNumber() )
+		{
+		case 1: teamMask = 0x800; break;
+		case 2: teamMask = 0x1000; break;
+		case 3: teamMask = 0x400; break;
+		case 4: teamMask = 0x200; break;
+		}
+		if ( teamMask && !( contentsMask & teamMask ) )
+			return false;
+	}
+	return BaseClass::ShouldCollide( collisionGroup, contentsMask );
+}
+
+#ifndef CLIENT_DLL
+bool HL2SB_NonCollidingTeammates( CBaseEntity *first, CBaseEntity *second )
+{
+	CHL2MP_Player *a = ToHL2MPPlayer( first );
+	CHL2MP_Player *b = ToHL2MPPlayer( second );
+	return a && b && a->HL2SB_GetNoCollideWithTeammates() && b->HL2SB_GetNoCollideWithTeammates() &&
+		a->GetTeamNumber() == b->GetTeamNumber();
+}
+#endif
+
 const char *CHL2MP_Player::GetPlayerModelSoundPrefix( void )
 {
 	// HL2SB: m_iPlayerSoundType is not range checked anywhere, and for a custom
@@ -717,6 +747,18 @@ static bool HL2SB_PushPlayerAnimationHook( const char *pszName, CHL2MP_Player *p
     return true;
 }
 
+void CPlayerAnimState::RestartGesture( int iGestureSlot, Activity iGestureActivity, bool bAutoKill )
+{
+	if ( !m_pOuter )
+		return;
+
+#ifdef CLIENT_DLL
+	m_pOuter->HL2SB_ClientRestartGesture( iGestureSlot, iGestureActivity, bAutoKill );
+#else
+	m_pOuter->HL2SB_AnimRestartGestureLocal( iGestureSlot, iGestureActivity, bAutoKill );
+#endif
+}
+
 void CPlayerAnimState::Update()
 {
     CHL2MP_Player *pPlayer = GetOuter();
@@ -919,7 +961,7 @@ void CHL2MP_Player::HL2SB_ClientSetLayerSequence( int iSlot, int iSequence, Acti
 	int iEnt = entindex();
 	if ( iEnt <= 0 || iEnt > MAX_PLAYERS )
 		return;
-	if ( iSlot < 0 || iSlot >= HL2SBClientGesture::SLOT_COUNT || iSequence <= 0 )
+	if ( iSlot < 0 || iSlot >= HL2SBClientGesture::SLOT_COUNT || iSequence < 0 )
 		return;
 
 	HL2SB_ClientEnsureOverlaySlots( this );
@@ -963,7 +1005,16 @@ void CHL2MP_Player::HL2SB_ClientRestartGesture( int iSlot, Activity activity, bo
 	if ( iSlot < 0 || iSlot >= HL2SBClientGesture::SLOT_COUNT || activity <= ACT_INVALID )
 		return;
 
-	int iSequence = SelectWeightedSequence( activity );
+	Activity translated = activity;
+	const int stackTop = L ? lua_gettop( L ) : 0;
+	if ( HL2SB_PushPlayerAnimationHook( "TranslateActivity", this ) )
+	{
+		lua_pushinteger( L, activity );
+		if ( luasrc_pcall( L, 3, 1, 0 ) == 0 && lua_isnumber( L, -1 ) )
+			translated = (Activity)lua_tointeger( L, -1 );
+		lua_settop( L, stackTop );
+	}
+	int iSequence = translated >= 0 ? SelectWeightedSequence( translated ) : -1;
 	if ( iSequence <= 0 )
 	{
 		if ( hl2sb_anim_debug.GetBool() )
@@ -1111,7 +1162,7 @@ void CHL2MP_Player::HL2SB_ClientAdvanceGestures( void )
 		C_AnimationLayer *pLayer = GetAnimOverlay( iSlot );
 		// Model changed (playermodel switch resets the layers in OnNewModel)
 		// - drop the bookkeeping; self-healing.
-		if ( (int)pLayer->m_nSequence <= 0 || (int)pLayer->m_nOrder != iSlot )
+		if ( (int)pLayer->m_nSequence < 0 || (int)pLayer->m_nOrder != iSlot )
 		{
 			HL2SBClientGesture::ClearSlot( iEnt, iSlot );
 			continue;

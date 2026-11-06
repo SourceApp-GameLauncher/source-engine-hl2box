@@ -65,7 +65,7 @@
 // HL2SB GMod compat (2026-09-24): local prototype -- the definition lives in
 // lbaseplayer_shared.cpp; cl_weaponcolor drives the physgun beam/sprites,
 // exactly like GMod13.
-Color HL2SB_GetWeaponColor( int iUserID );
+Vector HL2SB_GetWeaponColor( int iUserID );
 #else
 #include "physics_prop_ragdoll.h"
 #include "props.h"
@@ -92,6 +92,15 @@ Color HL2SB_GetWeaponColor( int iUserID );
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+#ifdef CLIENT_DLL
+CLIENTEFFECT_REGISTER_BEGIN( PrecacheHL2SBPhysgunMaterials )
+    CLIENTEFFECT_MATERIAL( "sprites/physbeam" )
+    CLIENTEFFECT_MATERIAL( "sprites/physbeama" )
+    CLIENTEFFECT_MATERIAL( "sprites/physg_glow1" )
+    CLIENTEFFECT_MATERIAL( "sprites/physg_glow2" )
+CLIENTEFFECT_REGISTER_END()
+#endif
 
 
 // HL2SB GMod compat (ConVars In Garrysmod): the physgun's dynamic feel, same
@@ -675,6 +684,12 @@ END_NETWORK_TABLE()
 
 #ifdef CLIENT_DLL
 BEGIN_PREDICTION_DATA( CWeaponGravityGun )
+	DEFINE_PRED_FIELD( m_hObject, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_vecHoldPos, FIELD_VECTOR, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_physicsBone, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_active, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_bFreezeReleaseLatch, FIELD_BOOLEAN, 0 ),
+	DEFINE_PRED_FIELD( m_distance, FIELD_FLOAT, 0 ),
 END_PREDICTION_DATA()
 #endif
 
@@ -895,6 +910,13 @@ static Vector HL2SB_PhysgunGateTarget( CBaseEntity *pObject, const Vector &vecDe
 	const Vector vecFrom = pObject->GetAbsOrigin();
 
 	trace_t tr;
+	UTIL_TraceEntity( pObject, vecFrom, vecFrom, uiGateMask, &tr );
+	if ( tr.fraction < 1.0f || tr.startsolid || tr.allsolid )
+	{
+		UTIL_TraceEntity( pObject, vecDest, vecDest, uiGateMask, &tr );
+		if ( tr.fraction >= 1.0f && !tr.startsolid && !tr.allsolid )
+			return vecDest;
+	}
 	UTIL_TraceEntity( pObject, vecFrom, vecDest, uiGateMask, &tr );
 	if ( tr.fraction >= 1.0f && !tr.startsolid && !tr.allsolid )
 		return vecDest;
@@ -1854,9 +1876,13 @@ void CWeaponGravityGun::DrawPhysgunVisuals( C_BaseViewModel *pViewModel )
 	if ( bSuppressed )
 		return;
 
-	// Every sprite and the ribbon carry the HOLDER's weapon colour.
-	Color clrW = HL2SB_GetWeaponColor( pOwner->GetUserID() );
-	byte r = clrW.r(), g = clrW.g(), b = clrW.b();
+	// Every sprite and the ribbon carry the HOLDER's weapon colour.  The sprite
+	// path is a byte pipeline (as the reference engine's sprites are), so HDR
+	// components above 1 clamp here - only the material proxies keep the float.
+	Vector vW = HL2SB_GetWeaponColor( pOwner->GetUserID() );
+	byte r = (byte)clamp( vW.x * 255.0f, 0.0f, 255.0f );
+	byte g = (byte)clamp( vW.y * 255.0f, 0.0f, 255.0f );
+	byte b = (byte)clamp( vW.z * 255.0f, 0.0f, 255.0f );
 
 	IMaterial *pGlowClaw = materials->FindMaterial( "sprites/physg_glow2", TEXTURE_GROUP_CLIENT_EFFECTS );
 	IMaterial *pGlowEnd = materials->FindMaterial( "sprites/physg_glow1", TEXTURE_GROUP_CLIENT_EFFECTS );

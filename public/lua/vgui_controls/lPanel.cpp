@@ -8,6 +8,7 @@
 #define lpanel_cpp
 
 #include "cbase.h"
+#include "icvar.h"
 #include <vgui_controls/Panel.h>
 #include "c_vguiscreen.h"
 #include "iclientmode.h"
@@ -1220,7 +1221,7 @@ static int Panel_SetDropEnabled (lua_State *L) {
 }
 
 static int Panel_SetEnabled (lua_State *L) {
-  luaL_checkpanel(L, 1)->SetEnabled(luaL_checkboolean(L, 2));
+  luaL_checkpanel(L, 1)->SetEnabled(lua_toboolean(L, 2) != 0);
   return 0;
 }
 
@@ -1334,7 +1335,9 @@ static int Panel_SetSilentMode (lua_State *L) {
 static int Panel_SetSize (lua_State *L) {
   Panel *pPanel = luaL_checkpanel(L, 1);
 
-  pPanel->SetSize((int)lua_tonumber(L, 2), (int)lua_tonumber(L, 3));
+  int wide = (int)lua_tonumber(L, 2);
+  int tall = (int)lua_tonumber(L, 3);
+  pPanel->SetSize(MIN(wide, 32767), MIN(tall, 32767));
   Panel_SyncLuaGeometry(L, pPanel);
   return 0;
 }
@@ -1394,6 +1397,55 @@ static int Panel_SetTriplePressAllowed (lua_State *L) {
 
 static int Panel_SetVisible (lua_State *L) {
   luaL_checkpanel(L, 1)->SetVisible(lua_toboolean(L, 2) != 0);
+  return 0;
+}
+
+/*
+** HL2SB: GMod's Panel metatable carries SetConVar/ConVarChanged natively, and
+** menu dialogs reach them on panels that have no Lua-level override (the
+** crosshair editor's DComboBox path: SetConVar on the combo, ConVarChanged
+** from its OnSelect).  The name is stored on the panel's instance table under
+** the same field GMod's own Lua reads back (DCheckBoxLabel checks
+** pnl.Button.m_strConVar).  The new value is applied straight to the ConVar
+** object -- deliberately NOT through RunConsoleCommand, whose Lua binding
+** blocks exactly these names (GMod keeps them in its binding blocklist while
+** the native path keeps working).
+*/
+static int Panel_SetConVar (lua_State *L) {
+  Panel *pPanel = luaL_checkpanel(L, 1);
+  const char *pszName = luaL_checkstring(L, 2);
+  Panel_PushTable(L, pPanel);
+  if (lua_istable(L, -1)) {
+    lua_pushstring(L, pszName);
+    lua_setfield(L, -2, "m_strConVar");
+  }
+  lua_pop(L, 1);
+  return 0;
+}
+
+static int Panel_ConVarChanged (lua_State *L) {
+  if (!lua_isnoneornil(L, 2)) {
+    // Numbers convert in place; booleans become "1"/"0" like ConVar SetValue does.
+    if (lua_isboolean(L, 2)) {
+      lua_pushfstring(L, "%d", lua_toboolean(L, 2) != 0);
+      lua_replace(L, 2);
+    }
+    const char *pszValue = lua_tostring(L, 2);
+    if (pszValue != NULL && cvar != NULL) {
+      Panel *pPanel = luaL_checkpanel(L, 1);
+      Panel_PushTable(L, pPanel);
+      if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "m_strConVar");
+        const char *pszName = lua_tostring(L, -1);
+        if (pszName != NULL && pszName[0] != '\0') {
+          ConVar *pCVar = cvar->FindVar(pszName);
+          if (pCVar != NULL)
+            pCVar->SetValue(pszValue);
+        }
+      }
+    }
+  }
+  lua_settop(L, 0);
   return 0;
 }
 
@@ -1746,7 +1798,20 @@ static int Panel_GetDockMargin (lua_State *L) {
 // the day it gets switched on.
 //=============================================================================
 static int Panel_SizeToChildren (lua_State *L) {
-  luaL_checkpanel(L, 1)->SizeToChildren(lua_toboolean(L, 2) != 0, lua_toboolean(L, 3) != 0);
+  Panel *panel = luaL_checkpanel(L, 1);
+  int wide = 0, tall = 0;
+  for (int i = 0; i < panel->GetChildCount(); ++i) {
+    Panel *child = panel->GetChild(i);
+    if (!child || !child->IsVisible() || child->IsMarkedForDeletion()) continue;
+    int x, y, childWide, childTall;
+    child->GetBounds(x, y, childWide, childTall);
+    wide = MAX(wide, x + childWide);
+    tall = MAX(tall, y + childTall);
+  }
+  int left, top, right, bottom;
+  panel->GetDockPadding(left, top, right, bottom);
+  if (lua_toboolean(L, 2)) panel->SetWide(wide + right);
+  if (lua_toboolean(L, 3)) panel->SetTall(tall + bottom);
   return 0;
 }
 
@@ -1962,8 +2027,8 @@ static int Panel_KillFocus(lua_State *L) {
   Panel *p = luaL_checkpanel(L, 1);
   if (FocusNavGroup *focus = HL2SB_LuaPanelFocusGroup(p))
     focus->SetCurrentFocus(0, 0);
-  else if (Panel *parent = p->GetParent())
-    parent->RequestFocus();
+  else
+    p->OnKillFocus();
   return 0;
 }
 
@@ -2776,6 +2841,9 @@ static const luaL_Reg Panelmeta[] = {
   {"SetTall", Panel_SetTall},
   {"SetTriplePressAllowed", Panel_SetTriplePressAllowed},
   {"SetVisible", Panel_SetVisible},
+  // HL2SB: GMod's Panel-level convar pair (see the comment at Panel_SetConVar).
+  {"SetConVar", Panel_SetConVar},
+  {"ConVarChanged", Panel_ConVarChanged},
   {"SetWide", Panel_SetWide},
   {"SetZPos", Panel_SetZPos},
   // HL2SB: GMod's names for the rest of what Derma controls call.

@@ -24,6 +24,10 @@
 #include "iviewrender.h"       // HL2SB: gui.ScreenToVector -> view->GetViewSetup()
 #include "iclientmode.h"
 #include "vgui_controls/Panel.h"
+#ifdef CLIENT_DLL
+#include "vgui_int.h"
+#include "vgui/Cursor.h"
+#endif
 #include "view_shared.h"       // HL2SB: CViewSetup fields (origin/angles/fov)
 #include "mathlib/lvector.h"   // HL2SB: lua_pushvector
 #include "hl2sb_framestats.h"	// HL2SB: hl2sb_framestats surface draw counter
@@ -115,7 +119,7 @@ static void LuaFont_Store (lua_State *L, const char *szName, HFont hFont) {
 //   3. the scheme's "Default", so an unknown name degrades to a visible font
 //      instead of failing.
 // ---------------------------------------------------------------------------
-LUA_API lua_HFont LuaFont_ResolveByName (lua_State *L, const char *szName) {
+static lua_HFont LuaFont_ResolveByNameInternal (lua_State *L, const char *szName, bool fallback) {
   if ( szName == NULL )
     return 0;
 
@@ -142,10 +146,23 @@ LUA_API lua_HFont LuaFont_ResolveByName (lua_State *L, const char *szName) {
     return 0;
 
   hFont = pScheme->GetFont( szName, false );
-  if ( hFont == 0 )
+  if ( hFont == 0 && menu )
+  {
+    vgui::HScheme clientScheme = scheme()->GetScheme( "ClientScheme" );
+    if ( !clientScheme )
+      clientScheme = scheme()->LoadSchemeFromFile( "resource/ClientScheme.res", "ClientScheme" );
+    vgui::IScheme *pClientScheme = clientScheme ? scheme()->GetIScheme( clientScheme ) : NULL;
+    if ( pClientScheme )
+      hFont = pClientScheme->GetFont( szName, false );
+  }
+  if ( hFont == 0 && fallback )
     hFont = pScheme->GetFont( "Default", false );
 
   return hFont;
+}
+
+LUA_API lua_HFont LuaFont_ResolveByName (lua_State *L, const char *szName) {
+  return LuaFont_ResolveByNameInternal( L, szName, true );
 }
 
 
@@ -365,6 +382,35 @@ static int surface_DrawLine (lua_State *L) {
   return 0;
 }
 
+static int surface_DrawCircle (lua_State *L) {
+  const int x = (int)luaL_checknumber( L, 1 );
+  const int y = (int)luaL_checknumber( L, 2 );
+  const float radius = (float)luaL_checknumber( L, 3 );
+  if ( !lua_isnoneornil( L, 4 ) ) {
+    int channels[4] = { 255, 255, 255, 255 };
+    if ( lua_istable( L, 4 ) ) {
+      const char *names[] = { "r", "g", "b", "a" };
+      for ( int i = 0; i < 4; ++i ) {
+        lua_getfield( L, 4, names[i] );
+        if ( lua_isnumber( L, -1 ) )
+          channels[i] = (int)lua_tonumber( L, -1 );
+        lua_pop( L, 1 );
+      }
+    } else {
+      for ( int i = 0; i < 3; ++i )
+        channels[i] = (int)luaL_checknumber( L, 4 + i );
+      if ( lua_isnumber( L, 7 ) )
+        channels[3] = (int)lua_tonumber( L, 7 );
+    }
+    surface()->DrawSetColor( clamp( channels[0], 0, 255 ), clamp( channels[1], 0, 255 ),
+                             clamp( channels[2], 0, 255 ), clamp( channels[3], 0, 255 ) );
+  }
+  const float magnitude = radius < 0 ? -radius : radius;
+  const int segments = (int)clamp( magnitude, 8.0f, 64.0f );
+  surface()->DrawOutlinedCircle( x, y, (int)radius, segments );
+  return 0;
+}
+
 static int surface_DrawOutlinedCircle (lua_State *L) {
   surface()->DrawOutlinedCircle(luaL_checkint(L, 1), luaL_checkint(L, 2), luaL_checkint(L, 3), luaL_checkint(L, 4));
   return 0;
@@ -560,10 +606,43 @@ static int surface_GetScissorRect(lua_State *L) {
 static void HL2SB_GetCursorPos (int &x, int &y) {
   x = y = 0;
 
-  if ( vgui::input() != NULL ) {
+  if ( (!engine || engine->IsActiveApp()) && surface() && surface()->IsCursorVisible() && vgui::input() ) {
     vgui::input()->GetCursorPos(x, y);
   }
 }
+
+static int HL2SB_gui_SetMousePos (lua_State *L) {
+  if ( (engine && !engine->IsActiveApp()) || (enginevgui && enginevgui->IsGameUIVisible()) )
+    return 0;
+  const int x = (int)luaL_checknumber(L, 1);
+  const int y = (int)luaL_checknumber(L, 2);
+  if ( vgui::input() ) vgui::input()->SetCursorPos(x, y);
+  return 0;
+}
+
+#ifdef CLIENT_DLL
+static int HL2SB_gui_EnableScreenClicker (lua_State *L) {
+  static vgui::DHANDLE<vgui::Panel> clicker;
+  const bool enabled = lua_toboolean(L, 1) != 0;
+  vgui::Panel *root = VGui_GetClientLuaRootPanel();
+  if (!root) return 0;
+  if (enabled && !clicker.Get()) {
+    clicker = new vgui::Panel(root, "ScreenClicker");
+    clicker->SetPaintBackgroundEnabled(false);
+    clicker->SetPaintEnabled(false);
+    clicker->SetKeyBoardInputEnabled(false);
+    clicker->SetCursor(vgui::dc_arrow);
+    clicker->SetAutoResize(vgui::Panel::PIN_TOPLEFT, vgui::Panel::AUTORESIZE_DOWNANDRIGHT, 0, 0, 0, 0);
+  }
+  if (clicker.Get()) {
+    clicker->SetBounds(0, 0, root->GetWide(), root->GetTall());
+    clicker->SetMouseInputEnabled(enabled);
+    clicker->SetVisible(enabled);
+    if (enabled) clicker->MoveToFront();
+  }
+  return 0;
+}
+#endif
 
 static int HL2SB_gui_MouseX (lua_State *L) {
   int x = 0, y = 0;
@@ -645,8 +724,8 @@ static int HL2SB_gui_OpenURL (lua_State *L) {
 // normalize.  The nvg addon traces with it every HUD frame; without the
 // binding the trace line died on a nil call.
 static int HL2SB_gui_ScreenToVector (lua_State *L) {
-  const float x = (float)luaL_checknumber(L, 1);
-  const float y = (float)luaL_checknumber(L, 2);
+  const float x = (float)(int)luaL_checknumber(L, 1);
+  const float y = (float)(int)luaL_checknumber(L, 2);
 
   int w = 0, h = 0;
   if ( surface() != NULL ) {
@@ -870,9 +949,9 @@ static int surface_GetEmbeddedPanel (lua_State *L) {
 }
 
 static int surface_GetFontAscent (lua_State *L) {
-  wchar_t wch[1];
+  wchar_t wch[3] = { 0, 0, 0 };
   g_pVGuiLocalize->ConvertANSIToUnicode(luaL_checkstring(L, 2), wch, sizeof(wch));
-  lua_pushinteger(L, surface()->GetFontAscent(luaL_checkfont(L, 1), wch[1]));
+  lua_pushinteger(L, surface()->GetFontAscent(luaL_checkfont(L, 1), wch[0]));
   return 1;
 }
 
@@ -950,7 +1029,7 @@ static int surface_GetTextSize (lua_State *L) {
   //      tables; we use the engine's ILocalize, same result).
   // Two arguments keep the legacy Experiment:Source spelling
   // GetTextSize( font, text ).
-  if ( lua_gettop( L ) <= 1 )
+  if ( lua_gettop( L ) <= 1 || !luaL_testudata( L, 1, "HFont" ) )
   {
     if ( s_hLastSetTextFont == 0 )
       return 0;
@@ -1140,29 +1219,26 @@ static int surface_SetBitmapFontName (lua_State *L) {
 // HL2SB: GMod-style SetFont by string name.  GMod scripts (and the ported
 // draw.lua) call surface.SetFont("DermaDefault") / surface.SetFont("Default")
 // where the argument is a face NAME, not an HFont handle.  The stock binding
-// only has SetFontGlyphSet(hfont,...).  We resolve the name through the default
-// scheme to an HFont, then select it for text drawing.  Falls back to the
-// scheme's "Default" font when the name is unknown (HL2SB's clientscheme only
-// defines Default / DefaultSmall / DefaultVerySmall).
+// only has SetFontGlyphSet(hfont,...). Resolve the name to an HFont and select
+// it for text drawing. An unknown name reports an error.
 static int surface_SetFont (lua_State *L) {
   HL2SB_FrameStatsCatScope fcScope( HL2SB_FCAT_SURF_SETFONT );
   const char *szName = luaL_checkstring(L, 1);
 
   // HL2SB: the shared resolver (LuaFont_ResolveByName above) -- registry first
   // (fonts made at runtime with the GMod form of surface.CreateFont must win
-  // over the scheme, which cannot know about them), then the scheme, then the
-  // scheme's "Default".
-  HFont hFont = LuaFont_ResolveByName( L, szName );
+  // over the scheme, which cannot know about them), then the scheme.
+  HFont hFont = LuaFont_ResolveByNameInternal( L, szName, false );
+  s_hLastSetTextFont = hFont;
 
-  if ( hFont != 0 )
+  if ( hFont == 0 )
   {
-    surface()->DrawSetTextFont( hFont );
-    s_hLastSetTextFont = hFont;
+    luasrc_LuaErrorMsgF( "'%s' isn't a valid font\n", szName );
+    return 0;
   }
 
-  // Push the resolved HFont back so a Lua caller can cache it.
-  lua_pushfont( L, hFont );
-  return 1;
+  surface()->DrawSetTextFont( hFont );
+  return 0;
 }
 
 static int surface_SetEmbeddedPanel (lua_State *L) {
@@ -1229,6 +1305,7 @@ static const luaL_Reg surfacelib[] = {
   {"DrawGetTextureId",   surface_DrawGetTextureId},
   {"DrawGetTextureSize",   surface_DrawGetTextureSize},
   {"DrawLine",   surface_DrawLine},
+  {"DrawCircle", surface_DrawCircle},
   {"DrawOutlinedCircle",   surface_DrawOutlinedCircle},
   {"DrawOutlinedRect",   surface_DrawOutlinedRect},
   {"DrawPrintText",   surface_DrawPrintText},
@@ -1343,6 +1420,12 @@ LUALIB_API int luaopen_surface (lua_State *L) {
   lua_setfield(L, -2, "MouseX");
   lua_pushcfunction(L, HL2SB_gui_MouseY);
   lua_setfield(L, -2, "MouseY");
+  lua_pushcfunction(L, HL2SB_gui_SetMousePos);
+  lua_setfield(L, -2, "SetMousePos");
+#ifdef CLIENT_DLL
+  lua_pushcfunction(L, HL2SB_gui_EnableScreenClicker);
+  lua_setfield(L, -2, "EnableScreenClicker");
+#endif
   lua_pushcfunction(L, HL2SB_gui_MousePos);
   lua_setfield(L, -2, "MousePos");
   lua_pushcfunction(L, HL2SB_gui_ScreenWidth);

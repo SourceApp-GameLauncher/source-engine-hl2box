@@ -50,6 +50,7 @@ class CMatCallQueue;
 #include "../../../thirdparty/stb/stb_image_write.h"
 #include "tier1/utlbuffer.h"
 #include "tier2/renderutils.h"
+#include "tier2/beamsegdraw.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "c_rope.h"
 #if defined( _WIN32 )
@@ -65,8 +66,8 @@ LUA_REGISTRATION_INIT( Renders );
 #ifdef CLIENT_DLL
 
 // Minifaction and magnification filter stacks
-static CUtlStack< ShaderAPITextureHandle_t > filterTextureHandlesMinification;
-static CUtlStack< ShaderAPITextureHandle_t > filterTextureHandlesMagnification;
+static CUtlStack<int> s_TextureFilterMin;
+static CUtlStack<int> s_TextureFilterMag;
 struct HL2SBRenderTargetState {
     int depthAlpha;
     bool iconAlpha;
@@ -556,13 +557,24 @@ LUA_BINDING_END()
 // DrawScreenQuad binding below sees it; SetMaterial (further down) writes it.
 static IMaterial *s_pRendersLastSetMaterial = NULL;
 
+LUA_BINDING_BEGIN( Renders, DrawLine, "library", "Draws a line in 3D space.", "client" )
+{
+    const Vector start = luaL_checkvector( L, 1 );
+    const Vector end = luaL_checkvector( L, 2 );
+    const lua_Color color = luaL_checkcolor( L, 3 );
+    const bool writeDepth = lua_toboolean( L, 4 ) != 0;
+    RenderLine( start, end, Color( color.r(), color.g(), color.b(), color.a() ), writeDepth );
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, DrawBox, "library", "Draws an oriented box with the current material.", "client" )
 {
     const Vector origin = luaL_checkvector( L, 1 );
     const QAngle angles = luaL_checkangle( L, 2 );
     const Vector mins = luaL_checkvector( L, 3 );
     const Vector maxs = luaL_checkvector( L, 4 );
-    const lua_Color color = luaL_checkcolor( L, 5 );
+    const lua_Color color = luaL_optcolor( L, 5, Color( 255, 255, 255, 255 ) );
     if ( s_pRendersLastSetMaterial )
         RenderBox( origin, angles, mins, maxs,
             Color( color.r(), color.g(), color.b(), color.a() ), s_pRendersLastSetMaterial, false );
@@ -676,6 +688,43 @@ LUA_BINDING_BEGIN( Renders, SetRenderTarget, "library", "Sets the render target 
 LUA_BINDING_END()
 
 // render.PushRenderTarget( texture [, x, y, w, h] ) / render.PopRenderTarget()
+LUA_BINDING_BEGIN( Renders, OverrideBlend, "library", "Overrides color and alpha blending.", "client" )
+{
+    CMatRenderContextPtr context( materials );
+    context->OverrideBlendColor( false, true, -1, -1, -1 );
+    context->OverrideBlendAlpha( false, true, -1, -1, -1 );
+    if ( lua_toboolean( L, 1 ) )
+    {
+        const int count = lua_gettop( L );
+        context->OverrideBlendColor( true, count > 1, (int)lua_tonumber( L, 2 ), (int)lua_tonumber( L, 3 ), (int)lua_tonumber( L, 4 ) );
+        context->OverrideBlendAlpha( true, count > 4, (int)lua_tonumber( L, 5 ), (int)lua_tonumber( L, 6 ), (int)lua_tonumber( L, 7 ) );
+    }
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, OverrideAlphaWriteEnable, "library", "Overrides alpha writes for rendering.", "client" )
+{
+    const bool enable = lua_toboolean( L, 1 ) != 0;
+    const bool write = lua_toboolean( L, 2 ) != 0;
+    CMatRenderContextPtr context( materials );
+    context->OverrideAlphaWriteEnable( enable, write );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SetViewPort, "library", "Sets the current render viewport.", "client" )
+{
+    const int x = (int)luaL_checknumber( L, 1 );
+    const int y = (int)luaL_checknumber( L, 2 );
+    const int width = (int)luaL_checknumber( L, 3 );
+    const int height = (int)luaL_checknumber( L, 4 );
+    CMatRenderContextPtr context( materials );
+    context->Viewport( x, y, width, height );
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, PushRenderTarget, "library", "Pushes a render target and viewport for rendering.", "client" )
 {
     CMatRenderContextPtr pRenderContext( materials );
@@ -815,6 +864,44 @@ LUA_BINDING_BEGIN( Renders, Capture, "library", "Captures a render target rectan
     if (written) lua_pushlstring(L, static_cast<const char *>(output.Base()), output.TellPut());
     else lua_pushnil(L);
     return 1;
+}
+LUA_BINDING_END()
+
+static CUtlVector<unsigned char> s_CapturedPixels;
+static int s_CapturedWidth = 0;
+static int s_CapturedHeight = 0;
+
+LUA_BINDING_BEGIN( Renders, CapturePixels, "library", "Captures the current render target for pixel reads.", "client" )
+{
+    CMatRenderContextPtr context( materials );
+    int width = 0, height = 0;
+    context->GetRenderTargetDimensions( width, height );
+    if ( width <= 0 || height <= 0 || width > 8192 || height > 8192 )
+    {
+        s_CapturedPixels.RemoveAll();
+        s_CapturedWidth = s_CapturedHeight = 0;
+        return 0;
+    }
+    s_CapturedWidth = width;
+    s_CapturedHeight = height;
+    s_CapturedPixels.SetCount( width * height * 4 );
+    context->ReadPixels( 0, 0, width, height, s_CapturedPixels.Base(), IMAGE_FORMAT_RGBA8888 );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, ReadPixel, "library", "Reads a pixel from the last capture.", "client" )
+{
+    const int x = (int)luaL_checknumber( L, 1 );
+    const int y = (int)luaL_checknumber( L, 2 );
+    if ( x < 0 || y < 0 || x >= s_CapturedWidth || y >= s_CapturedHeight || s_CapturedPixels.Count() == 0 )
+    {
+        lua_pushinteger( L, 0 ); lua_pushinteger( L, 0 ); lua_pushinteger( L, 0 );
+        return 3;
+    }
+    const unsigned char *pixel = s_CapturedPixels.Base() + ( y * s_CapturedWidth + x ) * 4;
+    for ( int i = 0; i < 4; ++i ) lua_pushinteger( L, pixel[i] );
+    return 4;
 }
 LUA_BINDING_END()
 
@@ -2022,6 +2109,15 @@ LUA_BINDING_BEGIN( Renders, SetWriteDepthToDestinationAlpha, "library", "Set the
 }
 LUA_BINDING_END()
 
+LUA_BINDING_BEGIN( Renders, SetWriteDepthToDestAlpha, "library", "Set the write depth to destination alpha.", "client" )
+{
+    bool bEnable = lua_toboolean( L, 1 ) != 0;
+    CMatRenderContextPtr pRenderContext( materials );
+    pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_WRITE_DEPTH_TO_DESTALPHA, bEnable );
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, MainViewOrigin, "library", "Get the main view origin.", "client" )
 {
     lua_pushvector( L, MainViewOrigin() );
@@ -2069,35 +2165,55 @@ static ShaderTexFilterMode_t FilterModeFromEnumeration( int enumeration )
 ** outside the materialsystem DLL.  The filter stacks they maintained had no other
 ** user, so the whole group is left out rather than shipped broken.
 */
-// GMod spelling of the filter pair (addons call Push/PopFilterMag|Min - the
-// NVG addon wraps its HUD draws in PushFilterMag(TEXFILTER.ANISOTROPIC)).
-// The per-draw sampler override below is still the disabled experiment, so
-// these register as argument-checked no-ops: the call chain keeps running
-// and draws fall back to the default filtering instead of raising
-// "attempt to call a nil value (method 'PushFilterMag')".
-LUA_BINDING_BEGIN( Renders, PushFilterMag, "library", "Push a magnification filter (no-op in this fork).", "client" )
+// Queue filter changes through the render context so they remain ordered with draws.
+static int HL2SB_PushTextureFilter( lua_State *L, CUtlStack<int> &stack, int parameter, const char *name )
 {
-    LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "filter" );
+    const int filter = clamp( (int)luaL_checknumber( L, 1 ), 0, 8 );
+    if ( stack.Count() >= 200 )
+    {
+        luasrc_LuaErrorMsgF( "%s overflow\n", name );
+        return 0;
+    }
+    stack.Push( filter );
+    CMatRenderContextPtr context( materials );
+    context->SetIntRenderingParameter( parameter, filter );
     return 0;
+}
+
+static int HL2SB_PopTextureFilter( lua_State *L, CUtlStack<int> &stack, int parameter, const char *name )
+{
+    if ( stack.Count() == 0 )
+    {
+        luasrc_LuaErrorMsgF( "%s underflow!\n", name );
+        return 0;
+    }
+    stack.Pop();
+    CMatRenderContextPtr context( materials );
+    context->SetIntRenderingParameter( parameter, stack.Count() ? stack.Top() : 0 );
+    return 0;
+}
+
+LUA_BINDING_BEGIN( Renders, PushFilterMag, "library", "Push a magnification filter.", "client" )
+{
+    return HL2SB_PushTextureFilter( L, s_TextureFilterMag, INT_RENDERPARM_TEXTURE_FILTER_MAG, "render.PushFilterMag" );
 }
 LUA_BINDING_END()
 
-LUA_BINDING_BEGIN( Renders, PushFilterMin, "library", "Push a minification filter (no-op in this fork).", "client" )
+LUA_BINDING_BEGIN( Renders, PushFilterMin, "library", "Push a minification filter.", "client" )
 {
-    LUA_BINDING_ARGUMENT( luaL_checknumber, 1, "filter" );
-    return 0;
+    return HL2SB_PushTextureFilter( L, s_TextureFilterMin, INT_RENDERPARM_TEXTURE_FILTER_MIN, "render.PushFilterMin" );
 }
 LUA_BINDING_END()
 
-LUA_BINDING_BEGIN( Renders, PopFilterMag, "library", "Pop a magnification filter (no-op in this fork).", "client" )
+LUA_BINDING_BEGIN( Renders, PopFilterMag, "library", "Pop a magnification filter.", "client" )
 {
-    return 0;
+    return HL2SB_PopTextureFilter( L, s_TextureFilterMag, INT_RENDERPARM_TEXTURE_FILTER_MAG, "render.PopFilterMag" );
 }
 LUA_BINDING_END()
 
-LUA_BINDING_BEGIN( Renders, PopFilterMin, "library", "Pop a minification filter (no-op in this fork).", "client" )
+LUA_BINDING_BEGIN( Renders, PopFilterMin, "library", "Pop a minification filter.", "client" )
 {
-    return 0;
+    return HL2SB_PopTextureFilter( L, s_TextureFilterMin, INT_RENDERPARM_TEXTURE_FILTER_MIN, "render.PopFilterMin" );
 }
 LUA_BINDING_END()
 
@@ -2337,6 +2453,30 @@ LUA_BINDING_BEGIN( Renders, SetMaterial, "library", "Binds a material for use in
 }
 LUA_BINDING_END()
 
+LUA_BINDING_BEGIN( Renders, DrawQuad, "library", "Draws a quad with the currently bound material.", "client" )
+{
+    Vector corners[4] = {
+        luaL_checkvector(L, 1), luaL_checkvector(L, 2),
+        luaL_checkvector(L, 3), luaL_checkvector(L, 4)
+    };
+    lua_Color color = luaL_optcolor(L, 5, lua_Color(255, 255, 255, 255));
+    CMatRenderContextPtr context(materials);
+    IMesh *mesh = context->GetDynamicMesh(true, NULL, NULL, g_pHL2SBLastBoundMaterial);
+    CMeshBuilder builder;
+    builder.Begin(mesh, MATERIAL_QUADS, 1);
+    const float uv[4][2] = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+    for (int i = 0; i < 4; ++i) {
+        builder.Position3fv(corners[i].Base());
+        builder.Color4ub(color.r(), color.g(), color.b(), color.a());
+        builder.TexCoord2f(0, uv[i][0], uv[i][1]);
+        builder.AdvanceVertex();
+    }
+    builder.End();
+    mesh->Draw();
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, DrawQuadEasy, "library", "Draws a quad with the currently bound material, facing the given normal.", "client" )
 {
     Vector position = LUA_BINDING_ARGUMENT( luaL_checkvector, 1, "position" );
@@ -2490,27 +2630,29 @@ LUA_BINDING_BEGIN( Renders, DrawBeam, "library", "Draws a beam", "client" )
     float textureEnd = LUA_BINDING_ARGUMENT( luaL_checknumber, 5, "textureEnd" );
     lua_Color color = LUA_BINDING_ARGUMENT_WITH_DEFAULT( luaL_optcolor, 6, lua_Color( 255, 255, 255, 255 ), "color" );
 
-    // HL2SB diagnostic: a handful of full-geometry lines so a missing beam can
-    // still be distinguished from "never submitted".  Was capped at 120, which
-    // flooded ds_debug.log on one nyan impact (and looked like errors).
+    CMatRenderContextPtr pRenderContext( materials );
+
+    if ( g_pHL2SBLastBoundMaterial != NULL )
     {
-        static int s_nDrawBeamLogged = 0;
-
-        if ( s_nDrawBeamLogged < 8 )
+        const VertexFormat_t format = g_pHL2SBLastBoundMaterial->GetVertexFormat();
+        if ( (format & VERTEX_TANGENT_SPACE) == VERTEX_TANGENT_SPACE && TexCoordSize(1, format) >= 2 )
         {
-            ++s_nDrawBeamLogged;
-
-            const char *pszMaterial = ( g_pHL2SBLastBoundMaterial != NULL ) ? g_pHL2SBLastBoundMaterial->GetName() : "<none bound>";
-            Vector vecViewOrigin = MainViewOrigin();
-
-            Warning( "[HL2SB] render.DrawBeam #%d: material '%s' width=%.2f alpha=%.2f length=%.0f start=(%.0f %.0f %.0f) end=(%.0f %.0f %.0f) view=(%.0f %.0f %.0f)\n",
-                s_nDrawBeamLogged, pszMaterial, width, color.a() / 255.0f, end.DistTo( start ),
-                start.x, start.y, start.z, end.x, end.y, end.z,
-                vecViewOrigin.x, vecViewOrigin.y, vecViewOrigin.z );
+            CBeamSegDraw beam;
+            beam.Start( pRenderContext, 2, g_pHL2SBLastBoundMaterial );
+            BeamSeg_t segment;
+            segment.m_vColor.Init( color.r() / 255.0f, color.g() / 255.0f, color.b() / 255.0f );
+            segment.m_flAlpha = color.a() / 255.0f;
+            segment.m_flWidth = width;
+            segment.m_vPos = start;
+            segment.m_flTexCoord = textureStart;
+            beam.NextSeg( &segment );
+            segment.m_vPos = end;
+            segment.m_flTexCoord = textureEnd;
+            beam.NextSeg( &segment );
+            beam.End();
+            return 0;
         }
     }
-
-    CMatRenderContextPtr pRenderContext( materials );
 
     // HL2SB: hand-built ribbon instead of CBeamSegDraw.
     //
@@ -2585,34 +2727,34 @@ LUA_BINDING_BEGIN( Renders, DrawBeam, "library", "Draws a beam", "client" )
 
     meshBuilder.Begin( pMesh, MATERIAL_QUADS, 1 );
 
-    // Start edge, u = 1
-    VectorMA( start, -1.0f, vecHalfA, vecTmp );
-    meshBuilder.Position3fv( vecTmp.Base() );
-    meshBuilder.TexCoord2f( 0, 1.0f, textureStart );
-    meshBuilder.Color4ub( ubRed, ubGreen, ubBlue, ubAlpha );
-    meshBuilder.Normal3fv( vecAxis.Base() );
-    meshBuilder.AdvanceVertex();
-
     // Start edge, u = 0
-    VectorMA( start, 1.0f, vecHalfA, vecTmp );
+    VectorMA( start, -1.0f, vecHalfA, vecTmp );
     meshBuilder.Position3fv( vecTmp.Base() );
     meshBuilder.TexCoord2f( 0, 0.0f, textureStart );
     meshBuilder.Color4ub( ubRed, ubGreen, ubBlue, ubAlpha );
     meshBuilder.Normal3fv( vecAxis.Base() );
     meshBuilder.AdvanceVertex();
 
-    // End edge, u = 0
-    VectorMA( end, 1.0f, vecHalfA, vecTmp );
+    // Start edge, u = 1
+    VectorMA( start, 1.0f, vecHalfA, vecTmp );
     meshBuilder.Position3fv( vecTmp.Base() );
-    meshBuilder.TexCoord2f( 0, 0.0f, textureEnd );
+    meshBuilder.TexCoord2f( 0, 1.0f, textureStart );
     meshBuilder.Color4ub( ubRed, ubGreen, ubBlue, ubAlpha );
     meshBuilder.Normal3fv( vecAxis.Base() );
     meshBuilder.AdvanceVertex();
 
     // End edge, u = 1
-    VectorMA( end, -1.0f, vecHalfA, vecTmp );
+    VectorMA( end, 1.0f, vecHalfA, vecTmp );
     meshBuilder.Position3fv( vecTmp.Base() );
     meshBuilder.TexCoord2f( 0, 1.0f, textureEnd );
+    meshBuilder.Color4ub( ubRed, ubGreen, ubBlue, ubAlpha );
+    meshBuilder.Normal3fv( vecAxis.Base() );
+    meshBuilder.AdvanceVertex();
+
+    // End edge, u = 0
+    VectorMA( end, -1.0f, vecHalfA, vecTmp );
+    meshBuilder.Position3fv( vecTmp.Base() );
+    meshBuilder.TexCoord2f( 0, 0.0f, textureEnd );
     meshBuilder.Color4ub( ubRed, ubGreen, ubBlue, ubAlpha );
     meshBuilder.Normal3fv( vecAxis.Base() );
     meshBuilder.AdvanceVertex();
@@ -3247,10 +3389,20 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_setglobal( L, "GetRenderTargetEx" );
     lua_pushinteger( L, RT_SIZE_FULL_FRAME_BUFFER );
     lua_setglobal( L, "RT_SIZE_FULL_FRAME_BUFFER" );
+    lua_pushinteger( L, RT_SIZE_NO_CHANGE );
+    lua_setglobal( L, "RT_SIZE_NO_CHANGE" );
+    lua_pushinteger( L, MATERIAL_RT_DEPTH_SEPARATE );
+    lua_setglobal( L, "MATERIAL_RT_DEPTH_SEPARATE" );
     lua_pushinteger( L, MATERIAL_RT_DEPTH_NONE );
     lua_setglobal( L, "MATERIAL_RT_DEPTH_NONE" );
     lua_pushinteger( L, -1 );
     lua_setglobal( L, "IMAGE_FORMAT_DEFAULT" );
+    lua_pushinteger( L, IMAGE_FORMAT_RGBA8888 );
+    lua_setglobal( L, "IMAGE_FORMAT_RGBA8888" );
+    lua_pushinteger( L, IMAGE_FORMAT_BGR888 );
+    lua_setglobal( L, "IMAGE_FORMAT_BGR888" );
+    lua_pushinteger( L, IMAGE_FORMAT_BGRA8888 );
+    lua_setglobal( L, "IMAGE_FORMAT_BGRA8888" );
 
     // HL2SB: the cam library -- cam.Start( {type="3D"/"2D", ...} ) / cam.End() /
     // cam.IgnoreZ().  The content render.lua shim builds cam.Start3D/Start2D on
@@ -3279,6 +3431,8 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_pushenum( L, MaterialCullMode_t::MATERIAL_CULLMODE_CCW, "COUNTER_CLOCKWISE" );
     lua_pushenum( L, MaterialCullMode_t::MATERIAL_CULLMODE_CW, "CLOCKWISE" );
     LUA_SET_ENUM_LIB_END( L );
+    lua_pushinteger( L, MATERIAL_CULLMODE_CCW ); lua_setglobal( L, "MATERIAL_CULLMODE_CCW" );
+    lua_pushinteger( L, MATERIAL_CULLMODE_CW ); lua_setglobal( L, "MATERIAL_CULLMODE_CW" );
 
     LUA_SET_ENUM_LIB_BEGIN( L, "STENCIL_COMPARISON_FUNCTION" );
     lua_pushenum( L, StencilComparisonFunction_t::STENCILCOMPARISONFUNCTION_NEVER, "NEVER" );
@@ -3290,6 +3444,24 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_pushenum( L, StencilComparisonFunction_t::STENCILCOMPARISONFUNCTION_GREATEREQUAL, "GREATER_OR_EQUAL" );
     lua_pushenum( L, StencilComparisonFunction_t::STENCILCOMPARISONFUNCTION_ALWAYS, "ALWAYS" );
     LUA_SET_ENUM_LIB_END( L );
+
+    static const char * const stencilCompareGlobals[] = {
+        "STENCILCOMPARISONFUNCTION_NEVER", "STENCILCOMPARISONFUNCTION_LESS",
+        "STENCILCOMPARISONFUNCTION_EQUAL", "STENCILCOMPARISONFUNCTION_LESSEQUAL",
+        "STENCILCOMPARISONFUNCTION_GREATER", "STENCILCOMPARISONFUNCTION_NOTEQUAL",
+        "STENCILCOMPARISONFUNCTION_GREATEREQUAL", "STENCILCOMPARISONFUNCTION_ALWAYS"
+    };
+    static const char * const stencilOperationGlobals[] = {
+        "STENCILOPERATION_KEEP", "STENCILOPERATION_ZERO", "STENCILOPERATION_REPLACE",
+        "STENCILOPERATION_INCRSAT", "STENCILOPERATION_DECRSAT", "STENCILOPERATION_INVERT",
+        "STENCILOPERATION_INCR", "STENCILOPERATION_DECR"
+    };
+    for ( int i = 0; i < ARRAYSIZE( stencilCompareGlobals ); ++i ) {
+        lua_pushinteger( L, i + 1 );
+        lua_setglobal( L, stencilCompareGlobals[i] );
+        lua_pushinteger( L, i + 1 );
+        lua_setglobal( L, stencilOperationGlobals[i] );
+    }
 
     // HL2SB: the light types render.SetLocalModelLights takes
     // (https://wiki.facepunch.com/gmod/Enums/MATERIAL_LIGHT).  lua_pushenum publishes

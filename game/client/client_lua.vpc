@@ -45,6 +45,7 @@ $Project "Client (HL2SB)"
 
 	$Folder "Client Lua"
 	{
+		$File "episodic/c_prop_scalable.cpp"
 		$File "$SRCDIR/game/shared/lua/luamanager.cpp"
 		$File "$SRCDIR/game/shared/lua/lhl2sb.cpp"
 
@@ -108,6 +109,9 @@ $Project "Client (HL2SB)"
 		$File "lua/scripted_controls/lTextEntry.cpp"
 		$File "lua/scripted_controls/lPropertyDialog.cpp"
 		$File "lua/scripted_controls/lPropertyPage.cpp"
+		// GMod-compatible Lua audio channel bindings.
+		$File "lua/lgmodaudio.cpp"
+		$File "lua/lgmodaudio.h"
 		$File "lua/scripted_controls/scriptedclientluapanel.cpp"
 		$File "lua/scripted_controls/scriptedhudviewport.cpp"
 		$File "lua/scripted_controls/lPanel.cpp"

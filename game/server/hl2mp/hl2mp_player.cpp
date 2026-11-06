@@ -159,7 +159,8 @@ IMPLEMENT_SERVERCLASS_ST(CHL2MP_Player, DT_HL2MP_Player)
 	// float through IsPlayingTaunt() to run the taunt camera and gate the act
 	// command, so it has to replicate.
 	SendPropFloat( SENDINFO( m_flHL2SBTauntEnd ) ),
-	SendPropInt( SENDINFO( m_iHL2SBPlayerClassID ), 16, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_iHL2SBPlayerClassID ), 15, 0 ),
+	SendPropInt( SENDINFO( m_iHL2SBPlayerFlags ), 4, SPROP_UNSIGNED ),
 	// HL2SB (2026-09-27): the hands entity handle.  GMod's datadesc prop is
 	// "m_Hands"; this fork's pair is self-consistently named m_hHands (nothing
 	// external parses the datatable, so only the pair matching matters).
@@ -220,13 +221,10 @@ END_DATADESC()
 //   * duration = SequenceDuration( SelectWeightedSequence( activity ) )
 //   * TauntEnd = curtime + duration (replicated float; drives IsPlayingTaunt
 //     and the taunt camera on every realm -- GMod keeps no other flag)
-//   * GMod plays the gesture as animstate DoAnimationEvent( CUSTOM_GESTURE,
-//     act, restart ), which lands in GESTURE_SLOT_CUSTOM -- this fork's
-//     equivalent is HL2SB_AnimRestartGesture( GESTURE_SLOT_CUSTOM, act, true ).
-//     The gesture has to be started HERE, not on the client: the client's
-//     overlay layers are overwritten by the networked DT_BaseAnimatingOverlay
-//     data on every update, so a client-only layer never rendered.  The layer
-//     is networked, so everyone sees it.
+//   * Restart the local animation state's VCD gesture slot, then send the
+//     dedicated player entity message that makes each client restart its own
+//     VCD slot. This preserves the reference's separate animation and message
+//     paths.
 //   * GM:PlayerStartTaunt( ply, actid, length )
 //-----------------------------------------------------------------------------
 struct HL2SB_ActEntry_t
@@ -292,13 +290,18 @@ CON_COMMAND_F( act, "Plays a 'taunt' animation, if the server allows it. Valid o
 		return;
 
 	const int iSequence = pPlayer->SelectWeightedSequence( activity );
-	const float flDuration = ( iSequence >= 0 ) ? pPlayer->SequenceDuration( iSequence ) : 0.0f;
+	const float flDuration = pPlayer->SequenceDuration( iSequence );
 
 	const float flEnd = gpGlobals->curtime + flDuration;
 	if ( pPlayer->HL2SB_TauntEnd() != flEnd )
 		pPlayer->HL2SB_SetTauntEnd( flEnd );
 
-	pPlayer->HL2SB_AnimRestartGesture( GESTURE_SLOT_CUSTOM, activity, true );
+	pPlayer->HL2SB_RestartActGesture( activity );
+
+	EntityMessageBegin( pPlayer, false );
+		MessageWriteByte( 8 );
+		MessageWriteLong( (int)activity );
+	MessageEnd();
 
 	BEGIN_LUA_CALL_HOOK( "PlayerStartTaunt" );
 		lua_pushplayer( L, pPlayer );
@@ -337,6 +340,7 @@ CHL2MP_Player::CHL2MP_Player() : m_PlayerAnimState( this )
 	m_flHL2SBSlowWalkSpeed = 100.0f;
 	m_flHL2SBJumpPower = 200.0f;
 	m_iHL2SBPlayerClassID = 0;
+	m_iHL2SBPlayerFlags = 0;
 
 	// HL2SB: stored-only GMod knobs (GMod defaults).
 	m_flHL2SBCrouchedWalkSpeed = 0.34f;
@@ -483,7 +487,11 @@ void CHL2MP_Player::PickDefaultSpawnTeam( void )
 				const char *szModelName = NULL;
 				szModelName = engine->GetClientConVarValue( engine->IndexOfEdict( edict() ), "cl_playermodel" );
 
+#if defined( LUA_SDK )
+				if ( !HL2SB_HasPlayerGamemodeMethod( "PlayerSpawn" ) && ValidatePlayerModel( szModelName ) == false )
+#else
 				if ( ValidatePlayerModel( szModelName ) == false )
+#endif
 				{
 					char szReturnString[512];
 					Q_snprintf( szReturnString, sizeof (szReturnString ), "cl_playermodel %s\n", HL2SB_DEFAULT_PLAYERMODEL );
@@ -594,20 +602,15 @@ void CHL2MP_Player::Spawn(void)
 	m_bReady = false;
 
 #ifdef HL2SB
-	// GMod-style: a requested player model change is applied when we (re)spawn.
-	// This runs on every spawn/respawn, so hl2sb_setmodel/cl_playermodel changes
-	// made while alive take effect on the next death/respawn. SetPlayerModel
-	// reads cl_playermodel and applies it (precaching as needed).
-	if ( hl2sb_model_respawn_only.GetBool() )
+	// Lua gamemodes apply their own model and appearance during PlayerSpawn.
+#if defined( LUA_SDK )
+	if ( !HL2SB_HasPlayerGamemodeMethod( "PlayerSpawn" ) )
+#endif
 	{
-		SetPlayerModel();
-	}
-	else
-	{
-		// HL2SB: with respawn-only OFF the model is applied when the convar changes, so
-		// the appearance (bodygroups / skin / colours) has to be applied here instead -
-		// otherwise nothing ever calls it and the sliders do nothing at all.
-		HL2SB_ModelManager_ApplyAppearance( this );
+		if ( hl2sb_model_respawn_only.GetBool() )
+			SetPlayerModel();
+		else
+			HL2SB_ModelManager_ApplyAppearance( this );
 	}
 #endif
 }
@@ -646,6 +649,8 @@ void CHL2MP_Player::PickupObject( CBaseEntity *pObject, bool bLimitMassAndSize )
 
 bool CHL2MP_Player::ValidatePlayerModel( const char *pModel )
 {
+	if ( !pModel || !pModel[0] )
+		return false;
 #ifdef HL2SB
 	// Also accept models from HL2SB config
 	if ( HL2SB_FindModelConfigByPath( pModel ) )
@@ -672,6 +677,39 @@ bool CHL2MP_Player::ValidatePlayerModel( const char *pModel )
 	return false;
 }
 
+#if defined( LUA_SDK )
+bool HL2SB_ResolveLuaPlayerModel( const char *name, char *out, int outSize )
+{
+	if ( !L || !name || !out || outSize <= 0 )
+		return false;
+
+	const int top = lua_gettop( L );
+	bool resolved = false;
+	lua_getglobal( L, "player_manager" );
+	if ( lua_istable( L, -1 ) )
+	{
+		lua_getfield( L, -1, "TranslatePlayerModel" );
+		if ( lua_isfunction( L, -1 ) )
+		{
+			lua_pushstring( L, name );
+			const int status = lua_pcall( L, 1, 1, 0 );
+			if ( status == LUA_OK && lua_type( L, -1 ) == LUA_TSTRING )
+			{
+				Q_strncpy( out, lua_tostring( L, -1 ), outSize );
+				resolved = out[0] != '\0';
+			}
+			else if ( status != LUA_OK )
+			{
+				const char *error = lua_tostring( L, -1 );
+				luasrc_LuaErrorMsgF( "player_manager.TranslatePlayerModel: %s\n", error ? error : "unknown error" );
+			}
+		}
+	}
+	lua_settop( L, top );
+	return resolved;
+}
+#endif
+
 void CHL2MP_Player::SetPlayerTeamModel( void )
 {
 	// HL2SB (2026-09-27): the per-team random model lists are gone.  In teamplay
@@ -684,10 +722,15 @@ void CHL2MP_Player::SetPlayerModel( void )
 {
     // cl_playermodel stores the registered name; model paths are resolved locally.
     const char *requested = engine->GetClientConVarValue( entindex(), "cl_playermodel" );
-    const HL2SB_ModelConfig_t *config = requested && requested[0]
+    char luaModel[MAX_PATH];
+    bool luaResolved = false;
+#if defined( LUA_SDK )
+    luaResolved = HL2SB_ResolveLuaPlayerModel( requested, luaModel, (int)sizeof( luaModel ) );
+#endif
+    const HL2SB_ModelConfig_t *config = !luaResolved && requested && requested[0]
         ? HL2SB_GetModelConfigByName( requested ) : NULL;
-    const char *model = config ? config->szPlayerModel : requested;
-    if ( model == NULL || model[0] == '\0' || !ValidatePlayerModel( model ) )
+    const char *model = luaResolved ? luaModel : ( config ? config->szPlayerModel : requested );
+    if ( model == NULL || model[0] == '\0' || ( !luaResolved && !ValidatePlayerModel( model ) ) )
         model = HL2SB_DEFAULT_PLAYERMODEL;
 
     if ( CBaseEntity::PrecacheModel( model ) <= 0 )
@@ -1067,7 +1110,22 @@ Activity CHL2MP_Player::HL2SB_TranslateActivityLua( Activity act, Activity fallb
 	return translated;
 }
 
+void CHL2MP_Player::HL2SB_RestartActGesture( Activity activity )
+{
+	m_PlayerAnimState.RestartGesture( GESTURE_SLOT_VCD, activity, true );
+}
+
 void CHL2MP_Player::HL2SB_AnimRestartGesture( int iSlot, Activity activity, bool bRestart )
+{
+	HL2SB_AnimRestartGestureInternal( iSlot, activity, bRestart, true );
+}
+
+void CHL2MP_Player::HL2SB_AnimRestartGestureLocal( int iSlot, Activity activity, bool bRestart )
+{
+	HL2SB_AnimRestartGestureInternal( iSlot, activity, bRestart, false );
+}
+
+void CHL2MP_Player::HL2SB_AnimRestartGestureInternal( int iSlot, Activity activity, bool bRestart, bool bBroadcast )
 {
 	if ( iSlot < 0 || iSlot >= GESTURE_SLOT_COUNT || activity <= ACT_INVALID )
 		return;
@@ -1084,32 +1142,14 @@ void CHL2MP_Player::HL2SB_AnimRestartGesture( int iSlot, Activity activity, bool
 	// ACT_HL2MP_GESTURE_RANGE_ATTACK_<holdtype>); fall back to the bare
 	// activity for model-authored layer activities (ACT_GMOD_IN_CHAT,
 	// ACT_GMOD_NOCLIP_LAYER).
-	Activity translated = Weapon_TranslateActivity( activity );
-	int iSequence = SelectWeightedSequence( translated );
-	Activity broadcastAct = ( iSequence > 0 ) ? translated : activity;
-	if ( iSequence <= 0 )
-		iSequence = SelectWeightedSequence( activity );
+	Activity translated = HL2SB_TranslateActivityLua( activity, Weapon_TranslateActivity( activity ) );
+	int iSequence = translated >= 0 ? SelectWeightedSequence( translated ) : -1;
+	Activity broadcastAct = translated;
 
-	// HL2SB (2026-10-02): GMod gesture broadcast - overlay_vars is excluded
-	// from the player send table, so THIS is the only way other clients ever
-	// see the gesture.  One broadcast per server-side gesture creation (Lua
-	// GM:DoAnimationEvent attacks/reloads, animations.lua land/chat, the act
-	// command, the C++ SetAnimation fallbacks - every path funnels through
-	// here).  The client receives CUSTOM_GESTURE + this activity and builds
-	// the layer locally in GESTURE_SLOT_CUSTOM.  The server layer created
-	// below still exists for IsPlayingTaunt/slot bookkeeping but is invisible
-	// (excluded from the send table).
-	//
-	// Broadcast the RESOLVED activity, not the caller's ideal: the client has
-	// no Weapon_TranslateActivity (server-only), so an ideal
-	// ACT_MP_ATTACK_STAND_PRIMARYFIRE that the model only carries as
-	// ACT_HL2MP_GESTURE_RANGE_ATTACK_<holdtype> dead-ends in the client's
-	// SelectWeightedSequence and the remote player never animates (two-player
-	// log: sv OK translated=... vs cl NO SEQUENCE ideal=...).  Activities the
-	// acttable leaves alone translate to themselves, so act/land/wave traffic
-	// is unchanged.  Above the replay/NO SEQUENCE returns so every funnel
-	// call broadcasts exactly once, including rapid-fire replays.
-	TE_PlayerAnimEvent( this, PLAYERANIMEVENT_CUSTOM_GESTURE, (int)broadcastAct );
+	// This helper's temporary-entity transport remains for the other fork
+	// gesture paths. The standard act command uses its dedicated player message.
+	if ( bBroadcast )
+		TE_PlayerAnimEvent( this, PLAYERANIMEVENT_CUSTOM_GESTURE, (int)broadcastAct );
 
 	// GMod's authoritative semantics (CMultiPlayerAnimState::RestartGesture,
 	// game/shared/Multiplayer/multiplayer_animstate.cpp:545): asking for the
@@ -1119,8 +1159,7 @@ void CHL2MP_Player::HL2SB_AnimRestartGesture( int iSlot, Activity activity, bool
 	// first shot.  A different activity (or an empty slot) starts a new layer.
 	if ( m_iHL2SBSlotLayer[iSlot] >= 0 && m_iHL2SBSlotActivity[iSlot] == activity )
 	{
-		if ( bRestart )
-			SetLayerCycle( m_iHL2SBSlotLayer[iSlot], 0.0f, 0.0f );
+		SetLayerCycle( m_iHL2SBSlotLayer[iSlot], 0.0f, 0.0f );
 
 		return;
 	}
@@ -1143,7 +1182,7 @@ void CHL2MP_Player::HL2SB_AnimRestartGesture( int iSlot, Activity activity, bool
 		return;
 	}
 
-	int iLayer = AddGestureSequence( iSequence, true );
+	int iLayer = AddGestureSequence( iSequence, bRestart );
 	if ( iLayer < 0 )
 	{
 		if ( hl2sb_anim_debug.GetBool() )
@@ -1251,9 +1290,11 @@ void CHL2MP_Player::SetAnimation( PLAYER_ANIM playerAnim )
         break;
     case PLAYER_ATTACK1:
         HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_ATTACK_PRIMARY, 0 );
+        TE_PlayerAnimEvent( this, PLAYERANIMEVENT_ATTACK_PRIMARY, 0 );
         break;
     case PLAYER_RELOAD:
         HL2SB_DoAnimationEventLua( PLAYERANIMEVENT_RELOAD, 0 );
+        TE_PlayerAnimEvent( this, PLAYERANIMEVENT_RELOAD, 0 );
         break;
     default:
         break;
@@ -1358,13 +1399,14 @@ void CHL2MP_Player::ChangeTeam( int iTeam )
 
 	m_flNextTeamChangeTime = gpGlobals->curtime + TEAM_CHANGE_INTERVAL;
 
-	if ( HL2MPRules()->IsTeamplay() == true )
+#if defined( LUA_SDK )
+	if ( !HL2SB_HasPlayerGamemodeMethod( "PlayerSpawn" ) )
+#endif
 	{
-		SetPlayerTeamModel();
-	}
-	else
-	{
-		SetPlayerModel();
+		if ( HL2MPRules()->IsTeamplay() == true )
+			SetPlayerTeamModel();
+		else
+			SetPlayerModel();
 	}
 
 	if ( bWasSpectator )

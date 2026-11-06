@@ -150,8 +150,7 @@ public:
 		else if ( !IsMarkedForDeletion() && !m_bReady )
 		{
 			m_bReady = true;
-			if ( GetRenderHandle() != INVALID_CLIENT_RENDER_HANDLE )
-				ClientLeafSystem()->RenderableChanged( GetRenderHandle() );
+			UpdateVisibility();
 		}
 	}
 
@@ -298,6 +297,12 @@ bool HL2SB_CreateLuaEffect( const char *name, const CEffectData &data )
 		--s_nLuaEffectDepth;
 		return false;
 	}
+
+	// Effects publish their legacy entity reference before Init runs.
+	lua_pushentity( L, effect );
+	lua_pushvalue( L, -1 );
+	lua_setfield( L, -2, "Entity" );
+	lua_pop( L, 1 );
 
 	if ( effect->PushCallback( "Init" ) )
 	{

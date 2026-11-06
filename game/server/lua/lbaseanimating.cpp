@@ -100,6 +100,10 @@ static int CBaseAnimating_GetAnimTimeInterval (lua_State *L) {
 }
 
 static int CBaseAnimating_GetAttachment (lua_State *L) {
+  if (lua_type(L, 2) == LUA_TNUMBER) {
+    extern int CBaseEntity_GetAttachment(lua_State *L);
+    return CBaseEntity_GetAttachment(L);
+  }
   switch(lua_type(L, 2)) {
 	case LUA_TNUMBER:
       {
@@ -350,9 +354,12 @@ static int CBaseAnimating_GetBoneCount (lua_State *L) {
 }
 
 static int CBaseAnimating_GetBoneName (lua_State *L) {
-  CBaseAnimating *pEntity = lua_toanimating(L, 1);
-  if ( pEntity == NULL )
-    return 0;
+  CBaseEntity *entity = luaL_checkentity(L, 1);
+  CBaseAnimating *pEntity = entity->GetBaseAnimating();
+  if ( pEntity == NULL ) {
+    lua_pushstring( L, "__INVALIDBONE__" );
+    return 1;
+  }
   int nBone = luaL_checkint(L, 2);
   CStudioHdr *pHdr = pEntity->GetModelPtr();
   if ( !pHdr || nBone < 0 || nBone >= pHdr->numbones() )
@@ -404,7 +411,8 @@ static int CBaseAnimating_CopyBoneMatrix (lua_State *L) {
 }
 
 static int CBaseAnimating_GetCycle (lua_State *L) {
-  lua_pushnumber(L, luaL_checkanimating(L, 1)->GetCycle());
+  CBaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  lua_pushnumber(L, pEntity->IsMarkedForDeletion() ? 0 : pEntity->GetCycle());
   return 1;
 }
 
@@ -473,7 +481,8 @@ static int CBaseAnimating_GetPoseParameterRange (lua_State *L) {
 }
 
 static int CBaseAnimating_GetSequence (lua_State *L) {
-  lua_pushinteger(L, luaL_checkanimating(L, 1)->GetSequence());
+  CBaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  lua_pushinteger(L, pEntity->IsMarkedForDeletion() ? 0 : pEntity->GetSequence());
   return 1;
 }
 
@@ -500,7 +509,16 @@ static int CBaseAnimating_GetSequenceLinearMotion (lua_State *L) {
 }
 
 static int CBaseAnimating_GetSequenceName (lua_State *L) {
-  lua_pushstring(L, luaL_checkanimating(L, 1)->GetSequenceName(luaL_checkinteger(L, 2)));
+  CBaseAnimating *pEntity = luaL_checkanimating(L, 1);
+  lua_pushstring(L, pEntity->IsMarkedForDeletion() ? "" : pEntity->GetSequenceName(luaL_checkint(L, 2)));
+  return 1;
+}
+
+static int CBaseAnimating_GetSequenceCount (lua_State *L) {
+  CBaseAnimating *entity = luaL_checkentity(L, 1)->GetBaseAnimating();
+  CStudioHdr *hdr = entity ? entity->GetModelPtr() : NULL;
+  if ( !hdr ) return 0;
+  lua_pushinteger(L, hdr->GetNumSeq());
   return 1;
 }
 
@@ -600,14 +618,10 @@ static int CBaseAnimating_ResetSequenceInfo (lua_State *L) {
 
 static int CBaseAnimating_SelectWeightedSequence (lua_State *L) {
   CBaseAnimating *entity = luaL_checkanimating(L, 1);
+  if ( !entity->GetModelPtr() ) return 0;
   const int activity = luaL_checkint(L, 2);
-  const char *name = NULL;
-  if ( activity == ACT_GMOD_SIT_ROLLERCOASTER ) name = "sit_rollercoaster";
-  else if ( activity == ACT_HL2MP_SIT ) name = "sit";
-  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_JEEP") ) name = "drive_jeep";
-  else if ( activity == ActivityList_IndexForName("ACT_DRIVE_AIRBOAT") ) name = "drive_airboat";
-  int sequence = name ? entity->LookupSequence(name) : -1;
-  lua_pushinteger(L, sequence >= 0 ? sequence : entity->SelectWeightedSequence((Activity)activity));
+  if ( activity < 0 ) return luaL_argerror(L, 2, "invalid activity");
+  lua_pushinteger(L, entity->SelectWeightedSequence((Activity)activity));
   return 1;
 }
 
@@ -666,14 +680,14 @@ static int CBaseAnimating_SetPoseParameter (lua_State *L) {
   // (scp049's MovementFunctions calls self:SetPoseParameter( "move_x", rate )).
   switch(lua_type(L, 2)) {
 	case LUA_TNUMBER:
-	  lua_pushnumber(L, luaL_checkanimating(L, 1)->SetPoseParameter(luaL_checkint(L, 2), luaL_checknumber(L, 3)));
+	  luaL_checkanimating(L, 1)->SetPoseParameter(luaL_checkint(L, 2), luaL_checknumber(L, 3));
 	  break;
 	case LUA_TSTRING:
 	default:
-	  lua_pushnumber(L, luaL_checkanimating(L, 1)->SetPoseParameter(luaL_checkstring(L, 2), luaL_checknumber(L, 3)));
+	  luaL_checkanimating(L, 1)->SetPoseParameter(luaL_checkstring(L, 2), luaL_checknumber(L, 3));
 	  break;
   }
-  return 1;
+  return 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -1203,6 +1217,7 @@ static const luaL_Reg CBaseAnimatingmeta[] = {
   {"GetPoseParameter", CBaseAnimating_GetPoseParameter},
   {"GetPoseParameterRange", CBaseAnimating_GetPoseParameterRange},
   {"GetSequence", CBaseAnimating_GetSequence},
+  {"GetSequenceCount", CBaseAnimating_GetSequenceCount},
   {"GetSequenceActivity", CBaseAnimating_GetSequenceActivity},
   {"GetSequenceActivityName", CBaseAnimating_GetSequenceActivityName},
   {"GetSequenceGroundSpeed", CBaseAnimating_GetSequenceGroundSpeed},

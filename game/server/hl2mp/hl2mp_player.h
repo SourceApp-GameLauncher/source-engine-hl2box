@@ -159,6 +159,9 @@ public:
 	bool			HL2SB_DoAnimationEventLua( PlayerAnimEvent_t event, int nData );
 	Activity		HL2SB_TranslateActivityLua( Activity act, Activity fallback );
 	void			HL2SB_AnimRestartGesture( int iSlot, Activity activity, bool bRestart );
+	void			HL2SB_AnimRestartGestureLocal( int iSlot, Activity activity, bool bRestart );
+	void			HL2SB_AnimRestartGestureInternal( int iSlot, Activity activity, bool bRestart, bool bBroadcast );
+	void			HL2SB_RestartActGesture( Activity activity );
 	void			HL2SB_AnimResetGestureSlot( int iSlot );
 	void			HL2SB_AnimSetGestureWeight( int iSlot, float flWeight );
 	void			HL2SB_AnimSetGestureSequence( int iSlot, int iSequence );
@@ -231,6 +234,14 @@ private:
 
     bool m_bEnterObserver;
 	bool m_bReady;
+
+public:
+	CNetworkVar( int, m_iHL2SBPlayerFlags );
+	bool HL2SB_GetAvoidPlayers() const { return ( m_iHL2SBPlayerFlags & 8 ) != 0; }
+	void HL2SB_SetAvoidPlayers( bool enabled ) { m_iHL2SBPlayerFlags = enabled ? ( m_iHL2SBPlayerFlags | 8 ) : ( m_iHL2SBPlayerFlags & ~8 ); }
+	bool HL2SB_GetNoCollideWithTeammates() const { return ( m_iHL2SBPlayerFlags & 2 ) != 0; }
+	void HL2SB_SetNoCollideWithTeammates( bool enabled ) { m_iHL2SBPlayerFlags = enabled ? ( m_iHL2SBPlayerFlags | 2 ) : ( m_iHL2SBPlayerFlags & ~2 ); }
+	virtual bool ShouldCollide( int collisionGroup, int contentsMask ) const;
 };
 
 inline CHL2MP_Player *ToHL2MPPlayer( CBaseEntity *pEntity )
