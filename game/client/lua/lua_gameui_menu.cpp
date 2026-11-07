@@ -56,6 +56,7 @@
 #include "ienginevgui.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "inetchannelinfo.h"
+#include "netadr.h"
 #include "filesystem.h"
 #include "utlbuffer.h"
 #include <map>
@@ -257,6 +258,26 @@ static int HL2SB_RestoreMenuOverride( lua_State *state )
 static int HL2SB_MenuIsInGame( lua_State *state )
 {
 	lua_pushboolean( state, engine->IsInGame() );
+	return 1;
+}
+
+static int HL2SB_MenuCanAddServerToFavorites( lua_State *state )
+{
+	// Reference behavior (menusystem binding, old reference build): true only
+	// while connected to a real remote server - a net channel that is not
+	// timing out and whose address parses to a valid, non-loopback,
+	// non-localhost IP. The main menu has no net channel, so this is false
+	// there and the favorites button stays hidden.
+	bool can = false;
+	INetChannelInfo *net = engine->GetNetChannelInfo();
+	if ( net != NULL && !net->IsTimingOut() )
+	{
+		netadr_t adr;
+		adr.SetFromString( net->GetAddress(), false );
+		if ( adr.IsValid() && !adr.IsLoopback() && !adr.IsLocalhost() )
+			can = true;
+	}
+	lua_pushboolean( state, can ? 1 : 0 );
 	return 1;
 }
 
@@ -613,6 +634,7 @@ static const luaL_Reg gameui_menu_funcs[] =
 	{ "HL2SB_RestoreMenuOverride", HL2SB_RestoreMenuOverride },
 	{ "IsInGame", HL2SB_MenuIsInGame },
 	{ "IsInLoading", HL2SB_MenuIsInLoading },
+	{ "CanAddServerToFavorites", HL2SB_MenuCanAddServerToFavorites },
 	{ "RunGameUICommand", HL2SB_RunGameUICommand },
 	{ "GetAPIManifest", HL2SB_GetAPIManifest },
 	{ "HL2SB_MenuLayout",     lua_HL2SB_MenuLayout },

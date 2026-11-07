@@ -11,8 +11,10 @@ struct HLSBServoRuntime;
 struct HLSBServoView;
 
 // Library path must identify a trusted Servo library matching the process ABI.
+// configDirectory (may be NULL) is where Servo keeps its per-origin
+// webstorage databases; without it localStorage does not persist.
 // Only one runtime is permitted at a time. It may own multiple views.
-HLSBServoRuntime *HLSBServoCreateRuntime(const char *libraryPath);
+HLSBServoRuntime *HLSBServoCreateRuntime(const char *libraryPath, const char *configDirectory);
 // Returns false on another thread or during Pump; no destruction then occurs.
 bool HLSBServoDestroyRuntime(HLSBServoRuntime *runtime);
 HLSBServoView *HLSBServoCreateView(HLSBServoRuntime *runtime, uint32_t width, uint32_t height);

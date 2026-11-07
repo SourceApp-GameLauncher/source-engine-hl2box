@@ -488,6 +488,19 @@ static int surface_DrawSetTextPos (lua_State *L) {
   return 0;
 }
 
+// GMod surface.SetAlphaMultiplier: "Sets the alpha multiplier that will
+// influence all upcoming drawing operations", multiplier ranges 0 to 1.
+// Direct passthrough to the Valve ISurface method both forks share.
+static int surface_SetAlphaMultiplier (lua_State *L) {
+  surface()->DrawSetAlphaMultiplier((float)luaL_checknumber(L, 1));
+  return 0;
+}
+
+static int surface_GetAlphaMultiplier (lua_State *L) {
+  lua_pushnumber(L, surface()->DrawGetAlphaMultiplier());
+  return 1;
+}
+
 static int surface_DrawSetTextScale (lua_State *L) {
   surface()->DrawSetTextScale(luaL_checknumber(L, 1), luaL_checknumber(L, 2));
   return 0;
@@ -1320,6 +1333,8 @@ static const luaL_Reg surfacelib[] = {
   {"DrawSetTextFont",   surface_DrawSetTextFont},
   {"DrawSetTextPos",   surface_DrawSetTextPos},
   {"DrawSetTextScale",   surface_DrawSetTextScale},
+  {"SetAlphaMultiplier",   surface_SetAlphaMultiplier},
+  {"GetAlphaMultiplier",   surface_GetAlphaMultiplier},
   {"GetTextureID",     surface_GetTextureID},
   {"SetTexture",       surface_DrawSetTexture},
   {"DrawSetTexture",   surface_DrawSetTexture},

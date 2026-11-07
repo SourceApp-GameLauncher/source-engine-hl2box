@@ -45,6 +45,7 @@ struct Api {
     void (*builder_set_preferences)(ServoBuilder *, ServoPreferences *);
     ServoOptions *(*options_create)();
     void (*options_set_multiprocess)(ServoOptions *, bool);
+    void (*options_set_config_dir)(ServoOptions *, const char *);
     void (*servo_free)(Servo *);
     void (*spin)(Servo *);
     RenderingContext *(*context_create)(uint32_t, uint32_t);
@@ -121,6 +122,7 @@ bool LoadApi(Library &lib, Api &api) {
     LOAD(preferences_set_string, "servo_preferences_set_string");
     LOAD(preferences_set_f64_array, "servo_preferences_set_f64_array");
     LOAD(builder_set_preferences, "servo_builder_set_preferences");
+    LOAD(options_set_config_dir, "servo_options_set_config_dir");
     LOAD(servo_free, "servo_free");
     LOAD(spin, "servo_spin_event_loop");
     LOAD(context_create, "servo_rendering_context_create_software");
@@ -253,7 +255,10 @@ bool BridgeCallback(uint64_t id, const char *message, void *user) {
 }
 bool AssetCallback(uint64_t id, const char *url, void *user) {
     HLSBServoView *v = static_cast<CallbackState *>(user)->view;
-    if (!v || v->assetEvents.size() >= 256 || !ValidUTF8(url, 8191)) return false;
+    // 20480: bridge calls carry their JSON payload in the query string, so
+    // their URLs run longer than plain asset file paths (the capi side uses
+    // the same budget for the reserved /__hl2sb_bridge__call path).
+    if (!v || v->assetEvents.size() >= 256 || !ValidUTF8(url, 20480)) return false;
     try { v->assetEvents.push_back(std::make_pair(id, std::string(url))); return true; } catch (...) { return false; }
 }
 void Screenshot(const uint8_t *data, uint32_t width, uint32_t height, int32_t, void *user) {
@@ -287,7 +292,7 @@ void Screenshot(const uint8_t *data, uint32_t width, uint32_t height, int32_t, v
 }
 }
 
-HLSBServoRuntime *HLSBServoCreateRuntime(const char *path) {
+HLSBServoRuntime *HLSBServoCreateRuntime(const char *path, const char *configDirectory) {
     if (!path || !*path) return NULL;
     bool expected = false;
     if (!s_runtimeExists.compare_exchange_strong(expected, true)) return NULL;
@@ -302,6 +307,11 @@ HLSBServoRuntime *HLSBServoCreateRuntime(const char *path) {
     ServoOptions *options = r->api.options_create();
     if (!options) { r->api.builder_free(builder); delete r; s_runtimeExists = false; return NULL; }
     r->api.options_set_multiprocess(options, false);
+    // Webstorage persistence: Servo partitions its per-origin SQLite stores
+    // under this directory. Without it the GMod menu's localStorage would
+    // not survive a restart.
+    if (configDirectory && *configDirectory)
+        r->api.options_set_config_dir(options, configDirectory);
     r->api.builder_set_options(builder, options);
     ServoPreferences *preferences = r->api.preferences_create();
     if (!preferences) { r->api.builder_free(builder); delete r; s_runtimeExists = false; return NULL; }
