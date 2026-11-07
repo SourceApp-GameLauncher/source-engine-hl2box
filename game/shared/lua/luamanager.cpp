@@ -2223,6 +2223,7 @@ static bool HL2SB_RewriteGLuaSource( const char *pIn, int nLen, char **ppOut, si
 
 	size_t o = 0;
 	enum EState { CODE, SQ_STR, DQ_STR, LONG_STR, LINE_COMMENT, LONG_COMMENT } state = CODE;
+	int longEquals = 0;
 	int i2 = 0;
 	while ( i2 < nLen )
 	{
@@ -2242,29 +2243,60 @@ static bool HL2SB_RewriteGLuaSource( const char *pIn, int nLen, char **ppOut, si
 			i2++;
 			break;
 		case LONG_STR:
+		case LONG_COMMENT:
+		{
+			// Lua long delimiters may contain any number of '=' characters.
+			// Only the matching closing delimiter ends this string or comment.
+			if ( c == ']' )
+			{
+				int end = i2 + 1;
+				while ( end < nLen && pIn[end] == '=' ) ++end;
+				if ( end < nLen && pIn[end] == ']' && end - i2 - 1 == longEquals )
+				{
+					while ( i2 <= end ) pOut[o++] = pIn[i2++];
+					state = CODE;
+					break;
+				}
+			}
 			pOut[o++] = c;
-			if ( c == ']' && i2 + 1 < nLen && pIn[i2+1] == ']' ) { pOut[o++] = pIn[++i2]; state = CODE; }
 			i2++;
 			break;
+		}
 		case LINE_COMMENT:
 			pOut[o++] = c;
 			if ( c == '\n' ) state = CODE;
 			i2++;
 			break;
-		case LONG_COMMENT:
-			pOut[o++] = c;
-			if ( c == ']' && i2 + 1 < nLen && pIn[i2+1] == ']' ) { pOut[o++] = pIn[++i2]; state = CODE; }
-			i2++;
-			break;
 		default: // CODE
 			if ( c == '\'' ) { pOut[o++] = c; state = SQ_STR; i2++; }
 			else if ( c == '"' ) { pOut[o++] = c; state = DQ_STR; i2++; }
-			else if ( c == '[' && i2 + 1 < nLen && pIn[i2+1] == '[' ) { pOut[o++] = c; pOut[o++] = pIn[++i2]; state = LONG_STR; i2++; }
+			else if ( c == '[' )
+			{
+				int end = i2 + 1;
+				while ( end < nLen && pIn[end] == '=' ) ++end;
+				if ( end < nLen && pIn[end] == '[' )
+				{
+					longEquals = end - i2 - 1;
+					while ( i2 <= end ) pOut[o++] = pIn[i2++];
+					state = LONG_STR;
+				}
+				else pOut[o++] = pIn[i2++];
+			}
 			else if ( c == '-' && i2 + 1 < nLen && pIn[i2+1] == '-' )
 			{
 				pOut[o++] = c; pOut[o++] = pIn[++i2]; i2++;
-				if ( i2 < nLen && pIn[i2] == '[' && i2 + 1 < nLen && pIn[i2+1] == '[' )
-				{ pOut[o++] = pIn[i2++]; pOut[o++] = pIn[i2++]; state = LONG_COMMENT; }
+				if ( i2 < nLen && pIn[i2] == '[' )
+				{
+					int end = i2 + 1;
+					while ( end < nLen && pIn[end] == '=' ) ++end;
+					if ( end < nLen && pIn[end] == '[' )
+					{
+						longEquals = end - i2 - 1;
+						while ( i2 <= end ) pOut[o++] = pIn[i2++];
+						state = LONG_COMMENT;
+					}
+					else state = LINE_COMMENT;
+				}
 				else state = LINE_COMMENT;
 			}
 			else if ( c == '/' && i2 + 1 < nLen && pIn[i2+1] == '/' ) { pOut[o++] = '-'; pOut[o++] = '-'; i2 += 2; state = LINE_COMMENT; }

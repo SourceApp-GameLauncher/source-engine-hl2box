@@ -50,8 +50,15 @@
 #include "view_shared.h"
 #include <string>
 #include <vector>
+#include <utility>
 #include "../../../game/client/lua/servo/servo_backend.h"
 #include "../../../game/client/lua/servo/servo_ime_menu.h"
+#include "html_backend_abi.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#undef GetClassName
+#endif
 
 extern ConVar hl2sb_dev_msgs;
 
@@ -2335,10 +2342,136 @@ static std::string HL2SB_HTMLQuote(const char *text)
   return result + "\"";
 }
 
+#if !defined(_WIN32)
 static ConVar hl2sb_html_servo("hl2sb_html_servo", "0", FCVAR_ARCHIVE,
   "Use the experimental Servo HTML backend for new HTML panels.");
+#endif
 static HLSBServoRuntime *s_htmlServoRuntime = NULL;
 static int s_htmlServoViews = 0;
+
+#if defined(_WIN32)
+class CHL2SBLuaHTML;
+static std::vector<CHL2SBLuaHTML *> s_htmlCefPanels;
+static ConVar hl2sb_html_cef("hl2sb_html_cef", "1", FCVAR_ARCHIVE,
+  "Use the CEF HTML backend for new HTML panels.");
+static const HtmlBackendVTable *s_htmlCefAPI = NULL;
+static HtmlBackend *s_htmlCefRuntime = NULL;
+static HMODULE s_htmlCefModule = NULL;
+static HMODULE s_htmlCefLibrary = NULL;
+
+static void HL2SB_ReleaseCEFModules()
+{
+  s_htmlCefAPI = NULL;
+  if (s_htmlCefModule) {
+    FreeLibrary(s_htmlCefModule);
+    s_htmlCefModule = NULL;
+  }
+  if (s_htmlCefLibrary) {
+    FreeLibrary(s_htmlCefLibrary);
+    s_htmlCefLibrary = NULL;
+  }
+}
+
+static bool HL2SB_InitializeCEF()
+{
+  if (s_htmlCefRuntime) return true;
+  if (!filesystem->FileExists("bin/cef/html_cef_helper.exe", "MOD")) {
+    Warning("CEF HTML: bin/cef/html_cef_helper.exe is missing.\n");
+    return false;
+  }
+  HMODULE loadedCEF = GetModuleHandleA("libcef.dll");
+  if (loadedCEF) {
+    char actual[MAX_PATH], expected[MAX_PATH], fullExpected[MAX_PATH];
+    const DWORD actualLength = GetModuleFileNameA(loadedCEF, actual, sizeof(actual));
+    if (!actualLength || actualLength >= sizeof(actual) ||
+        !filesystem->RelativePathToFullPath("bin/cef/libcef.dll", "MOD", expected, sizeof(expected))) {
+      Warning("CEF HTML: cannot verify the loaded libcef.dll path.\n");
+      return false;
+    }
+    const DWORD expectedLength = GetFullPathNameA(expected, sizeof(fullExpected), fullExpected, NULL);
+    if (!expectedLength || expectedLength >= sizeof(fullExpected)) {
+      Warning("CEF HTML: cannot verify the loaded libcef.dll path.\n");
+      return false;
+    }
+    V_FixSlashes(actual, '/');
+    V_FixSlashes(fullExpected, '/');
+    if (Q_stricmp(actual, fullExpected)) {
+      Warning("CEF HTML: another libcef.dll is already loaded from %s; expected %s.\n", actual, fullExpected);
+      return false;
+    }
+  }
+  if (!s_htmlCefModule) {
+    char library[MAX_PATH];
+    if (!filesystem->RelativePathToFullPath("bin/cef/html_cef.dll", "MOD", library, sizeof(library)))
+      return false;
+    s_htmlCefModule = LoadLibraryExA(library, NULL,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!s_htmlCefModule) {
+      Warning("CEF HTML: failed to load %s (Windows error %lu).\n", library, GetLastError());
+      return false;
+    }
+    HtmlGetBackendFn getBackend = reinterpret_cast<HtmlGetBackendFn>(
+      GetProcAddress(s_htmlCefModule, "hl2sb_html_get_backend"));
+    s_htmlCefAPI = getBackend ? getBackend() : NULL;
+    if (!s_htmlCefAPI || s_htmlCefAPI->abi_version != HL2SB_HTML_ABI_VERSION ||
+        s_htmlCefAPI->struct_size < sizeof(HtmlBackendVTable) || !s_htmlCefAPI->create || !s_htmlCefAPI->destroy ||
+        !s_htmlCefAPI->pump || !s_htmlCefAPI->view_create || !s_htmlCefAPI->view_destroy ||
+        !s_htmlCefAPI->view_resize || !s_htmlCefAPI->navigate || !s_htmlCefAPI->back ||
+        !s_htmlCefAPI->forward || !s_htmlCefAPI->reload || !s_htmlCefAPI->stop ||
+        !s_htmlCefAPI->eval_js || !s_htmlCefAPI->register_js || !s_htmlCefAPI->reply ||
+        !s_htmlCefAPI->asset_reply || !s_htmlCefAPI->poll || !s_htmlCefAPI->mouse ||
+        !s_htmlCefAPI->key || !s_htmlCefAPI->ime || !s_htmlCefAPI->lock_frame ||
+        !s_htmlCefAPI->unlock_frame) {
+      Warning("CEF HTML: incompatible backend ABI.\n");
+      HL2SB_ReleaseCEFModules();
+      return false;
+    }
+  }
+  if (!s_htmlCefLibrary) {
+    char library[MAX_PATH];
+    if (!filesystem->RelativePathToFullPath("bin/cef/libcef.dll", "MOD", library, sizeof(library))) {
+      Warning("CEF HTML: cannot resolve bin/cef/libcef.dll.\n");
+      HL2SB_ReleaseCEFModules();
+      return false;
+    }
+    s_htmlCefLibrary = LoadLibraryExA(library, NULL,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!s_htmlCefLibrary) {
+      Warning("CEF HTML: failed to load %s (Windows error %lu).\n", library, GetLastError());
+      HL2SB_ReleaseCEFModules();
+      return false;
+    }
+  }
+  char cache[MAX_PATH], helper[MAX_PATH];
+  filesystem->CreateDirHierarchy("cef_config", "MOD");
+  const char *cacheArg = filesystem->RelativePathToFullPath("cef_config", "MOD", cache, sizeof(cache)) ? cache : NULL;
+  const char *helperArg = filesystem->RelativePathToFullPath("bin/cef/html_cef_helper.exe", "MOD", helper, sizeof(helper)) ? helper : NULL;
+  s_htmlCefRuntime = s_htmlCefAPI->create(cacheArg, helperArg);
+  if (!s_htmlCefRuntime) {
+    Warning("CEF HTML: backend initialization failed.\n");
+    HL2SB_ReleaseCEFModules();
+  }
+  return s_htmlCefRuntime != NULL;
+}
+#endif
+
+static bool HL2SB_UseCEF()
+{
+#if defined(_WIN32)
+  return hl2sb_html_cef.GetBool();
+#else
+  return false;
+#endif
+}
+
+static bool HL2SB_UseServo()
+{
+#if defined(_WIN32)
+  return false;
+#else
+  return hl2sb_html_servo.GetBool();
+#endif
+}
 
 static std::string HL2SB_HTMLDataURL(const char *text)
 {
@@ -2412,6 +2545,87 @@ static const char *HL2SB_AssetMime(const std::string &path)
   return "application/octet-stream";
 }
 
+// GMod's menu pages were written against Chromium's legacy flexbox syntax
+// (display: -webkit-box and friends).  Servo implements modern flex, so
+// rewrite the legacy declarations to their modern equivalents while the
+// stylesheet streams past.  The mapping covers the whole dialect GMod's own
+// CSS uses (34 declarations across 6 stylesheets: display, orient, direction,
+// pack, align, flex); values pass through untouched, so this stays correct
+// for addon pages written in the same style.  box-pack maps to
+// justify-content and box-align to align-items with flex-start/flex-end for
+// start/end, matching the CSS working group's own legacy-to-modern notes.
+static char HL2SB_AsciiLower(char c)
+{
+  return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+}
+
+static size_t HL2SB_FindCaseInsensitive(const std::string &s, const char *needle, size_t from)
+{
+  const size_t needleLen = Q_strlen(needle);
+  if (needleLen == 0 || s.size() < needleLen) return std::string::npos;
+  for (size_t i = from; i + needleLen <= s.size(); ++i) {
+    size_t j = 0;
+    while (j < needleLen &&
+           HL2SB_AsciiLower(s[i + j]) == HL2SB_AsciiLower(needle[j]))
+      ++j;
+    if (j == needleLen) return i;
+  }
+  return std::string::npos;
+}
+
+static void HL2SB_ReplaceAllCaseInsensitive(std::string &s, const char *from, const char *to)
+{
+  const size_t fromLen = Q_strlen(from);
+  size_t pos = 0;
+  while ((pos = HL2SB_FindCaseInsensitive(s, from, pos)) != std::string::npos) {
+    s.replace(pos, fromLen, to);
+    pos += Q_strlen(to);
+  }
+}
+
+static std::string HL2SB_TranslateLegacyFlexCSS(const char *data, size_t length)
+{
+  std::string css(data, length);
+  if (css.find("-webkit-box") == std::string::npos) return css;
+
+  // direction first: "normal" is dropped entirely (it must not override the
+  // flex-direction a box-orient mapping produced in the same rule); a
+  // reverse + vertical pair has no occurrence in GMod's CSS and would need
+  // column-reverse.
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-direction: reverse", "flex-direction: row-reverse");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-direction:reverse", "flex-direction: row-reverse");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-direction: normal", "");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-direction:normal", "");
+  HL2SB_ReplaceAllCaseInsensitive(css, "display: -webkit-box", "display: flex");
+  HL2SB_ReplaceAllCaseInsensitive(css, "display:-webkit-box", "display:flex");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-orient: vertical", "flex-direction: column");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-orient:vertical", "flex-direction: column");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-orient: horizontal", "flex-direction: row");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-orient:horizontal", "flex-direction: row");
+  // box-flex: N passes through as flex: N (grow N, shrink 1, basis 0).
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-flex:", "flex:");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack: start", "justify-content: flex-start");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack:start", "justify-content: flex-start");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack: center", "justify-content: center");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack:center", "justify-content: center");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack: end", "justify-content: flex-end");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack:end", "justify-content: flex-end");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack: justify", "justify-content: space-between");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-pack:justify", "justify-content: space-between");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align: start", "align-items: flex-start");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align:start", "align-items: flex-start");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align: center", "align-items: center");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align:center", "align-items: center");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align: end", "align-items: flex-end");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align:end", "align-items: flex-end");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align: stretch", "align-items: stretch");
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-align: baseline", "align-items: baseline");
+  // Not a layout property, but the prefixed name is the same Chromium
+  // dialect and unprefixed box-shadow is the standard spelling.
+  HL2SB_ReplaceAllCaseInsensitive(css, "-webkit-box-shadow:", "box-shadow:");
+  return css;
+}
+
 static bool HL2SB_MapImagePath(const char *url, std::string &path)
 {
   const char *prefix = "asset://mapimage/";
@@ -2471,6 +2685,54 @@ static int HL2SB_HTMLMouseButton(MouseCode code)
   }
 }
 
+#if defined(_WIN32)
+static int HL2SB_HTMLVirtualKey(KeyCode code)
+{
+  if (code >= KEY_A && code <= KEY_Z) return 'A' + code - KEY_A;
+  if (code >= KEY_0 && code <= KEY_9) return '0' + code - KEY_0;
+  if (code >= KEY_PAD_0 && code <= KEY_PAD_9) return VK_NUMPAD0 + code - KEY_PAD_0;
+  if (code >= KEY_F1 && code <= KEY_F12) return VK_F1 + code - KEY_F1;
+  switch (code) {
+    case KEY_ENTER: case KEY_PAD_ENTER: return VK_RETURN;
+    case KEY_BACKSPACE: return VK_BACK; case KEY_DELETE: return VK_DELETE;
+    case KEY_TAB: return VK_TAB; case KEY_ESCAPE: return VK_ESCAPE;
+    case KEY_SPACE: return VK_SPACE; case KEY_INSERT: return VK_INSERT;
+    case KEY_UP: return VK_UP; case KEY_DOWN: return VK_DOWN;
+    case KEY_LEFT: return VK_LEFT; case KEY_RIGHT: return VK_RIGHT;
+    case KEY_HOME: return VK_HOME; case KEY_END: return VK_END;
+    case KEY_PAGEUP: return VK_PRIOR; case KEY_PAGEDOWN: return VK_NEXT;
+    case KEY_LSHIFT: return VK_LSHIFT; case KEY_RSHIFT: return VK_RSHIFT;
+    case KEY_LCONTROL: return VK_LCONTROL; case KEY_RCONTROL: return VK_RCONTROL;
+    case KEY_LALT: return VK_LMENU; case KEY_RALT: return VK_RMENU;
+    case KEY_CAPSLOCK: return VK_CAPITAL; case KEY_NUMLOCK: return VK_NUMLOCK;
+    case KEY_SCROLLLOCK: return VK_SCROLL; case KEY_BREAK: return VK_PAUSE;
+    case KEY_PAD_DIVIDE: return VK_DIVIDE; case KEY_PAD_MULTIPLY: return VK_MULTIPLY;
+    case KEY_PAD_MINUS: return VK_SUBTRACT; case KEY_PAD_PLUS: return VK_ADD;
+    case KEY_PAD_DECIMAL: return VK_DECIMAL;
+    case KEY_LBRACKET: return VK_OEM_4; case KEY_RBRACKET: return VK_OEM_6;
+    case KEY_SEMICOLON: return VK_OEM_1; case KEY_APOSTROPHE: return VK_OEM_7;
+    case KEY_BACKQUOTE: return VK_OEM_3; case KEY_COMMA: return VK_OEM_COMMA;
+    case KEY_PERIOD: return VK_OEM_PERIOD; case KEY_SLASH: return VK_OEM_2;
+    case KEY_BACKSLASH: return VK_OEM_5; case KEY_MINUS: return VK_OEM_MINUS;
+    case KEY_EQUAL: return VK_OEM_PLUS;
+    default: return 0;
+  }
+}
+
+static uint32_t HL2SB_HTMLModifiers()
+{
+  if (!vgui::input()) return 0;
+  uint32_t mods = 0;
+  if (vgui::input()->IsKeyDown(KEY_LSHIFT) || vgui::input()->IsKeyDown(KEY_RSHIFT)) mods |= 1u << 1;
+  if (vgui::input()->IsKeyDown(KEY_LCONTROL) || vgui::input()->IsKeyDown(KEY_RCONTROL)) mods |= 1u << 2;
+  if (vgui::input()->IsKeyDown(KEY_LALT) || vgui::input()->IsKeyDown(KEY_RALT)) mods |= 1u << 3;
+  if (vgui::input()->IsMouseDown(MOUSE_LEFT)) mods |= 1u << 4;
+  if (vgui::input()->IsMouseDown(MOUSE_MIDDLE)) mods |= 1u << 5;
+  if (vgui::input()->IsMouseDown(MOUSE_RIGHT)) mods |= 1u << 6;
+  return mods;
+}
+#endif
+
 class CHL2SBLuaHTML : public vgui::HTML
 {
   DECLARE_CLASS_SIMPLE(CHL2SBLuaHTML, HTML);
@@ -2481,6 +2743,10 @@ public:
   std::vector<std::string> m_bridges;
   std::string m_tempFile;
   HLSBServoView *m_servo;
+#if defined(_WIN32)
+  HtmlView *m_cef;
+  std::vector<std::pair<std::string, std::string> > m_cefCallbacks;
+#endif
   int m_servoTexture;
   uint64_t m_servoSequence;
   std::vector<unsigned char> m_servoPixels;
@@ -2492,20 +2758,37 @@ public:
   wchar_t m_servoHighSurrogate;
 
   CHL2SBLuaHTML(Panel *parent, const char *name, lua_State *state)
-    : HTML(parent, name, true, false, state == LGameUI || hl2sb_html_servo.GetBool()), m_lua_State(state), m_loading(true),
-      m_servo(NULL), m_servoTexture(0), m_servoSequence(0), m_servoMouseX(0), m_servoMouseY(0),
+    : HTML(parent, name, true, false, state == LGameUI || HL2SB_UseServo() || HL2SB_UseCEF()), m_lua_State(state), m_loading(true),
+      m_servo(NULL),
+#if defined(_WIN32)
+      m_cef(NULL),
+#endif
+      m_servoTexture(0), m_servoSequence(0), m_servoMouseX(0), m_servoMouseY(0),
       m_servoIME(this), m_servoComposing(false), m_servoHighSurrogate(0)
   {
     luaPushPanelRefTable(state, this, true);
     m_nTableReference = luaL_ref(state, LUA_REGISTRYINDEX);
     HL2SB_LuaPanelTrack(this, state);
-    if (state == LGameUI || hl2sb_html_servo.GetBool()) {
+#if defined(_WIN32)
+    if (HL2SB_UseCEF()) {
+      if (HL2SB_InitializeCEF()) m_cef = s_htmlCefAPI->view_create(s_htmlCefRuntime, 1, 1);
+      if (m_cef) {
+        s_htmlCefPanels.push_back(this);
+        SetMouseInputEnabled(true);
+        SetKeyBoardInputEnabled(true);
+      }
+      else {
+        Warning("CEF HTML backend unavailable; using the existing HTML backend.\n");
+        InitializeSteamBackend();
+      }
+    } else if (state == LGameUI) {
+      InitializeSteamBackend();
+    }
+#else
+    if (state == LGameUI || HL2SB_UseServo()) {
       if (!s_htmlServoRuntime) {
         char path[MAX_PATH];
-#if defined(_WIN32)
-        const char *library = "bin/servo_capi.dll";
-        const bool resolveViaFilesystem = true;
-#elif defined(__ANDROID__)
+#if defined(__ANDROID__)
         // Android: the library is packaged in the APK's native library
         // directory (the game dir lives on noexec FUSE storage, so dlopen
         // from there is denied anyway).  dlopen of the bare soname resolves
@@ -2537,10 +2820,20 @@ public:
         InitializeSteamBackend();
       }
     }
+#endif
   }
 
   virtual ~CHL2SBLuaHTML()
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      for (size_t i = 0; i < s_htmlCefPanels.size(); ++i) {
+        if (s_htmlCefPanels[i] == this) { s_htmlCefPanels.erase(s_htmlCefPanels.begin() + i); break; }
+      }
+      s_htmlCefAPI->view_destroy(m_cef);
+      m_cef = NULL;
+    }
+#endif
     if (m_servoTexture && surface()) surface()->DeleteTextureByID(m_servoTexture);
     if (m_servo) {
       HLSBServoDestroyView(m_servo);
@@ -2560,15 +2853,12 @@ public:
       "window.IN_ENGINE=true;window.__hl2sbHTMLCallbacks=window.__hl2sbHTMLCallbacks||{};"
       "window.__hl2sbHTMLNext=window.__hl2sbHTMLNext||0;"
       "window.__hl2sbHTMLReply=function(id,args){var cb=window.__hl2sbHTMLCallbacks[id];"
-      "delete window.__hl2sbHTMLCallbacks[id];if(cb)cb.apply(null,args||[]);};";
-    if (m_lua_State == LGameUI) script +=
-      "if(location.protocol==='asset:'&&location.hostname==='garrysmod'&&location.pathname==='/html/menu.html'){"
-      "try{void window.localStorage;}catch(e){var s=Object.create(null);"
-      "Object.defineProperty(s,'getItem',{value:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(s,k)?s[k]:null;}});"
-      "Object.defineProperty(s,'setItem',{value:function(k,v){s[String(k)]=String(v);}});"
-      "Object.defineProperty(s,'removeItem',{value:function(k){delete s[String(k)];}});"
-      "Object.defineProperty(s,'clear',{value:function(){Object.keys(s).forEach(function(k){delete s[k];});}});"
-      "Object.defineProperty(window,'localStorage',{value:s,configurable:true});}}";
+      "delete window.__hl2sbHTMLCallbacks[id];if(cb)cb.apply(null,args||[]);};"
+      // GMod injects the same shim into every CEF page: its embedded
+      // browser has no WebSocket, so pages feature-detect and degrade.
+      // Servo does have one, but GMod web content is written against the
+      // shim, so keep the reference behavior.
+      "window.WebSocket=undefined;";
     for (size_t i = 0; i < m_bridges.size(); ++i) script += m_bridges[i];
     return script;
   }
@@ -2578,6 +2868,12 @@ public:
     std::string key = HL2SB_HTMLQuote(name);
     std::string script = "window[" + key + "]=window[" + key + "]||{};";
     m_bridges.push_back(script);
+#if defined(_WIN32)
+    if (m_cef) {
+      if (!m_loading) s_htmlCefAPI->eval_js(m_cef, script.c_str());
+      return;
+    }
+#endif
     if (m_servo && !HLSBServoSetDocumentScript(m_servo, BridgeScript().c_str()))
       Warning("Servo HTML failed to register the document script.\n");
     if (!m_loading) RunJavascript(script.c_str());
@@ -2585,28 +2881,34 @@ public:
 
   void AddCallback(const char *object, const char *function)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      const std::pair<std::string, std::string> callback(object, function);
+      bool exists = false;
+      for (size_t i = 0; i < m_cefCallbacks.size(); ++i)
+        if (m_cefCallbacks[i] == callback) { exists = true; break; }
+      if (!exists) m_cefCallbacks.push_back(callback);
+      s_htmlCefAPI->register_js(m_cef, object, function);
+      return;
+    }
+#endif
     if (m_servo) {
       const std::string obj = HL2SB_HTMLQuote(object);
       const std::string fn = HL2SB_HTMLQuote(function);
-      // Asset pages call the bridge through a same-origin fetch: the JSON
-      // payload rides the query string, and Servo routes the response back
-      // to the calling document, so the page script never blocks (the old
-      // prompt() round trip paused the page until the host answered). The
-      // fetch closure itself pairs the reply with its callback - like CEF's
-      // frame-scoped callback tasks, a navigation aborts the fetch and the
-      // pending reply evaporates. Non-asset documents (SetHTML data: pages)
-      // keep the prompt() fallback until they get their own review.
+      // Registered functions call the host through the native
+      // window.hl2sbBridge channel: the JSON payload rides the embedder
+      // message queue in submission order, and the reply resolves the
+      // page-side promise. The promise closure pairs the reply with its
+      // callback - like CEF's frame-scoped callback tasks, a navigation
+      // drops the pending reply and the closure never resumes.
       std::string script = "window[" + obj + "]=window[" + obj + "]||{};window[" + obj + "][" + fn + "]=function(){"
         "var a=Array.prototype.slice.call(arguments),cb=null;"
         "if(typeof a[a.length-1]==='function')cb=a.pop();"
-        "if(location.protocol==='asset:'){"
-        "fetch('/__hl2sb_bridge__call?'+encodeURIComponent(JSON.stringify([" + obj + "," + fn + ",a])))"
-        ".then(function(r){return r.text();})"
+        "if(!window.hl2sbBridge)return;"
+        "window.hl2sbBridge(JSON.stringify([" + obj + "," + fn + ",a]))"
         ".then(function(t){if(!cb)return;var v;try{v=JSON.parse(t);}catch(e){return;}"
         "if(Object.prototype.toString.call(v)==='[object Array]')cb.apply(null,v);})"
-        ".catch(function(){});return;}"
-        "setTimeout(function(){var r=prompt('__hl2sb_bridge__'+JSON.stringify([" + obj + "," + fn + ",a]),'');"
-        "if(cb){var v;try { v=JSON.parse(r); } catch(e) { return; } cb.apply(null,v); }},0);};";
+        ".catch(function(){});};";
       m_bridges.push_back(script);
       if (!HLSBServoSetDocumentScript(m_servo, BridgeScript().c_str()))
         Warning("Servo HTML failed to register the document script.\n");
@@ -2686,40 +2988,91 @@ public:
   virtual void OnThink()
   {
     BaseClass::OnThink();
+#if defined(_WIN32)
+    if (m_cef) {
+      int wide, tall; GetSize(wide, tall);
+      if (wide > 0 && tall > 0) s_htmlCefAPI->view_resize(m_cef, wide, tall);
+      s_htmlCefAPI->pump(s_htmlCefRuntime);
+      HtmlEvent event;
+      while (m_cef && s_htmlCefAPI->poll(m_cef, &event)) {
+        const char *value = event.a ? event.a : "";
+        if (event.type == HTML_EVENT_ASSET_REQUEST) {
+          std::string path;
+          CUtlBuffer contents;
+          const bool found = (HL2SB_AssetPath(value, path) || HL2SB_MapImagePath(value, path)) &&
+            filesystem->FileExists(path.c_str(), "GAME") &&
+            filesystem->Size(path.c_str(), "GAME") <= 32u * 1024u * 1024u &&
+            filesystem->ReadFile(path.c_str(), "GAME", contents);
+          s_htmlCefAPI->asset_reply(m_cef, event.id, found ? 200 : 404,
+            found ? HL2SB_AssetMime(path) : "text/plain",
+            found ? static_cast<const uint8_t *>(contents.Base()) : NULL,
+            found ? contents.TellPut() : 0);
+        } else if (event.type == HTML_EVENT_JS_CALL) {
+          const std::string reply = Live() ? ServoBridgeReply(value) : std::string("[]");
+          s_htmlCefAPI->reply(m_cef, event.id, reply.c_str());
+        } else if (event.type == HTML_EVENT_CONSOLE) {
+          BEGIN_LUA_CALL_PANEL_METHOD("ConsoleMessage");
+            lua_pushstring(m_lua_State, value);
+          END_LUA_CALL_PANEL_METHOD(1, 0);
+        } else if (event.type == HTML_EVENT_LOAD_START) {
+          m_loading = true;
+          m_servoURL = value;
+          BEGIN_LUA_CALL_PANEL_METHOD("OnBeginLoadingDocument");
+            lua_pushstring(m_lua_State, value);
+          END_LUA_CALL_PANEL_METHOD(1, 0);
+        } else if (event.type == HTML_EVENT_DOCUMENT_READY) {
+          for (size_t i = 0; i < m_cefCallbacks.size(); ++i)
+            s_htmlCefAPI->register_js(m_cef, m_cefCallbacks[i].first.c_str(), m_cefCallbacks[i].second.c_str());
+          BEGIN_LUA_CALL_PANEL_METHOD("OnDocumentReady");
+            lua_pushstring(m_lua_State, value);
+          END_LUA_CALL_PANEL_METHOD(1, 0);
+        } else if (event.type == HTML_EVENT_LOAD_END) {
+          m_loading = false;
+          BEGIN_LUA_CALL_PANEL_METHOD("OnFinishLoadingDocument");
+            lua_pushstring(m_lua_State, value);
+          END_LUA_CALL_PANEL_METHOD(1, 0);
+        } else if (event.type == HTML_EVENT_LOAD_ERROR) {
+          m_loading = false;
+          Warning("CEF HTML: failed to load %s (%d).\n", value, event.code);
+        } else if (event.type == HTML_EVENT_TITLE) {
+          OnSetHTMLTitle(value);
+        } else if (event.type == HTML_EVENT_NAV_REQUEST) {
+          std::string assetPath;
+          const bool allowed = !Q_stricmp(value, "about:blank") ||
+            !Q_strnicmp(value, "http://", 7) || !Q_strnicmp(value, "https://", 8) ||
+            HL2SB_AssetPath(value, assetPath) || HL2SB_MapImagePath(value, assetPath);
+          s_htmlCefAPI->reply(m_cef, event.id, allowed ? "true" : "false");
+        }
+      }
+      HtmlFrame frame = {};
+      if (s_htmlCefAPI->lock_frame(m_cef, &frame)) {
+        if (frame.pixels && frame.width && frame.height && frame.sequence != m_servoSequence &&
+            frame.width <= 16384 && frame.height <= 16384 && frame.stride >= frame.width * 4) {
+          m_servoPixels.resize(static_cast<size_t>(frame.width) * frame.height * 4);
+          for (uint32_t y = 0; y < frame.height; ++y) {
+            const uint8_t *src = frame.pixels + static_cast<size_t>(y) * frame.stride;
+            uint8_t *dst = &m_servoPixels[static_cast<size_t>(y) * frame.width * 4];
+            for (uint32_t x = 0; x < frame.width; ++x) {
+              dst[0] = src[2]; dst[1] = src[1]; dst[2] = src[0]; dst[3] = src[3];
+              src += 4; dst += 4;
+            }
+          }
+          if (!m_servoTexture) m_servoTexture = surface()->CreateNewTextureID(true);
+          surface()->DrawSetTextureRGBA(m_servoTexture, &m_servoPixels[0], frame.width, frame.height, 1, true);
+          m_servoSequence = frame.sequence;
+          Repaint();
+        }
+        s_htmlCefAPI->unlock_frame(m_cef);
+      }
+    }
+#endif
     if (m_servo) {
       int wide, tall; GetSize(wide, tall);
       if (wide > 0 && tall > 0) HLSBServoResize(m_servo, wide, tall);
       HLSBServoPump(s_htmlServoRuntime);
       uint64_t assetRequest = 0;
-      char assetURL[20480];
+      char assetURL[8192];
       while (HLSBServoPopAssetEvent(m_servo, &assetRequest, assetURL, sizeof(assetURL))) {
-        // The JS-Lua bridge rides the asset channel: fetches under the
-        // reserved /__hl2sb_bridge__call path carry their JSON payload in
-        // the query string. Servo's fetch pipeline routes the response back
-        // to the requesting document, so a navigation drops the reply the
-        // same way a CEF frame task dies with its frame.
-        static const char bridgePrefix[] = "asset://garrysmod/__hl2sb_bridge__call?";
-        if (!Q_strnicmp(assetURL, bridgePrefix, Q_strlen(bridgePrefix))) {
-          char payload[16384];
-          size_t out = 0;
-          const char *q = assetURL + Q_strlen(bridgePrefix);
-          for (; *q && out < sizeof(payload) - 1; ++q) {
-            if (*q == '%' && q[1] && q[2]) {
-              char hex[3] = {q[1], q[2], 0};
-              payload[out++] = (char)strtol(hex, NULL, 16);
-              q += 2;
-            } else {
-              payload[out++] = *q;
-            }
-          }
-          payload[out] = '\0';
-          std::string reply = ServoBridgeReply(payload);
-          if (!HLSBServoAssetReply(m_servo, assetRequest, 200, "application/json",
-                                   reinterpret_cast<const uint8_t *>(reply.c_str()), reply.size()))
-            HLSBServoAssetReply(m_servo, assetRequest, 200, "application/json",
-                                reinterpret_cast<const uint8_t *>("[]"), 2);
-          continue;
-        }
         std::string path;
         CUtlBuffer contents;
         const bool found = (HL2SB_AssetPath(assetURL, path) || HL2SB_MapImagePath(assetURL, path)) &&
@@ -2727,19 +3080,36 @@ public:
           filesystem->Size(path.c_str(), "GAME") <= 32u * 1024u * 1024u &&
           filesystem->ReadFile(path.c_str(), "GAME", contents);
         if (found) {
-          if (!HLSBServoAssetReply(m_servo, assetRequest, 200, HL2SB_AssetMime(path),
+          const char *mime = HL2SB_AssetMime(path);
+          if (!Q_stricmp(mime, "text/css; charset=utf-8")) {
+            const std::string css = HL2SB_TranslateLegacyFlexCSS(
+                static_cast<const char *>(contents.Base()), contents.TellPut());
+            if (!HLSBServoAssetReply(m_servo, assetRequest, 200, mime,
+                                     reinterpret_cast<const uint8_t *>(css.data()), css.size()))
+              HLSBServoAssetReply(m_servo, assetRequest, 404, "text/plain", NULL, 0);
+          } else if (!HLSBServoAssetReply(m_servo, assetRequest, 200, mime,
                                    static_cast<const uint8_t *>(contents.Base()), contents.TellPut()))
             HLSBServoAssetReply(m_servo, assetRequest, 404, "text/plain", NULL, 0);
         } else {
           HLSBServoAssetReply(m_servo, assetRequest, 404, "text/plain", NULL, 0);
         }
       }
-      uint64_t request = 0;
-      char message[65536];
-      while (m_servo && HLSBServoPopBridgeEvent(m_servo, &request, message, sizeof(message))) {
-        std::string reply = ServoBridgeReply(message);
-        if (!HLSBServoBridgeReply(m_servo, request, reply.c_str()))
-          HLSBServoBridgeReply(m_servo, request, "[]");
+      // JS-Lua bridge requests, issued through the native window.hl2sbBridge
+      // channel: payloads arrive in submission order and each reply resolves
+      // the page-side promise; a navigation drops the reply the same way a
+      // frame-scoped callback dies with its frame.
+      uint64_t hl2sbRequest = 0;
+      char hl2sbPayload[65536];
+      while (m_servo && HLSBServoPopHL2SBEvent(m_servo, &hl2sbRequest, hl2sbPayload, sizeof(hl2sbPayload))) {
+        std::string reply = Live() ? ServoBridgeReply(hl2sbPayload) : std::string("[]");
+        if (!HLSBServoHL2SBReply(m_servo, hl2sbRequest, reply.c_str()))
+          HLSBServoHL2SBReply(m_servo, hl2sbRequest, "[]");
+      }
+      char consoleMsg[16384];
+      while (m_servo && HLSBServoPopConsoleEvent(m_servo, consoleMsg, sizeof(consoleMsg))) {
+        BEGIN_LUA_CALL_PANEL_METHOD("ConsoleMessage");
+          lua_pushstring(m_lua_State, consoleMsg);
+        END_LUA_CALL_PANEL_METHOD(1, 0);
       }
       int status;
       while (HLSBServoPopLoadEvent(m_servo, &status)) {
@@ -2794,9 +3164,11 @@ public:
           const int count = lua_gettop(state) - args;
           lua_newtable(state);
           for (int i = 0; i < count; ++i) { lua_pushvalue(state, args + i + 1); lua_rawseti(state, -2, i + 1); }
-          lua_pushcfunction(state, luasrc_UTIL_TableToJSON);
-          lua_insert(state, -2);
-          if (lua_pcall(state, 1, 1, 0) == LUA_OK && lua_isstring(state, -1)) result = lua_tostring(state, -1);
+          if (count > 0) {
+            lua_pushcfunction(state, luasrc_UTIL_TableToJSON);
+            lua_insert(state, -2);
+            if (lua_pcall(state, 1, 1, 0) == LUA_OK && lua_isstring(state, -1)) result = lua_tostring(state, -1);
+          }
         } else {
           luasrc_LuaWarnMsgF("HTML callback: %s\n", lua_tostring(state, -1));
         }
@@ -2808,6 +3180,16 @@ public:
 
   virtual void Paint()
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      if (!m_servoTexture) return;
+      int wide, tall; GetSize(wide, tall);
+      surface()->DrawSetColor(255, 255, 255, 255);
+      surface()->DrawSetTexture(m_servoTexture);
+      surface()->DrawTexturedRect(0, 0, wide, tall);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::Paint(); return; }
     if (!m_servoTexture) return;
     int wide, tall; GetSize(wide, tall);
@@ -2818,27 +3200,54 @@ public:
 
   virtual void RunJavascript(const char *script)
   {
+#if defined(_WIN32)
+    if (m_cef) { s_htmlCefAPI->eval_js(m_cef, script); return; }
+#endif
     if (!m_servo) { BaseClass::RunJavascript(script); return; }
     if (!HLSBServoEvalJS(m_servo, script)) Warning("Servo HTML JavaScript interface unavailable.\n");
   }
 
   virtual bool Refresh()
   {
+#if defined(_WIN32)
+    if (m_cef) { s_htmlCefAPI->reload(m_cef); return true; }
+#endif
     return m_servo ? HLSBServoReload(m_servo) : BaseClass::Refresh();
+  }
+
+  virtual bool StopLoading()
+  {
+#if defined(_WIN32)
+    if (m_cef) { s_htmlCefAPI->stop(m_cef); return true; }
+#endif
+    return BaseClass::StopLoading();
   }
 
   virtual void GoBack()
   {
+#if defined(_WIN32)
+    if (m_cef) { s_htmlCefAPI->back(m_cef); return; }
+#endif
     if (m_servo) HLSBServoBack(m_servo); else BaseClass::GoBack();
   }
 
   virtual void GoForward()
   {
+#if defined(_WIN32)
+    if (m_cef) { s_htmlCefAPI->forward(m_cef); return; }
+#endif
     if (m_servo) HLSBServoForward(m_servo); else BaseClass::GoForward();
   }
 
   virtual void OnCursorMoved(int x, int y)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      m_servoMouseX = x; m_servoMouseY = y;
+      s_htmlCefAPI->mouse(m_cef, 0, x, y, 0, HL2SB_HTMLModifiers(), 0, 0);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnCursorMoved(x, y); return; }
     m_servoMouseX = x; m_servoMouseY = y;
     HLSBServoMouseMove(m_servo, (float)x, (float)y);
@@ -2846,6 +3255,15 @@ public:
 
   virtual void OnMousePressed(MouseCode code)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      const int button = HL2SB_HTMLMouseButton(code);
+      if (button >= 0 && button <= 2)
+        s_htmlCefAPI->mouse(m_cef, 1, m_servoMouseX, m_servoMouseY, button, HL2SB_HTMLModifiers(), 0, 0);
+      RequestFocus();
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnMousePressed(code); return; }
     int button = HL2SB_HTMLMouseButton(code);
     if (button >= 0) HLSBServoMouseButton(m_servo, (float)m_servoMouseX, (float)m_servoMouseY, button, true);
@@ -2854,12 +3272,23 @@ public:
 
   virtual void OnMouseDoublePressed(MouseCode code)
   {
+#if defined(_WIN32)
+    if (m_cef) { OnMousePressed(code); return; }
+#endif
     if (!m_servo) { BaseClass::OnMouseDoublePressed(code); return; }
     OnMousePressed(code);
   }
 
   virtual void OnMouseReleased(MouseCode code)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      const int button = HL2SB_HTMLMouseButton(code);
+      if (button >= 0 && button <= 2)
+        s_htmlCefAPI->mouse(m_cef, 2, m_servoMouseX, m_servoMouseY, button, HL2SB_HTMLModifiers(), 0, 0);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnMouseReleased(code); return; }
     int button = HL2SB_HTMLMouseButton(code);
     if (button >= 0) HLSBServoMouseButton(m_servo, (float)m_servoMouseX, (float)m_servoMouseY, button, false);
@@ -2867,12 +3296,25 @@ public:
 
   virtual void OnMouseWheeled(int delta)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      s_htmlCefAPI->mouse(m_cef, 3, m_servoMouseX, m_servoMouseY, 0, HL2SB_HTMLModifiers(), 0, delta * 120);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnMouseWheeled(delta); return; }
     HLSBServoMouseWheel(m_servo, (float)m_servoMouseX, (float)m_servoMouseY, 0.0, -40.0 * delta);
   }
 
   virtual void OnKeyCodeTyped(KeyCode code)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      const int key = HL2SB_HTMLVirtualKey(code);
+      if (key) s_htmlCefAPI->key(m_cef, 0, MapVirtualKeyA(key, MAPVK_VK_TO_VSC), key, HL2SB_HTMLModifiers(), 0);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnKeyCodeTyped(code); return; }
     const char *key = HL2SB_HTMLKey(code);
     if (key) HLSBServoKey(m_servo, key, true);
@@ -2880,6 +3322,13 @@ public:
 
   virtual void OnKeyCodeReleased(KeyCode code)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      const int key = HL2SB_HTMLVirtualKey(code);
+      if (key) s_htmlCefAPI->key(m_cef, 1, MapVirtualKeyA(key, MAPVK_VK_TO_VSC), key, HL2SB_HTMLModifiers(), 0);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnKeyCodeReleased(code); return; }
     const char *key = HL2SB_HTMLKey(code);
     if (key) HLSBServoKey(m_servo, key, false);
@@ -2887,6 +3336,14 @@ public:
 
   virtual void OnKeyTyped(wchar_t unichar)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      if (m_servoComposing) { m_servoIMECommit += unichar; return; }
+      if (unichar >= 32 && unichar != 127)
+        s_htmlCefAPI->key(m_cef, 2, 0, unichar, HL2SB_HTMLModifiers(), unichar);
+      return;
+    }
+#endif
     if (!m_servo) { BaseClass::OnKeyTyped(unichar); return; }
     if (unichar < 32 || unichar == 127) return;
     if (m_servoComposing) { m_servoIMECommit += unichar; return; }
@@ -2908,6 +3365,27 @@ public:
 
   MESSAGE_FUNC_WCHARPTR(ServoComposition, "DoCompositionString", string)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      if (string && *string) {
+        if (!m_servoComposing) {
+          m_servoComposing = true;
+          m_servoIMECommit.clear();
+          s_htmlCefAPI->ime(m_cef, 0, "");
+        }
+        char text[4096] = {0};
+        if (V_UnicodeToUTF8(string, text, sizeof(text))) s_htmlCefAPI->ime(m_cef, 1, text);
+      } else if (m_servoComposing) {
+        char text[4096] = {0};
+        V_UnicodeToUTF8(m_servoIMECommit.c_str(), text, sizeof(text));
+        s_htmlCefAPI->ime(m_cef, 2, text);
+        m_servoIMECommit.clear();
+        m_servoComposing = false;
+        m_servoIME.Hide();
+      }
+      return;
+    }
+#endif
     if (!m_servo) return;
     if (string && *string) {
       if (!m_servoComposing) {
@@ -2929,9 +3407,17 @@ public:
   }
 
   MESSAGE_FUNC(ServoShowCandidates, "DoShowIMECandidates")
-  { if (m_servo) m_servoIME.Update(m_servoMouseX, m_servoMouseY + 20); }
+  { if (m_servo
+#if defined(_WIN32)
+    || m_cef
+#endif
+    ) m_servoIME.Update(m_servoMouseX, m_servoMouseY + 20); }
   MESSAGE_FUNC(ServoUpdateCandidates, "DoUpdateIMECandidates")
-  { if (m_servo) m_servoIME.Update(m_servoMouseX, m_servoMouseY + 20); }
+  { if (m_servo
+#if defined(_WIN32)
+    || m_cef
+#endif
+    ) m_servoIME.Update(m_servoMouseX, m_servoMouseY + 20); }
   MESSAGE_FUNC(ServoHideCandidates, "DoHideIMECandidates")
   { m_servoIME.Hide(); }
 
@@ -2951,6 +3437,14 @@ public:
 
   void LoadMarkup(const char *markup)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      m_loading = true;
+      const std::string url = HL2SB_HTMLDataURL(markup);
+      s_htmlCefAPI->navigate(m_cef, url.c_str());
+      return;
+    }
+#endif
     if (m_servo) {
       m_servoURL = "about:blank";
       const std::string url = HL2SB_HTMLDataURL(markup);
@@ -2979,6 +3473,21 @@ public:
 
   void LoadURL(const char *url)
   {
+#if defined(_WIN32)
+    if (m_cef) {
+      std::string assetPath;
+      if (Q_stricmp(url, "about:blank") && Q_strnicmp(url, "http://", 7) &&
+          Q_strnicmp(url, "https://", 8) && !HL2SB_AssetPath(url, assetPath) &&
+          !HL2SB_MapImagePath(url, assetPath)) {
+        Warning("CEF HTML: rejected URL %s.\n", url);
+        return;
+      }
+      m_loading = true;
+      m_servoURL = url;
+      s_htmlCefAPI->navigate(m_cef, url);
+      return;
+    }
+#endif
     if (m_servo) {
       std::string assetPath;
       if (Q_stricmp(url, "about:blank") && !HL2SB_AssetPath(url, assetPath)) {
@@ -3026,6 +3535,25 @@ public:
     BaseClass::OpenURL(target.c_str(), NULL);
   }
 };
+
+void HL2SB_HTMLBackendShutdown()
+{
+#if defined(_WIN32)
+  while (!s_htmlCefPanels.empty()) {
+    CHL2SBLuaHTML *panel = s_htmlCefPanels.back();
+    s_htmlCefPanels.pop_back();
+    if (panel->m_cef) {
+      s_htmlCefAPI->view_destroy(panel->m_cef);
+      panel->m_cef = NULL;
+    }
+  }
+  if (s_htmlCefRuntime) {
+    s_htmlCefAPI->destroy(s_htmlCefRuntime);
+    s_htmlCefRuntime = NULL;
+  }
+  HL2SB_ReleaseCEFModules();
+#endif
+}
 
 int HL2SB_LuaCreateHTML(lua_State *L)
 {

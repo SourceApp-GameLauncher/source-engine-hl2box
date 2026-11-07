@@ -1389,6 +1389,8 @@ void CHLClient::Shutdown( void )
 #ifdef LUA_SDK
 	extern void HL2SB_MenuRuntimeStop();
 	HL2SB_MenuRuntimeStop();
+	extern void HL2SB_HTMLBackendShutdown();
+	HL2SB_HTMLBackendShutdown();
 	luasrc_shutdown_gameui();
 #endif
 

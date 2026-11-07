@@ -1,4 +1,5 @@
 #include "servo_backend.h"
+#include "tier0/dbg.h"
 
 #include <algorithm>
 #include <atomic>
@@ -29,8 +30,9 @@ struct Delegate {
     void *user;
     void (*load)(WebView *, int32_t, void *);
     void (*frame)(WebView *, void *);
-    bool (*bridge)(uint64_t, const char *, void *);
     bool (*asset)(uint64_t, const char *, void *);
+    void (*console)(const char *, void *);
+    bool (*hl2sb)(uint64_t, const char *, void *);
 };
 typedef void (*ScreenshotCallback)(const uint8_t *, uint32_t, uint32_t, int32_t, void *);
 
@@ -61,10 +63,10 @@ struct Api {
     void (*view_screenshot)(WebView *, ScreenshotCallback, void *);
     int32_t (*eval_js)(WebView *, const char *);
     int32_t (*set_document_script)(WebView *, const char *);
-    bool (*bridge_reply)(uint64_t, const char *);
-    void (*bridge_cancel)(void *);
     bool (*asset_reply)(uint64_t, uint16_t, const char *, const uint8_t *, size_t);
     void (*asset_cancel)(void *);
+    bool (*hl2sb_reply)(uint64_t, const char *);
+    void (*hl2sb_cancel)(void *);
     int32_t (*mouse_move)(WebView *, float, float);
     int32_t (*mouse_button)(WebView *, float, float, int32_t, bool);
     int32_t (*mouse_wheel)(WebView *, float, float, double, double);
@@ -111,7 +113,7 @@ private:
 };
 
 bool LoadApi(Library &lib, Api &api) {
-#define LOAD(field, name) if (!lib.Symbol(api.field, name)) return false
+#define LOAD(field, name) do { if (!lib.Symbol(api.field, name)) { Warning("Servo: required symbol %s is missing; check the deployed browser DLL.\n", name); return false; } } while (0)
     LOAD(builder_create, "servo_builder_create");
     LOAD(builder_build, "servo_builder_build");
     LOAD(builder_free, "servo_builder_free");
@@ -136,10 +138,10 @@ bool LoadApi(Library &lib, Api &api) {
     LOAD(view_resize, "servo_webview_resize");
     LOAD(view_load, "servo_webview_load");
     LOAD(view_screenshot, "servo_webview_take_screenshot");
-    LOAD(bridge_reply, "servo_bridge_reply");
-    LOAD(bridge_cancel, "servo_bridge_cancel");
     LOAD(asset_reply, "servo_asset_reply");
     LOAD(asset_cancel, "servo_asset_cancel");
+    LOAD(hl2sb_reply, "servo_hl2sb_reply");
+    LOAD(hl2sb_cancel, "servo_hl2sb_cancel");
     LOAD(set_document_script, "servo_webview_set_document_script");
 #undef LOAD
     lib.Symbol(api.eval_js, "servo_webview_eval_js");
@@ -221,8 +223,9 @@ struct HLSBServoView {
     std::string pendingURL;
     int loadStatus;
     std::vector<int> loadEvents;
-    std::vector<std::pair<uint64_t, std::string> > bridgeEvents;
     std::vector<std::pair<uint64_t, std::string> > assetEvents;
+    std::vector<std::string> consoleEvents;
+    std::vector<std::pair<uint64_t, std::string> > hl2sbEvents;
     CallbackState *callback;
     std::vector<uint8_t> pixels;
 };
@@ -248,18 +251,23 @@ void FrameCallback(WebView *, void *user) {
     HLSBServoView *v = static_cast<CallbackState *>(user)->view;
     if (v) v->dirty = true;
 }
-bool BridgeCallback(uint64_t id, const char *message, void *user) {
-    HLSBServoView *v = static_cast<CallbackState *>(user)->view;
-    if (!v || !message || std::strlen(message) > 65535) return false;
-    try { v->bridgeEvents.push_back(std::make_pair(id, std::string(message))); return true; } catch (...) { return false; }
-}
 bool AssetCallback(uint64_t id, const char *url, void *user) {
     HLSBServoView *v = static_cast<CallbackState *>(user)->view;
-    // 20480: bridge calls carry their JSON payload in the query string, so
-    // their URLs run longer than plain asset file paths (the capi side uses
-    // the same budget for the reserved /__hl2sb_bridge__call path).
-    if (!v || v->assetEvents.size() >= 256 || !ValidUTF8(url, 20480)) return false;
+    if (!v || v->assetEvents.size() >= 256 || !ValidUTF8(url, 8191)) return false;
     try { v->assetEvents.push_back(std::make_pair(id, std::string(url))); return true; } catch (...) { return false; }
+}
+bool HL2SBCallback(uint64_t id, const char *payload, void *user) {
+    HLSBServoView *v = static_cast<CallbackState *>(user)->view;
+    if (!v || v->hl2sbEvents.size() >= 512 || !ValidUTF8(payload, 65536)) return false;
+    try { v->hl2sbEvents.push_back(std::make_pair(id, std::string(payload))); return true; } catch (...) { return false; }
+}
+void ConsoleCallback(const char *message, void *user) {
+    HLSBServoView *v = static_cast<CallbackState *>(user)->view;
+    // Console traffic includes devtools noise; cap the queue so a chatty
+    // page cannot grow it without bound.  Oversize lines are dropped here
+    // (the reference menu only ever sends short RUNLUA commands).
+    if (!v || !message || v->consoleEvents.size() >= 512 || std::strlen(message) > 16383) return;
+    try { v->consoleEvents.push_back(std::string(message)); } catch (...) {}
 }
 void Screenshot(const uint8_t *data, uint32_t width, uint32_t height, int32_t, void *user) {
     HLSBServoView *v = static_cast<CallbackState *>(user)->view;
@@ -352,7 +360,7 @@ HLSBServoView *HLSBServoCreateView(HLSBServoRuntime *r, uint32_t width, uint32_t
     if (!context) { v->callback->view = NULL; delete v; return NULL; }
     WebViewBuilder *builder = r->api.view_builder_create(r->servo, context);
     if (!builder) { r->api.context_free(context); v->callback->view = NULL; delete v; return NULL; }
-    Delegate delegate = {v->callback, LoadCallback, FrameCallback, BridgeCallback, AssetCallback};
+    Delegate delegate = {v->callback, LoadCallback, FrameCallback, AssetCallback, ConsoleCallback, HL2SBCallback};
     r->api.view_builder_delegate(builder, delegate);
     v->view = r->api.view_builder_build(builder);
     if (!v->view) { v->callback->view = NULL; delete v; return NULL; }
@@ -363,8 +371,8 @@ HLSBServoView *HLSBServoCreateView(HLSBServoRuntime *r, uint32_t width, uint32_t
 bool HLSBServoDestroyView(HLSBServoView *v) {
     if (!v || !Available(v->runtime)) return false;
     HLSBServoRuntime *r = v->runtime;
-    r->api.bridge_cancel(v->callback);
     r->api.asset_cancel(v->callback);
+    r->api.hl2sb_cancel(v->callback);
     v->callback->view = NULL;
     r->api.view_free(v->view);
     r->views.erase(std::remove(r->views.begin(), r->views.end(), v), r->views.end());
@@ -399,10 +407,11 @@ bool HLSBServoPump(HLSBServoRuntime *r) {
 
 bool HLSBServoNavigate(HLSBServoView *v, const char *url) {
     if (!v || !Available(v->runtime) || !ValidUTF8(url, 8u * 1024u * 1024u)) return false;
-    v->runtime->api.bridge_cancel(v->callback);
     v->runtime->api.asset_cancel(v->callback);
-    v->bridgeEvents.clear();
+    v->runtime->api.hl2sb_cancel(v->callback);
     v->assetEvents.clear();
+    v->consoleEvents.clear();
+    v->hl2sbEvents.clear();
     if (!v->initialized) {
         try { v->pendingURL = url; } catch (...) { return false; }
     } else if (v->runtime->api.view_load(v->view, url) != 0) return false;
@@ -432,18 +441,28 @@ bool HLSBServoPopLoadEvent(HLSBServoView *v, int *status) {
     return true;
 }
 
-bool HLSBServoPopBridgeEvent(HLSBServoView *v, uint64_t *id, char *message, size_t capacity) {
-    if (!v || !id || !message || !Available(v->runtime) || v->bridgeEvents.empty()) return false;
-    const std::pair<uint64_t, std::string> &event = v->bridgeEvents.front();
-    if (event.second.size() >= capacity) return false;
+// Pops one JS-Lua bridge request issued by page content. The reply is sent
+// back with HLSBServoHL2SBReply; a navigation between the two drops the
+// reply, matching the frame-scoped callback lifetime of the reference.
+bool HLSBServoPopHL2SBEvent(HLSBServoView *v, uint64_t *id, char *payload, size_t capacity) {
+    if (!v || !id || !payload || !Available(v->runtime) || v->hl2sbEvents.empty()) return false;
+    const std::pair<uint64_t, std::string> &event = v->hl2sbEvents.front();
+    if (event.second.size() >= capacity) {
+        // Consume-and-truncate so a pump loop cannot spin on an oversize line.
+        *id = event.first;
+        std::memcpy(payload, event.second.c_str(), capacity - 1);
+        payload[capacity - 1] = '\0';
+        v->hl2sbEvents.erase(v->hl2sbEvents.begin());
+        return true;
+    }
     *id = event.first;
-    std::memcpy(message, event.second.c_str(), event.second.size() + 1);
-    v->bridgeEvents.erase(v->bridgeEvents.begin());
+    std::memcpy(payload, event.second.c_str(), event.second.size() + 1);
+    v->hl2sbEvents.erase(v->hl2sbEvents.begin());
     return true;
 }
 
-bool HLSBServoBridgeReply(HLSBServoView *v, uint64_t id, const char *reply) {
-    return v && Available(v->runtime) && ValidUTF8(reply, 65536) && v->runtime->api.bridge_reply(id, reply);
+bool HLSBServoHL2SBReply(HLSBServoView *v, uint64_t id, const char *reply) {
+    return v && Available(v->runtime) && ValidUTF8(reply, 65536) && v->runtime->api.hl2sb_reply(id, reply);
 }
 
 bool HLSBServoPopAssetEvent(HLSBServoView *v, uint64_t *id, char *url, size_t capacity) {
@@ -453,6 +472,19 @@ bool HLSBServoPopAssetEvent(HLSBServoView *v, uint64_t *id, char *url, size_t ca
     *id = event.first;
     std::memcpy(url, event.second.c_str(), event.second.size() + 1);
     v->assetEvents.erase(v->assetEvents.begin());
+    return true;
+}
+
+// Pops one content console message.  A line longer than the buffer is
+// consumed and truncated rather than left queued, so a pump loop cannot
+// spin on it forever.
+bool HLSBServoPopConsoleEvent(HLSBServoView *v, char *message, size_t capacity) {
+    if (!v || !message || capacity == 0 || !Available(v->runtime) || v->consoleEvents.empty()) return false;
+    const std::string &event = v->consoleEvents.front();
+    const size_t copy = (std::min)(event.size(), capacity - 1);
+    std::memcpy(message, event.c_str(), copy);
+    message[copy] = '\0';
+    v->consoleEvents.erase(v->consoleEvents.begin());
     return true;
 }
 

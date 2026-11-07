@@ -26,9 +26,14 @@ bool HLSBServoResize(HLSBServoView *view, uint32_t width, uint32_t height);
 // -1 means no event yet, 0 started, 1 head parsed, 2 complete, 3 stopped.
 int HLSBServoLoadStatus(HLSBServoView *view);
 bool HLSBServoPopLoadEvent(HLSBServoView *view, int *status);
-bool HLSBServoPopBridgeEvent(HLSBServoView *view, uint64_t *id, char *message, size_t capacity);
-bool HLSBServoBridgeReply(HLSBServoView *view, uint64_t id, const char *reply);
+// JS-Lua bridge: content requests arrive here; answer each with
+// HLSBServoHL2SBReply (a JSON multret array, "[]" for no results). A reply
+// whose request died with a navigation is silently ignored by the engine.
+bool HLSBServoPopHL2SBEvent(HLSBServoView *view, uint64_t *id, char *payload, size_t capacity);
+bool HLSBServoHL2SBReply(HLSBServoView *view, uint64_t id, const char *reply);
 bool HLSBServoPopAssetEvent(HLSBServoView *view, uint64_t *id, char *url, size_t capacity);
+// Pops one content console message (a truncated line is consumed, not left queued).
+bool HLSBServoPopConsoleEvent(HLSBServoView *view, char *message, size_t capacity);
 bool HLSBServoAssetReply(HLSBServoView *view, uint64_t id, uint16_t status,
                          const char *mime, const uint8_t *bytes, size_t length);
 bool HLSBServoEvalJS(HLSBServoView *view, const char *script);
