@@ -1258,6 +1258,13 @@ static int CBaseEntity_GetMaxHealth (lua_State *L) {
   return 1;
 }
 
+#ifndef CLIENT_DLL
+static int CBaseEntity_GetWorkshopID (lua_State *L) {
+  (void)L;
+  return 0;
+}
+#endif
+
 static int CBaseEntity_GetModelIndex (lua_State *L) {
   lua_pushinteger(L, luaL_checkentity(L, 1)->GetModelIndex());
   return 1;
@@ -6989,6 +6996,9 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetLocalOrigin", CBaseEntity_GetLocalOrigin},
   {"GetLocalVelocity", CBaseEntity_GetLocalVelocity},
   {"GetMaxHealth", CBaseEntity_GetMaxHealth},
+#ifndef CLIENT_DLL
+  {"GetWorkshopID", CBaseEntity_GetWorkshopID},
+#endif
   {"GetModelIndex", CBaseEntity_GetModelIndex},
   {"GetModelName", CBaseEntity_GetModelName},
   {"GetModel", CBaseEntity_GetModel},

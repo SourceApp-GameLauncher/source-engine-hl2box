@@ -14,6 +14,7 @@
 #include "inputsystem/ButtonCode.h"
 #include "luasrclib.h"
 #include "lvphysics_interface.h"
+#include "lbaseentity_shared.h"
 #include "vphysics/lperformance.h"
 #include "mathlib/lvector.h"
 
@@ -1330,7 +1331,14 @@ static int IPhysicsObject___tostring (lua_State *L) {
 }
 
 
+static int IPhysicsObject_GetEntity( lua_State *L ) {
+  IPhysicsObject *physics = luaL_checkphysicsobject( L, 1 );
+  CBaseEntity::PushLuaInstanceSafe( L, static_cast<CBaseEntity *>( physics->GetGameData() ) );
+  return 1;
+}
+
 static const luaL_Reg IPhysicsObjectmeta[] = {
+  {"GetEntity", IPhysicsObject_GetEntity},
   {"AlignAngles", IPhysicsObject_AlignAngles},
   {"AddVelocity", IPhysicsObject_AddVelocity},
   {"AddAngleVelocity", IPhysicsObject_AddAngleVelocity},

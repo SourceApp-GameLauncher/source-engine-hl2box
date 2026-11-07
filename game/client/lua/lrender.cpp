@@ -4,6 +4,7 @@
 #include "luasrclib.h"
 #include "lrender.h"
 #include "model_types.h"
+#include "filesystem.h"
 
 // HL2SB GMod compat (ConVars In Garrysmod): the physgun visual toggles.
 // physgun_drawbeams is read by hl2sb/weapon_physgun.cpp's draw paths,
@@ -775,6 +776,32 @@ LUA_BINDING_END()
 static void HL2SB_CaptureWrite(void *context, void *data, int size)
 {
     static_cast<CUtlBuffer *>(context)->Put(data, size);
+}
+
+static char s_SavePreviewPath[MAX_PATH];
+
+void HL2SB_QueueSavePreview( const char *path )
+{
+    Q_strncpy( s_SavePreviewPath, path, sizeof(s_SavePreviewPath) );
+}
+
+void HL2SB_CaptureSavePreview()
+{
+    if ( !s_SavePreviewPath[0] ) return;
+    char path[MAX_PATH];
+    Q_strncpy( path, s_SavePreviewPath, sizeof(path) );
+    s_SavePreviewPath[0] = 0;
+    CMatRenderContextPtr context( materials );
+    int width, height;
+    context->GetRenderTargetDimensions( width, height );
+    if ( width <= 0 || height <= 0 || width > 8192 || height > 8192 ) return;
+    CUtlVector<unsigned char> pixels;
+    pixels.SetCount( width * height * 3 );
+    context->ReadPixels( 0, 0, width, height, pixels.Base(), IMAGE_FORMAT_RGB888 );
+    CUtlBuffer jpeg;
+    if ( !stbi_write_jpg_to_func( HL2SB_CaptureWrite, &jpeg, width, height, 3, pixels.Base(), 85 ) ||
+         !filesystem->WriteFile( path, "MOD", jpeg ) )
+        Warning( "Unable to write save preview %s\n", path );
 }
 
 static void HL2SB_ApplyModelLighting();

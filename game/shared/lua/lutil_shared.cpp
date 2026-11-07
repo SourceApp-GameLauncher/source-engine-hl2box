@@ -8,6 +8,7 @@
 
 #include "cbase.h"
 #include "luamanager.h"
+#include "luasrclib.h"
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
 #include "lgametrace.h"
@@ -133,8 +134,63 @@ static void HL2SB_RunNativeCleanup( lua_State *state, bool dontSend )
   s_cleanupRunning = false;
 }
 
+#ifndef CLIENT_DLL
+static void HL2SB_LoadPendingSave()
+{
+  if ( !L || !gpGlobals || !GameRules() ) return;
+  ConVarRef pending( "hl2sb_gms_pending" );
+  if ( !pending.IsValid() || !pending.GetString()[0] ) return;
+
+  const char *path = pending.GetString();
+  if ( Q_strnicmp( path, "saves/", 6 ) || Q_strstr( path, ".." ) ||
+       Q_strstr( path + 6, "/" ) || Q_strstr( path, "\\" ) || Q_strstr( path, ":" ) ) {
+    pending.SetValue( "" );
+    return;
+  }
+  CUtlBuffer data( 0, 0, 0 );
+  if ( !filesystem->ReadFile( path, "MOD", data ) || data.TellPut() < 8 ||
+       Q_memcmp( data.Base(), "GMS3", 4 ) ) {
+    Warning( "gm_load: unable to read save\n" );
+    pending.SetValue( "" );
+    return;
+  }
+  const char *bytes = (const char *)data.Base();
+  const int length = data.TellPut();
+  int end = 4;
+  while ( end < length && bytes[end] ) ++end;
+  if ( end == length || end == 4 ) { pending.SetValue( "" ); return; }
+  if ( Q_stricmp( bytes + 4, STRING( gpGlobals->mapname ) ) ) return;
+  int offset = end + 1;
+  if ( offset + 5 <= length && !Q_memcmp( bytes + offset, "WSID:", 5 ) ) {
+    while ( offset < length && bytes[offset] ) ++offset;
+    if ( offset == length ) { pending.SetValue( "" ); return; }
+    ++offset;
+  }
+  if ( length - offset < 13 ) { pending.SetValue( "" ); return; }
+
+  const int top = lua_gettop( L );
+  lua_checkstack( L, 8 );
+  lua_getglobal( L, "hook" );
+  if ( !lua_istable( L, -1 ) ) { lua_settop( L, top ); return; }
+  lua_getfield( L, -1, "Call" );
+  if ( !lua_isfunction( L, -1 ) ) { lua_settop( L, top ); return; }
+  lua_remove( L, -2 );
+  lua_pushstring( L, "LoadGModSave" );
+  lua_pushnil( L );
+  lua_pushlstring( L, bytes + offset, length - offset );
+  lua_pushstring( L, bytes + 4 );
+  lua_pushnumber( L, 0 );
+  pending.SetValue( "" );
+  luasrc_pcall( L, 5, 0, 0 );
+  lua_settop( L, top );
+}
+#endif
+
 void HL2SB_CleanupTick()
 {
+#ifndef CLIENT_DLL
+  HL2SB_LoadPendingSave();
+#endif
   if ( !s_cleanupPending || s_cleanupRunning || !s_cleanupState ) return;
 #ifndef CLIENT_DLL
   if ( HL2SB_IsEntityDeleteCleanupActive() || PhysIsInCallback() ) return;
@@ -1406,6 +1462,7 @@ static void JSON_EmitValue( lua_State *L, int idx, CUtlString &out, bool pretty,
 
 static bool JSON_IsArray( lua_State *L, int idx, lua_Integer *pnOut )
 {
+	if ( !lua_checkstack( L, 8 ) ) luaL_error( L, "JSON stack overflow" );
 	lua_Integer n = luaL_len( L, idx );
 	if ( n <= 0 )
 		return false;
@@ -1437,6 +1494,7 @@ static bool JSON_IsArray( lua_State *L, int idx, lua_Integer *pnOut )
 
 static void JSON_EmitTable( lua_State *L, int idx, CUtlString &out, bool pretty, int depth, int indent )
 {
+	if ( !lua_checkstack( L, 8 ) ) luaL_error( L, "JSON stack overflow" );
 	if ( depth > 128 )
 	{
 		// cycle / pathological nesting - drop the value rather than overflowing
@@ -1479,7 +1537,8 @@ static void JSON_EmitTable( lua_State *L, int idx, CUtlString &out, bool pretty,
 		int valueType = lua_type( L, -1 );
 
 		bool bSkip = ( valueType == LUA_TNIL || valueType == LUA_TFUNCTION ||
-					   valueType == LUA_TUSERDATA ||
+					   ( valueType == LUA_TUSERDATA && !luaL_testudata( L, -1, LUA_VECTORLIBNAME ) &&
+					     !luaL_testudata( L, -1, LUA_QANGLELIBNAME ) ) ||
 					   ( keyType != LUA_TSTRING && keyType != LUA_TNUMBER ) );
 		if ( bSkip )
 		{
@@ -1508,6 +1567,7 @@ static void JSON_EmitTable( lua_State *L, int idx, CUtlString &out, bool pretty,
 
 static void JSON_EmitValue( lua_State *L, int idx, CUtlString &out, bool pretty, int depth, int indent )
 {
+	if ( !lua_checkstack( L, 8 ) ) luaL_error( L, "JSON stack overflow" );
 	// copy to an absolute index - idx may be relative (lua_rawgeti results etc.)
 	lua_pushvalue( L, idx );
 	int i = lua_gettop( L );
@@ -1525,41 +1585,31 @@ static void JSON_EmitValue( lua_State *L, int idx, CUtlString &out, bool pretty,
 		case LUA_TTABLE:	JSON_EmitTable( L, i, out, pretty, depth, indent ); break;
 		case LUA_TUSERDATA:
 		{
-			// HL2SB (2026-10-05): GMod's encoder serializes Vector / Angle as
-			// plain x/y/z (p/y/r) objects instead of dropping them - without
-			// this a duplicator save loses every position and angle (the first
-			// gm_save produced {"Player":{"MoveType":2}} with Origin silently
-			// gone).  Metatable identity, not luaL_checkudata: the checker
-			// raises on mismatch and the encoder must skip non-serializable
-			// values, not abort.
-			luaL_getmetatable( L, "Vector" );
-			const bool bIsVector = lua_rawequal( L, -1, i ) != 0;
-			lua_pop( L, 1 );
-			luaL_getmetatable( L, "Angle" );
-			const bool bIsAngle = lua_rawequal( L, -1, i ) != 0;
-			lua_pop( L, 1 );
+			// Vectors and angles use the same string representation as saves.
+			const bool bIsVector = luaL_testudata( L, i, LUA_VECTORLIBNAME ) != NULL;
+			const bool bIsAngle = luaL_testudata( L, i, LUA_QANGLELIBNAME ) != NULL;
 
 			if ( bIsVector )
 			{
 				const Vector &v = luaL_checkvector( L, i );
-				out += "{\"x\":";
+				out += "\"[";
 				JSON_EmitNumber( out, v.x );
-				out += ",\"y\":";
+				out += " ";
 				JSON_EmitNumber( out, v.y );
-				out += ",\"z\":";
+				out += " ";
 				JSON_EmitNumber( out, v.z );
-				out += "}";
+				out += "]\"";
 			}
 			else if ( bIsAngle )
 			{
 				const QAngle &a = luaL_checkangle( L, i );
-				out += "{\"p\":";
+				out += "\"{";
 				JSON_EmitNumber( out, a.x );
-				out += ",\"y\":";
+				out += " ";
 				JSON_EmitNumber( out, a.y );
-				out += ",\"r\":";
+				out += " ";
 				JSON_EmitNumber( out, a.z );
-				out += "}";
+				out += "}\"";
 			}
 			else
 			{
@@ -1617,8 +1667,9 @@ static void JSON_SkipString( const char *&p )
 	if ( *p ) ++p;
 }
 
-static void JSON_KVToLua( lua_State *L, KeyValues *pNode, const char *&pJson )
+static void JSON_KVToLua( lua_State *L, KeyValues *pNode, const char *&pJson, bool ignoreConversions )
 {
+	if ( !lua_checkstack( L, 8 ) ) luaL_error( L, "JSON stack overflow" );
 	JSON_SkipWhitespace( pJson );
 	const char token = *pJson;
 	if ( token == 't' || token == 'f' )
@@ -1635,7 +1686,17 @@ static void JSON_KVToLua( lua_State *L, KeyValues *pNode, const char *&pJson )
 	}
 	if ( token == '"' || token == '\'' )
 	{
-		lua_pushstring( L, pNode->GetString() );
+		const char *value = pNode->GetString();
+		float x, y, z;
+		int end = 0;
+		if ( !ignoreConversions && value[0] == '[' &&
+		     sscanf( value, "[ %f %f %f ]%n", &x, &y, &z, &end ) == 3 && end > 0 && value[end] == '\0' )
+			lua_pushvector( L, Vector( x, y, z ) );
+		else if ( !ignoreConversions && value[0] == '{' &&
+		          sscanf( value, "{ %f %f %f }%n", &x, &y, &z, &end ) == 3 && end > 0 && value[end] == '\0' )
+			lua_pushangle( L, QAngle( x, y, z ) );
+		else
+			lua_pushstring( L, value );
 		JSON_SkipString( pJson );
 		return;
 	}
@@ -1677,7 +1738,7 @@ static void JSON_KVToLua( lua_State *L, KeyValues *pNode, const char *&pJson )
 		}
 		if ( isArray )
 		{
-			JSON_KVToLua( L, p, pJson );
+			JSON_KVToLua( L, p, pJson, ignoreConversions );
 			lua_rawseti( L, -2, ++arrayIdx );
 		}
 		else
@@ -1706,7 +1767,7 @@ static void JSON_KVToLua( lua_State *L, KeyValues *pNode, const char *&pJson )
 				lua_pop( L, 1 );
 				lua_pushinteger( L, (lua_Integer)lKey );
 			}
-			JSON_KVToLua( L, p, pJson );
+			JSON_KVToLua( L, p, pJson, ignoreConversions );
 			lua_settable( L, -3 );
 		}
 		JSON_SkipWhitespace( pJson );
@@ -1715,60 +1776,6 @@ static void JSON_KVToLua( lua_State *L, KeyValues *pNode, const char *&pJson )
 	JSON_SkipWhitespace( pJson );
 	++pJson; // closing bracket or brace
 
-	// HL2SB (2026-10-05): GMod's decoder hands {"x":..,"y":..,"z":..} objects
-	// back as real Vector userdata (the duplicator round-trip feeds them
-	// straight into SetPos / MakeProp - plain tables would error there).  The
-	// p/y/r shape comes back as a QAngle.  A table that merely happens to
-	// carry those three numeric keys is rare enough that GMod accepts the same
-	// ambiguity.
-	if ( !isArray )
-	{
-		bool bX = false, bY = false, bZ = false, bP = false, bR = false;
-		lua_Integer nY = 0;
-
-		lua_pushnil( L );
-		while ( lua_next( L, -2 ) != 0 )
-		{
-			if ( lua_isnumber( L, -1 ) && lua_type( L, -2 ) == LUA_TSTRING )
-			{
-				const char *pszKey = lua_tostring( L, -2 );
-				if ( !V_stricmp( pszKey, "x" ) ) { bX = true; }
-				else if ( !V_stricmp( pszKey, "y" ) ) { bY = true; nY = lua_tointeger( L, -1 ); }
-				else if ( !V_stricmp( pszKey, "z" ) ) { bZ = true; }
-				else if ( !V_stricmp( pszKey, "p" ) ) { bP = true; }
-				else if ( !V_stricmp( pszKey, "r" ) ) { bR = true; }
-			}
-			lua_pop( L, 1 );
-		}
-
-		if ( bX && bY && bZ && !bP && !bR )
-		{
-			lua_getfield( L, -1, "x" );
-			float x = (float)lua_tonumber( L, -1 );
-			lua_getfield( L, -1, "y" );
-			float y = (float)lua_tonumber( L, -1 );
-			lua_getfield( L, -1, "z" );
-			float z = (float)lua_tonumber( L, -1 );
-			lua_pop( L, 3 );
-			lua_pop( L, 1 );
-			lua_pushvector( L, Vector( x, y, z ) );
-			return;
-		}
-
-		if ( bP && bY && bR && !bX && !bZ )
-		{
-			lua_getfield( L, -1, "p" );
-			float p = (float)lua_tonumber( L, -1 );
-			lua_getfield( L, -1, "y" );
-			float y = (float)lua_tonumber( L, -1 );
-			lua_getfield( L, -1, "r" );
-			float r = (float)lua_tonumber( L, -1 );
-			lua_pop( L, 3 );
-			lua_pop( L, 1 );
-			lua_pushangle( L, QAngle( p, y, r ) );
-			return;
-		}
-	}
 }
 
 // util.JSONToTable( json )
@@ -1785,7 +1792,7 @@ LUA_API int luasrc_UTIL_JSONToTable( lua_State *L )
 		return 1;
 	}
 
-	JSON_KVToLua( L, pRoot, pszJson );
+	JSON_KVToLua( L, pRoot, pszJson, lua_toboolean( L, 3 ) != 0 );
 	pRoot->deleteThis();
 	return 1;
 }

@@ -4549,6 +4549,21 @@ static int luasrc_LocalToWorld (lua_State *L) {
   return 2;
 }
 
+static int luasrc_WorldToLocal (lua_State *L) {
+  const Vector position = luaL_checkvector(L, 1);
+  const QAngle angles = luaL_checkangle(L, 2);
+  const Vector origin = luaL_checkvector(L, 3);
+  const QAngle originAngles = luaL_checkangle(L, 4);
+  matrix3x4_t parent;
+  AngleMatrix(originAngles, origin, parent);
+  Vector localPosition;
+  VectorITransform(position, parent, localPosition);
+  const QAngle localAngles = TransformAnglesToLocalSpace(angles, parent);
+  lua_pushvector(L, localPosition);
+  lua_pushangle(L, localAngles);
+  return 2;
+}
+
 #ifndef CLIENT_DLL
 static int luasrc_PrintMessage (lua_State *L) {
   const char *message = luaL_checkstring(L, 2);
@@ -4956,6 +4971,8 @@ LUALIB_API void luasrc_openlibs (lua_State *L) {
 #endif
   lua_pushcfunction(L, luasrc_LocalToWorld);
   lua_setglobal(L, "LocalToWorld");
+  lua_pushcfunction(L, luasrc_WorldToLocal);
+  lua_setglobal(L, "WorldToLocal");
 
   /* AddCSLuaFile( file = "current file" ) -- wiki Global.AddCSLuaFile.
   **

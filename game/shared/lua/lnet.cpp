@@ -254,12 +254,49 @@ static void MsgFunc_LuaNet( bf_read &msg )
 	Net_SetRead( NULL );
 }
 
+static unsigned char s_LuaNetFragments[ HL2SB_NET_MAX_SIZE ];
+static int s_LuaNetFragmentBytes = 0;
+static int s_LuaNetFragmentBits = 0;
+
+static void MsgFunc_LuaNetFragment( bf_read &msg )
+{
+	const int totalBits = msg.ReadLong();
+	const int offset = msg.ReadLong();
+	const int bytes = msg.GetNumBitsLeft() / 8;
+	if ( totalBits < HL2SB_NET_HEADER_BITS || totalBits > HL2SB_NET_MAX_SIZE * 8 ||
+		 offset < 0 || bytes <= 0 || offset + bytes > ( totalBits + 7 ) / 8 )
+	{
+		s_LuaNetFragmentBytes = s_LuaNetFragmentBits = 0;
+		return;
+	}
+	if ( offset == 0 )
+	{
+		s_LuaNetFragmentBytes = 0;
+		s_LuaNetFragmentBits = totalBits;
+	}
+	if ( offset != s_LuaNetFragmentBytes || totalBits != s_LuaNetFragmentBits )
+	{
+		s_LuaNetFragmentBytes = s_LuaNetFragmentBits = 0;
+		return;
+	}
+	msg.ReadBits( s_LuaNetFragments + offset, bytes * 8 );
+	s_LuaNetFragmentBytes += bytes;
+	if ( s_LuaNetFragmentBytes == ( totalBits + 7 ) / 8 )
+	{
+		bf_read complete;
+		complete.StartReading( s_LuaNetFragments, s_LuaNetFragmentBytes, 0, totalBits );
+		s_LuaNetFragmentBytes = s_LuaNetFragmentBits = 0;
+		MsgFunc_LuaNet( complete );
+	}
+}
+
 static void EnsureLuaNetHook()
 {
 	static bool bHooked = false;
 	if ( bHooked )
 		return;
 	usermessages->HookMessage( "LuaNet", MsgFunc_LuaNet );
+	usermessages->HookMessage( "LuaNetFragment", MsgFunc_LuaNetFragment );
 	bHooked = true;
 }
 
@@ -1154,14 +1191,21 @@ static void SendNetMessage( CRecipientFilter &filter )
 		luasrc_LuaWarnMsgF( "Trying to send an overflowed net message!\n" );
 	}
 
-	// The sv->cl leg rides a usermessage, whose payload is capped by
-	// MAX_USER_MSG_DATA at the engine layer; refuse oversize instead of
-	// letting the engine silently truncate mid-payload.
 	int nPayloadBytes = ( g_netWrite.GetNumBitsWritten() + 7 ) >> 3;
 	if ( nPayloadBytes > MAX_USER_MSG_DATA )
 	{
-		luasrc_LuaWarnMsgF( "[net] message '%s' (%i bytes) is larger than the %i byte sv->cl transport limit - dropped\n",
-			g_netName.Get(), nPayloadBytes, (int)MAX_USER_MSG_DATA );
+		filter.MakeReliable();
+		const int nBits = g_netWrite.GetNumBitsWritten();
+		const unsigned char *data = (const unsigned char *)g_netWrite.GetData();
+		for ( int offset = 0; offset < nPayloadBytes; offset += 240 )
+		{
+			const int size = MIN( 240, nPayloadBytes - offset );
+			UserMessageBegin( filter, "LuaNetFragment" );
+			WRITE_LONG( nBits );
+			WRITE_LONG( offset );
+			MessageWriteBits( data + offset, size * 8 );
+			MessageEnd();
+		}
 		g_netActive = false;
 		g_netUnreliable = false;
 		return;

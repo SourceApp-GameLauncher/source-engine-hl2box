@@ -2238,6 +2238,8 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 			extern bool g_bRenderingReflection;
 			if ( L != NULL && !g_bRenderingReflection && engine->IsInGame() )
 			{
+				extern void HL2SB_CaptureSavePreview();
+				HL2SB_CaptureSavePreview();
 				bool bFrameStats = HL2SB_FrameStats_Enabled();
 				double flHookStart = 0.0;
 				if ( bFrameStats )
