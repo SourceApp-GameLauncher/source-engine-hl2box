@@ -60,8 +60,18 @@
 #include "filesystem.h"
 #include "utlbuffer.h"
 #include <map>
+#include <atomic>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#include <winhttp.h>
+#undef ShellExecute
+#undef GetClassName
+#pragma comment(lib, "winhttp.lib")
+#endif
 #include "tier0/memdbgon.h"
 
 struct HL2SBMenuTimer
@@ -295,11 +305,116 @@ static int HL2SB_RunGameUICommand( lua_State *state )
 	return 0;
 }
 
+static std::thread s_ManifestThread;
+static std::mutex s_ManifestMutex;
+static std::atomic<bool> s_ManifestFinished( false );
+static std::string s_ManifestResponse;
+static std::vector<int> s_ManifestCallbacks;
+static bool s_ManifestRunning = false;
+static const char *const kManifestCache = "settings/gmod_manifest.json";
+
+static void HL2SB_FetchManifest()
+{
+	std::string body;
+#ifdef _WIN32
+	HINTERNET session = WinHttpOpen( L"HL2SB", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+		WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0 );
+	if ( session )
+	{
+		WinHttpSetTimeouts( session, 5000, 5000, 5000, 5000 );
+		HINTERNET connection = WinHttpConnect( session, L"api.facepunch.com", INTERNET_DEFAULT_HTTPS_PORT, 0 );
+		if ( connection )
+		{
+			HINTERNET request = WinHttpOpenRequest( connection, L"GET",
+				L"/api/public/manifest?public_key=RWsOQQrO860EaGY3qPsSsBQSev3gNO0KrcF3kv4Rl5frjE9OuUKQgAsRutxMZ4aU",
+				NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE );
+			if ( request )
+			{
+				DWORD status = 0, statusSize = sizeof( status );
+				if ( WinHttpSendRequest( request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
+					 WinHttpReceiveResponse( request, NULL ) &&
+					 WinHttpQueryHeaders( request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+						WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX ) && status == 200 )
+				{
+					char buffer[8192]; DWORD count = 0; bool ok = true;
+					do {
+						if ( !WinHttpReadData( request, buffer, sizeof( buffer ), &count ) || body.size() + count > 2 * 1024 * 1024 ) { ok = false; break; }
+						body.append( buffer, count );
+					} while ( count );
+					if ( !ok ) body.clear();
+				}
+				WinHttpCloseHandle( request );
+			}
+			WinHttpCloseHandle( connection );
+		}
+		WinHttpCloseHandle( session );
+	}
+#endif
+	{ std::lock_guard<std::mutex> lock( s_ManifestMutex ); s_ManifestResponse.swap( body ); }
+	s_ManifestFinished.store( true );
+}
+
+static bool HL2SB_ManifestValid( lua_State *state, const std::string &body )
+{
+	const int top = lua_gettop( state );
+	lua_getglobal( state, "util" );
+	if ( !lua_istable( state, -1 ) ) { lua_settop( state, top ); return false; }
+	lua_getfield( state, -1, "JSONToTable" );
+	if ( !lua_isfunction( state, -1 ) ) { lua_settop( state, top ); return false; }
+	lua_pushlstring( state, body.data(), body.size() );
+	bool valid = lua_pcall( state, 1, 1, 0 ) == LUA_OK && lua_istable( state, -1 );
+	if ( valid ) {
+		lua_getfield( state, -1, "News" ); valid = lua_istable( state, -1 );
+		if ( valid ) { lua_getfield( state, -1, "Blogs" ); valid = lua_istable( state, -1 ); lua_pop( state, 1 ); }
+		lua_pop( state, 1 );
+	}
+	lua_settop( state, top );
+	return valid;
+}
+
+static void HL2SB_PumpManifest( lua_State *state )
+{
+	if ( !s_ManifestRunning || !s_ManifestFinished.load() ) return;
+	if ( s_ManifestThread.joinable() ) s_ManifestThread.join();
+	s_ManifestRunning = false;
+	std::string body;
+	{ std::lock_guard<std::mutex> lock( s_ManifestMutex ); body.swap( s_ManifestResponse ); }
+	if ( HL2SB_ManifestValid( state, body ) ) {
+		Msg( "GetAPIManifest: loaded online manifest.\n" );
+		filesystem->CreateDirHierarchy( "settings", "MOD" );
+		CUtlBuffer data( 0, 0, 0 ); data.Put( body.data(), body.size() );
+		if ( !filesystem->WriteFile( kManifestCache, "MOD", data ) ) Warning( "GetAPIManifest: could not write cache.\n" );
+	} else {
+		body.clear(); CUtlBuffer data;
+		if ( filesystem->ReadFile( kManifestCache, "MOD", data ) && data.TellPut() <= 2 * 1024 * 1024 )
+			body.assign( static_cast<const char *>( data.Base() ), data.TellPut() );
+		if ( !HL2SB_ManifestValid( state, body ) ) {
+			body.clear();
+			Warning( "GetAPIManifest: online request failed and no valid cache exists.\n" );
+		} else Msg( "GetAPIManifest: using cached manifest.\n" );
+	}
+	std::vector<int> callbacks; callbacks.swap( s_ManifestCallbacks );
+	for ( size_t i = 0; i < callbacks.size(); ++i ) {
+		lua_rawgeti( state, LUA_REGISTRYINDEX, callbacks[i] );
+		luaL_unref( state, LUA_REGISTRYINDEX, callbacks[i] );
+		if ( !body.empty() && lua_isfunction( state, -1 ) ) {
+			lua_pushlstring( state, body.data(), body.size() ); luasrc_pcall( state, 1, 0, 0 );
+		} else lua_pop( state, 1 );
+	}
+}
+
 static int HL2SB_GetAPIManifest( lua_State *state )
 {
 	luaL_checktype( state, 1, LUA_TFUNCTION );
+	lua_pushvalue( state, 1 );
+	s_ManifestCallbacks.push_back( luaL_ref( state, LUA_REGISTRYINDEX ) );
+	if ( !s_ManifestRunning ) {
+		s_ManifestFinished.store( false ); s_ManifestRunning = true;
+		s_ManifestThread = std::thread( HL2SB_FetchManifest );
+	}
 	return 0;
 }
+
 
 static int HL2SB_MenuGuiActivate( lua_State *state )
 {
@@ -425,6 +540,7 @@ public:
 	{
 		if ( !LGameUI || m_bInTick ) return;
 		m_bInTick = true;
+		HL2SB_PumpManifest( LGameUI );
 		HL2SB_MenuCallHook( "Think" );
 		size_t remaining = s_MenuSimpleTimers.size();
 		size_t index = 0;
@@ -454,6 +570,12 @@ void HL2SB_MenuRuntimeStart()
 
 void HL2SB_MenuRuntimeStop()
 {
+	if ( s_ManifestThread.joinable() ) s_ManifestThread.join();
+	if ( LGameUI ) for ( size_t i = 0; i < s_ManifestCallbacks.size(); ++i )
+		luaL_unref( LGameUI, LUA_REGISTRYINDEX, s_ManifestCallbacks[i] );
+	s_ManifestCallbacks.clear();
+	s_ManifestRunning = false;
+	s_ManifestFinished.store( false );
 	HL2SB_ClearMenuOverride();
 	if ( s_pMenuTick )
 	{

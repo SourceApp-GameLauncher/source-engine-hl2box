@@ -1464,8 +1464,9 @@ static bool JSON_IsArray( lua_State *L, int idx, lua_Integer *pnOut )
 {
 	if ( !lua_checkstack( L, 8 ) ) luaL_error( L, "JSON stack overflow" );
 	lua_Integer n = luaL_len( L, idx );
-	if ( n <= 0 )
-		return false;
+	// GMod serializes an empty table as an empty JSON array.  Still inspect
+	// all keys below: a table with only string keys is an object even when
+	// its Lua length is zero.
 
 	// keys 1..n must all be present...
 	for ( lua_Integer k = 1; k <= n; k++ )
@@ -1520,7 +1521,7 @@ static void JSON_EmitTable( lua_State *L, int idx, CUtlString &out, bool pretty,
 			lua_pop( L, 1 );
 			if ( k < n ) out += ",";
 		}
-		if ( pretty ) { out += "\n"; for ( int s = 0; s < indent; s++ ) out += "    "; }
+		if ( pretty && n > 0 ) { out += "\n"; for ( int s = 0; s < indent; s++ ) out += "    "; }
 		out += "]";
 		lua_pop( L, 1 );
 		return;
