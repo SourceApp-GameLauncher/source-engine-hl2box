@@ -4,14 +4,28 @@ This experimental backend uses the Windows x64 CEF binary distribution
 `156.0.26+g8ea0c73+chromium-156.0.8078.88`. The distribution is supplied
 separately and is not included in this repository.
 
-Configure and build with CMake 3.21 or newer and Visual Studio 2022:
+Configure the engine with the external SDK to enable the native Waf targets:
+
+```powershell
+python -X utf8 waf configure -T release --build-games=hl2sb --prefix=D:/srceng --cef-root=D:/path/to/cef_binary_windows64
+python -X utf8 waf build --targets=html_cef,html_cef_helper -j12
+python -X utf8 waf install --targets=html_cef,html_cef_helper -j12
+```
+
+Waf compiles the SDK's CEF wrapper sources as well as the bridge; no SDK
+sources or binaries are copied into the engine repository. A Waf install puts
+the bridge, helper and matching SDK runtime and resources in `hl2sb/bin/cef`.
+Without `--cef-root`, these targets are omitted. Only Windows x64 is currently
+supported and the SDK version must match the version above.
+
+The standalone CMake build also remains available:
 
 ```powershell
 cmake -S html_cef -B build-html-cef -G "Visual Studio 17 2022" -A x64 -DCEF_ROOT=D:/path/to/cef_binary_windows64
 cmake --build build-html-cef --config Release --parallel 12 --target html_cef html_cef_helper
 ```
 
-Place `html_cef.dll` and `html_cef_helper.exe` in the game's `hl2sb/bin`
+Place `html_cef.dll` and `html_cef_helper.exe` in the game's `hl2sb/bin/cef`
 directory. The helper must be able to load the CEF runtime from that directory.
 For the SDK version above, copy the SDK `Release` DLLs,
 `v8_context_snapshot.bin`, and `vk_swiftshader_icd.json`, plus the SDK
