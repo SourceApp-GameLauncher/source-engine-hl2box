@@ -2504,11 +2504,31 @@ public:
         char path[MAX_PATH];
 #if defined(_WIN32)
         const char *library = "bin/servo_capi.dll";
+        const bool resolveViaFilesystem = true;
+#elif defined(__ANDROID__)
+        // Android: the library is packaged in the APK's native library
+        // directory (the game dir lives on noexec FUSE storage, so dlopen
+        // from there is denied anyway).  dlopen of the bare soname resolves
+        // from the app's own lib dir, where libclient.so itself was loaded
+        // from.
+        const char *library = "libservo_capi.so";
+        const bool resolveViaFilesystem = false;
 #else
         const char *library = "bin/libservo_capi.so";
+        const bool resolveViaFilesystem = true;
 #endif
-        if (filesystem->RelativePathToFullPath(library, "MOD", path, sizeof(path)))
-          s_htmlServoRuntime = HLSBServoCreateRuntime(path);
+        if (!resolveViaFilesystem || filesystem->RelativePathToFullPath(library, "MOD", path, sizeof(path))) {
+          // Webstorage persistence: Servo partitions its per-origin SQLite
+          // stores under this directory, so the GMod menu's localStorage
+          // survives a restart.
+          filesystem->CreateDirHierarchy("servo_config", "MOD");
+          char configDir[MAX_PATH];
+          const char *libraryArg = resolveViaFilesystem ? path : library;
+          if (filesystem->RelativePathToFullPath("servo_config", "MOD", configDir, sizeof(configDir)))
+            s_htmlServoRuntime = HLSBServoCreateRuntime(libraryArg, configDir);
+          else
+            s_htmlServoRuntime = HLSBServoCreateRuntime(libraryArg, NULL);
+        }
       }
       if (s_htmlServoRuntime) m_servo = HLSBServoCreateView(s_htmlServoRuntime, 1, 1);
       if (m_servo) { ++s_htmlServoViews; SetMouseInputEnabled(true); SetKeyBoardInputEnabled(true); }
@@ -2568,9 +2588,23 @@ public:
     if (m_servo) {
       const std::string obj = HL2SB_HTMLQuote(object);
       const std::string fn = HL2SB_HTMLQuote(function);
+      // Asset pages call the bridge through a same-origin fetch: the JSON
+      // payload rides the query string, and Servo routes the response back
+      // to the calling document, so the page script never blocks (the old
+      // prompt() round trip paused the page until the host answered). The
+      // fetch closure itself pairs the reply with its callback - like CEF's
+      // frame-scoped callback tasks, a navigation aborts the fetch and the
+      // pending reply evaporates. Non-asset documents (SetHTML data: pages)
+      // keep the prompt() fallback until they get their own review.
       std::string script = "window[" + obj + "]=window[" + obj + "]||{};window[" + obj + "][" + fn + "]=function(){"
         "var a=Array.prototype.slice.call(arguments),cb=null;"
         "if(typeof a[a.length-1]==='function')cb=a.pop();"
+        "if(location.protocol==='asset:'){"
+        "fetch('/__hl2sb_bridge__call?'+encodeURIComponent(JSON.stringify([" + obj + "," + fn + ",a])))"
+        ".then(function(r){return r.text();})"
+        ".then(function(t){if(!cb)return;var v;try{v=JSON.parse(t);}catch(e){return;}"
+        "if(Object.prototype.toString.call(v)==='[object Array]')cb.apply(null,v);})"
+        ".catch(function(){});return;}"
         "setTimeout(function(){var r=prompt('__hl2sb_bridge__'+JSON.stringify([" + obj + "," + fn + ",a]),'');"
         "if(cb){var v;try { v=JSON.parse(r); } catch(e) { return; } cb.apply(null,v); }},0);};";
       m_bridges.push_back(script);
@@ -2657,8 +2691,35 @@ public:
       if (wide > 0 && tall > 0) HLSBServoResize(m_servo, wide, tall);
       HLSBServoPump(s_htmlServoRuntime);
       uint64_t assetRequest = 0;
-      char assetURL[8192];
+      char assetURL[20480];
       while (HLSBServoPopAssetEvent(m_servo, &assetRequest, assetURL, sizeof(assetURL))) {
+        // The JS-Lua bridge rides the asset channel: fetches under the
+        // reserved /__hl2sb_bridge__call path carry their JSON payload in
+        // the query string. Servo's fetch pipeline routes the response back
+        // to the requesting document, so a navigation drops the reply the
+        // same way a CEF frame task dies with its frame.
+        static const char bridgePrefix[] = "asset://garrysmod/__hl2sb_bridge__call?";
+        if (!Q_strnicmp(assetURL, bridgePrefix, Q_strlen(bridgePrefix))) {
+          char payload[16384];
+          size_t out = 0;
+          const char *q = assetURL + Q_strlen(bridgePrefix);
+          for (; *q && out < sizeof(payload) - 1; ++q) {
+            if (*q == '%' && q[1] && q[2]) {
+              char hex[3] = {q[1], q[2], 0};
+              payload[out++] = (char)strtol(hex, NULL, 16);
+              q += 2;
+            } else {
+              payload[out++] = *q;
+            }
+          }
+          payload[out] = '\0';
+          std::string reply = ServoBridgeReply(payload);
+          if (!HLSBServoAssetReply(m_servo, assetRequest, 200, "application/json",
+                                   reinterpret_cast<const uint8_t *>(reply.c_str()), reply.size()))
+            HLSBServoAssetReply(m_servo, assetRequest, 200, "application/json",
+                                reinterpret_cast<const uint8_t *>("[]"), 2);
+          continue;
+        }
         std::string path;
         CUtlBuffer contents;
         const bool found = (HL2SB_AssetPath(assetURL, path) || HL2SB_MapImagePath(assetURL, path)) &&

@@ -13,6 +13,7 @@
 #include "filesystem.h"
 #include "KeyValues.h"
 #include "tier0/icommandline.h"
+#include "tier1/utlbuffer.h"
 #include <string>
 #include <vector>
 
@@ -62,6 +63,40 @@ static int menu_GetAddonStatus (lua_State *L) {
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+static int engine_WriteSave (lua_State *L) {
+  size_t length = 0;
+  const char *payload = luaL_checklstring( L, 1, &length );
+  const char *name = luaL_checkstring( L, 2 );
+  if ( length < 3 || length > 0x7fffffff || !name[0] ||
+       Q_strstr( name, ".." ) || Q_strstr( name, "/" ) || Q_strstr( name, "\\" ) ||
+       Q_strstr( name, ":" ) )
+    return 0;
+
+  char map[MAX_PATH];
+  Q_FileBase( engine->GetLevelName(), map, sizeof( map ) );
+  if ( !map[0] ) return 0;
+
+  char path[MAX_PATH];
+  Q_snprintf( path, sizeof( path ), "saves/%s.gms", name );
+  filesystem->CreateDirHierarchy( "saves", "MOD" );
+  if ( filesystem->FileExists( path, "MOD" ) ) return 0;
+
+  CUtlBuffer data( 0, 0, 0 );
+  data.Put( "GMS3", 4 );
+  data.PutString( map );
+  data.PutString( "WSID:" );
+  data.Put( payload, (int)length );
+  if ( !filesystem->WriteFile( path, "MOD", data ) )
+    Warning( "Unable to write save %s\n", path );
+  else {
+    char preview[MAX_PATH];
+    Q_snprintf( preview, sizeof(preview), "saves/%s.jpg", name );
+    extern void HL2SB_QueueSavePreview( const char *path );
+    HL2SB_QueueSavePreview( preview );
+  }
+  return 0;
+}
 
 
 
@@ -581,6 +616,7 @@ static int engine_TickCount( lua_State *L ) {
 }
 
 static const luaL_Reg enginelib[] = {
+  {"WriteSave", engine_WriteSave},
   {"TickCount", engine_TickCount},
   {"ActivateOccluder",   engine_ActivateOccluder},
   {"ChangeTeam",  engine_ChangeTeam},
