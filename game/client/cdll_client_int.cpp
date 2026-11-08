@@ -1194,6 +1194,8 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	vgui::VGui_InitMatSysInterfacesList( "ClientDLL", &appSystemFactory, 1 );
 
 #if defined ( LUA_SDK )
+	extern void HL2SB_RegisterMenuGamemodeSettings();
+	HL2SB_RegisterMenuGamemodeSettings();
 	// Initialize the GameUI state
 	luasrc_init_gameui();
 

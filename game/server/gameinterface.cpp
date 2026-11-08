@@ -1005,29 +1005,6 @@ static void RegisterGamemodeSettings()
 }
 #endif
 
-// Called any time a new level is started (after GameInit() also on level transitions within a game)
-// Apply launch values after the gamemode has registered its ConVars. Parse
-// KeyValues natively so empty strings and quoted persistence names survive.
-static void ApplyMenuLaunchSettings()
-{
- if(engine->IsDedicatedServer())return;
- KeyValues *saved=new KeyValues("ServerConfig");
- KeyValues *definition=new KeyValues("Gamemode");
- char path[256];Q_snprintf(path,sizeof(path),"gamemodes/%s/%s.txt",gamemode.GetString(),gamemode.GetString());
- if(saved->LoadFromFile(filesystem,"ServerConfig.vdf","GAME")&&definition->LoadFromFile(filesystem,path,"GAME"))
- {
-  KeyValues *settings=definition->FindKey("settings");
-  if(settings)FOR_EACH_SUBKEY(settings,setting)
-  {
-   const char *name=setting->GetString("name");
-   if(!name[0]||!saved->FindKey(name))continue;
-   ConVar *cv=g_pCVar->FindVar(name);
-   if(cv&&Q_strcmp(cv->GetString(),saved->GetString(name)))cv->SetValue(saved->GetString(name));
-  }
- }
- definition->deleteThis();saved->deleteThis();
-}
-
 bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, char const *pOldLevel, char const *pLandmarkName, bool loadGame, bool background )
 {
 	VPROF("CServerGameDLL::LevelInit");
@@ -1119,8 +1096,6 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 
 	BEGIN_LUA_CALL_HOOK( "PostGamemodeLoaded" );
 	END_LUA_CALL_HOOK( 0, 0 );
-	ApplyMenuLaunchSettings();
-
 	luasrc_LoadWeapons();
 	luasrc_LoadEntities();
 	luasrc_LoadEffects();

@@ -67,6 +67,11 @@ using namespace vgui;
 extern FocusNavGroup *HL2SB_LuaPanelFocusGroup(Panel *panel);
 extern void HL2SB_SetLuaLabelShadow( Label *label, int offset, Color color );
 
+// Address notifications arrive during VGUI's panel traversal.  Keep a handle
+// for each active callback so Lua cannot synchronously destroy that panel or
+// one of its ancestors while the traversal still has them on its call stack.
+static std::vector<PHandle> s_htmlAddressCallbacks;
+
 /*
 ** access functions (stack -> C)
 */
@@ -162,7 +167,16 @@ static int Panel_ChainToMap (lua_State *L) {
 }
 
 static int Panel_DeletePanel (lua_State *L) {
-  luaL_checkpanel(L, 1)->DeletePanel();
+  Panel *target = luaL_checkpanel(L, 1);
+  for (size_t i = 0; i < s_htmlAddressCallbacks.size(); ++i) {
+    for (Panel *active = s_htmlAddressCallbacks[i].Get(); active; active = active->GetParent()) {
+      if (active == target) {
+        target->MarkForDeletion();
+        return 0;
+      }
+    }
+  }
+  target->DeletePanel();
   return 0;
 }
 
@@ -3011,9 +3025,20 @@ public:
           const std::string reply = Live() ? ServoBridgeReply(value) : std::string("[]");
           s_htmlCefAPI->reply(m_cef, event.id, reply.c_str());
         } else if (event.type == HTML_EVENT_CONSOLE) {
+          // RUNLUA is dispatched without source details so the original DHTML
+          // ConsoleMessage handler can apply its SetAllowLua check.
+          const bool runLua = !Q_strncmp(value, "RUNLUA:", 7);
           BEGIN_LUA_CALL_PANEL_METHOD("ConsoleMessage");
             lua_pushstring(m_lua_State, value);
-          END_LUA_CALL_PANEL_METHOD(1, 0);
+            if (!runLua) {
+              lua_pushstring(m_lua_State, event.b ? event.b : "");
+              lua_pushinteger(m_lua_State, static_cast<int32_t>(event.id));
+              const char *severity = event.code == 1 ? "debug" :
+                                     event.code == 3 ? "warn" :
+                                     event.code == 4 ? "error" : "log";
+              lua_pushstring(m_lua_State, severity);
+            }
+          END_LUA_CALL_PANEL_METHOD(runLua ? 1 : 4, 0);
         } else if (event.type == HTML_EVENT_LOAD_START) {
           m_loading = true;
           m_servoURL = value;
@@ -3036,6 +3061,19 @@ public:
           Warning("CEF HTML: failed to load %s (%d).\n", value, event.code);
         } else if (event.type == HTML_EVENT_TITLE) {
           OnSetHTMLTitle(value);
+        } else if (event.type == HTML_EVENT_ADDRESS_CHANGED) {
+          const vgui::HPanel panelHandle = vgui::ivgui()->PanelToHandle(GetVPanel());
+          PHandle callbackPanel;
+          callbackPanel.Set(this);
+          s_htmlAddressCallbacks.push_back(callbackPanel);
+          OnURLChanged(value, "", false);
+          s_htmlAddressCallbacks.pop_back();
+          // DeletePanel may synchronously destroy this panel inside the Lua hook.
+          if (!vgui::ivgui()->HandleToPanel(panelHandle)) return;
+          // A deferred deletion of this panel or an ancestor makes further
+          // callbacks pointless while the queued VGUI deletion is pending.
+          for (Panel *active = this; active; active = active->GetParent())
+            if (active->IsMarkedForDeletion()) return;
         } else if (event.type == HTML_EVENT_NAV_REQUEST) {
           std::string assetPath;
           const bool allowed = !Q_stricmp(value, "about:blank") ||

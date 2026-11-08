@@ -2,6 +2,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_process_message.h"
@@ -31,9 +32,10 @@ class RendererApp final : public CefApp, public CefRenderProcessHandler, public 
   void OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                         CefRefPtr<CefV8Context> context) override {
     CefRefPtr<CefV8Value> global = context->GetGlobal();
-    global->SetValue("IN_ENGINE", CefV8Value::CreateBool(true), V8_PROPERTY_ATTRIBUTE_NONE);
-    global->SetValue("__hl2sb_native", CefV8Value::CreateFunction("__hl2sb_native", this),
-                     V8_PROPERTY_ATTRIBUTE_READONLY);
+    // Capture the V8 intrinsic before page scripts can replace JSON.parse.
+    CefRefPtr<CefV8Value> json = global->GetValue("JSON");
+    CefRefPtr<CefV8Value> parse = json ? json->GetValue("parse") : nullptr;
+    if (parse && parse->IsFunction()) parsers_.push_back({context, parse});
     if (frame->IsMain()) {
       global->SetValue("__hl2sb_domready", CefV8Value::CreateFunction("__hl2sb_domready", this),
                        V8_PROPERTY_ATTRIBUTE_READONLY);
@@ -48,6 +50,10 @@ class RendererApp final : public CefApp, public CefRenderProcessHandler, public 
                          CefRefPtr<CefV8Context> context) override {
     for (auto it = callbacks_.begin(); it != callbacks_.end();) {
       if (it->second.context->IsSame(context)) it = callbacks_.erase(it);
+      else ++it;
+    }
+    for (auto it = parsers_.begin(); it != parsers_.end();) {
+      if (it->context->IsSame(context)) it = parsers_.erase(it);
       else ++it;
     }
   }
@@ -82,7 +88,10 @@ class RendererApp final : public CefApp, public CefRenderProcessHandler, public 
       std::string object = args->GetString(0).ToString(), function = args->GetString(1).ToString();
       bindings_[browser->GetIdentifier()].emplace(object, function);
       CefRefPtr<CefV8Context> context = frame->GetV8Context();
-      if (context && context->IsValid()) Install(context, object, function);
+      if (context && context->IsValid() && context->Enter()) {
+        Install(context, object, function);
+        context->Exit();
+      }
       return true;
     }
     if (source != PID_BROWSER || message->GetName() != "hl2sb.reply") return false;
@@ -91,35 +100,67 @@ class RendererApp final : public CefApp, public CefRenderProcessHandler, public 
     Callback callback = it->second;
     callbacks_.erase(it);
     if (!callback.context->IsValid() || !callback.context->Enter()) return true;
-    CefRefPtr<CefV8Value> json = callback.context->GetGlobal()->GetValue("JSON");
-    CefRefPtr<CefV8Value> parse = json ? json->GetValue("parse") : nullptr;
+    CefRefPtr<CefV8Value> parse;
+    for (const auto &entry : parsers_) {
+      if (entry.context->IsSame(callback.context)) { parse = entry.parse; break; }
+    }
     CefV8ValueList input{CefV8Value::CreateString(message->GetArgumentList()->GetString(1))};
-    CefRefPtr<CefV8Value> array = parse ? parse->ExecuteFunction(json, input) : nullptr;
+    CefRefPtr<CefV8Value> array = parse ? parse->ExecuteFunction(nullptr, input) : nullptr;
     CefV8ValueList results;
     if (array && array->IsArray()) {
       for (int i = 0; i < array->GetArrayLength(); ++i) results.push_back(array->GetValue(i));
+      callback.function->ExecuteFunction(nullptr, results);
     }
-    callback.function->ExecuteFunction(nullptr, results);
     callback.context->Exit();
     return true;
   }
  private:
-  static std::string Quote(const std::string &s) {
-    CefRefPtr<CefValue> value = CefValue::Create();
-    value->SetString(s);
-    return CefWriteJSON(value, JSON_WRITER_DEFAULT).ToString();
-  }
-  static void Install(CefRefPtr<CefV8Context> context, const std::string &object,
-                      const std::string &function) {
-    std::string js = "(function(){var o=" + Quote(object) + ",f=" + Quote(function) +
-        ";window[o]=window[o]||{};window[o][f]=function(){var a=Array.prototype.slice.call(arguments),c=null;"
-        "if(typeof a[a.length-1]==='function')c=a.pop();"
-        "window.__hl2sb_native(JSON.stringify([o,f,a]),c);};})();";
-    CefRefPtr<CefV8Value> value;
-    CefRefPtr<CefV8Exception> exception;
-    context->Eval(js, "", 0, value, exception);
+  class BindingHandler final : public CefV8Handler {
+   public:
+    BindingHandler(RendererApp *owner, const std::string &object, const std::string &function)
+        : owner_(owner), object_(object), function_(function) {}
+    bool Execute(const CefString &, CefRefPtr<CefV8Value>, const CefV8ValueList &args,
+                 CefRefPtr<CefV8Value> &retval, CefString &exception) override {
+      CefRefPtr<CefV8Context> context = CefV8Context::GetCurrentContext();
+      if (!context) { exception = "Missing JavaScript context"; return true; }
+      const bool has_callback = !args.empty() && args.back()->IsFunction();
+      const size_t count = args.size() - (has_callback ? 1 : 0);
+      CefRefPtr<CefV8Value> arguments = CefV8Value::CreateArray(static_cast<int>(count));
+      for (size_t i = 0; i < count; ++i) arguments->SetValue(static_cast<int>(i), args[i]);
+      CefRefPtr<CefV8Value> packet = CefV8Value::CreateArray(3);
+      packet->SetValue(0, CefV8Value::CreateString(object_));
+      packet->SetValue(1, CefV8Value::CreateString(function_));
+      packet->SetValue(2, arguments);
+      CefRefPtr<CefV8Value> json = context->GetGlobal()->GetValue("JSON");
+      CefRefPtr<CefV8Value> stringify = json ? json->GetValue("stringify") : nullptr;
+      CefV8ValueList input{packet};
+      CefRefPtr<CefV8Value> encoded = stringify && stringify->IsFunction()
+          ? stringify->ExecuteFunction(json, input) : nullptr;
+      if (!encoded || !encoded->IsString()) { exception = "Cannot serialize bridge arguments"; return true; }
+      CefV8ValueList dispatch{encoded};
+      if (has_callback) dispatch.push_back(args.back());
+      return owner_->Execute("__hl2sb_native", nullptr, dispatch, retval, exception);
+    }
+   private:
+    RendererApp *owner_;
+    std::string object_, function_;
+    IMPLEMENT_REFCOUNTING(BindingHandler);
+  };
+  void Install(CefRefPtr<CefV8Context> context, const std::string &object,
+               const std::string &function) {
+    CefRefPtr<CefV8Value> global = context->GetGlobal();
+    CefRefPtr<CefV8Value> target = global->GetValue(object);
+    if (!target || target->IsUndefined() || target->IsNull()) {
+      target = CefV8Value::CreateObject(nullptr, nullptr);
+      if (!global->SetValue(object, target, V8_PROPERTY_ATTRIBUTE_NONE)) return;
+    }
+    if (!target->IsObject()) return;
+    target->SetValue(function, CefV8Value::CreateFunction(function,
+        new BindingHandler(this, object, function)), V8_PROPERTY_ATTRIBUTE_NONE);
   }
   struct Callback { CefRefPtr<CefV8Context> context; CefRefPtr<CefV8Value> function; };
+  struct ContextParser { CefRefPtr<CefV8Context> context; CefRefPtr<CefV8Value> parse; };
+  std::vector<ContextParser> parsers_;
   std::map<int, std::set<std::pair<std::string, std::string>>> bindings_;
   uint64_t next_id_ = 0;
   std::map<std::string, Callback> callbacks_;

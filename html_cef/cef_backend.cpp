@@ -97,6 +97,8 @@ class BrowserClient final : public CefClient,
   void OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int status) override;
   void OnLoadError(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, ErrorCode code,
                    const CefString &text, const CefString &url) override;
+  void OnAddressChange(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
+                       const CefString &url) override;
   void OnTitleChange(CefRefPtr<CefBrowser>, const CefString &title) override;
   bool OnConsoleMessage(CefRefPtr<CefBrowser>, cef_log_severity_t severity,
                         const CefString &message, const CefString &source, int line) override;
@@ -130,9 +132,9 @@ struct HtmlView {
 };
 
 static void Event(HtmlView *v, uint32_t type, int32_t code, const std::string &a,
-                  const std::string &b = {}) {
+                  const std::string &b = {}, uint64_t id = 0) {
   std::lock_guard<std::mutex> lock(v->shared->mutex);
-  v->shared->events.push_back({type, 0, code, a, b});
+  v->shared->events.push_back({type, id, code, a, b});
 }
 
 class AssetHandler final : public CefResourceHandler {
@@ -314,12 +316,17 @@ void BrowserClient::OnLoadError(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame
                                 const CefString &text, const CefString &url) {
   if (frame->IsMain()) Event(view_, HTML_EVENT_LOAD_ERROR, code, url.ToString(), text.ToString());
 }
+void BrowserClient::OnAddressChange(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
+                                    const CefString &url) {
+  if (frame->IsMain()) Event(view_, HTML_EVENT_ADDRESS_CHANGED, 0, url.ToString());
+}
 void BrowserClient::OnTitleChange(CefRefPtr<CefBrowser>, const CefString &title) {
   Event(view_, HTML_EVENT_TITLE, 0, title.ToString());
 }
 bool BrowserClient::OnConsoleMessage(CefRefPtr<CefBrowser>, cef_log_severity_t severity,
-                                     const CefString &message, const CefString &source, int) {
-  Event(view_, HTML_EVENT_CONSOLE, static_cast<int32_t>(severity), message.ToString(), source.ToString());
+                                     const CefString &message, const CefString &source, int line) {
+  Event(view_, HTML_EVENT_CONSOLE, static_cast<int32_t>(severity), message.ToString(), source.ToString(),
+        static_cast<uint32_t>(line));
   return false;
 }
 

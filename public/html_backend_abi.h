@@ -25,7 +25,8 @@ typedef enum HtmlEventType {
     HTML_EVENT_JS_DIALOG,
     HTML_EVENT_JS_CALL,
     HTML_EVENT_NAV_REQUEST,
-    HTML_EVENT_ASSET_REQUEST
+    HTML_EVENT_ASSET_REQUEST,
+    HTML_EVENT_ADDRESS_CHANGED
 } HtmlEventType;
 
 typedef enum HtmlMouseEventType {
@@ -53,6 +54,8 @@ typedef enum HtmlEventModifiers {
  * Event strings remain valid until the next poll on this view or its destruction.
  * a contains the URL for loading/asset events, JSON for JS calls, or the text
  * for console and title events. JS call ids are answered with reply().
+ * For console events b is the source, code is CEF severity, and the low
+ * 32 bits of id contain the signed source line number.
  */
 typedef struct HtmlEvent {
     uint32_t type;
