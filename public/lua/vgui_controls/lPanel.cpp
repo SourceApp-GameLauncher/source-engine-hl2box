@@ -2342,7 +2342,7 @@ static std::string HL2SB_HTMLQuote(const char *text)
   return result + "\"";
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__ANDROID__)
 static ConVar hl2sb_html_servo("hl2sb_html_servo", "0", FCVAR_ARCHIVE,
   "Use the experimental Servo HTML backend for new HTML panels.");
 #endif
@@ -2466,10 +2466,20 @@ static bool HL2SB_UseCEF()
 
 static bool HL2SB_UseServo()
 {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__ANDROID__)
   return false;
 #else
   return hl2sb_html_servo.GetBool();
+#endif
+}
+
+static bool HL2SB_SuppressSteamHTML(lua_State *state)
+{
+#if defined(__ANDROID__)
+  (void)state;
+  return true;
+#else
+  return state == LGameUI || HL2SB_UseServo() || HL2SB_UseCEF();
 #endif
 }
 
@@ -2758,7 +2768,7 @@ public:
   wchar_t m_servoHighSurrogate;
 
   CHL2SBLuaHTML(Panel *parent, const char *name, lua_State *state)
-    : HTML(parent, name, true, false, state == LGameUI || HL2SB_UseServo() || HL2SB_UseCEF()), m_lua_State(state), m_loading(true),
+    : HTML(parent, name, true, false, HL2SB_SuppressSteamHTML(state)), m_lua_State(state), m_loading(true),
       m_servo(NULL),
 #if defined(_WIN32)
       m_cef(NULL),
@@ -2784,22 +2794,12 @@ public:
     } else if (state == LGameUI) {
       InitializeSteamBackend();
     }
-#else
+#elif !defined(__ANDROID__)
     if (state == LGameUI || HL2SB_UseServo()) {
       if (!s_htmlServoRuntime) {
         char path[MAX_PATH];
-#if defined(__ANDROID__)
-        // Android: the library is packaged in the APK's native library
-        // directory (the game dir lives on noexec FUSE storage, so dlopen
-        // from there is denied anyway).  dlopen of the bare soname resolves
-        // from the app's own lib dir, where libclient.so itself was loaded
-        // from.
-        const char *library = "libservo_capi.so";
-        const bool resolveViaFilesystem = false;
-#else
         const char *library = "bin/libservo_capi.so";
         const bool resolveViaFilesystem = true;
-#endif
         if (!resolveViaFilesystem || filesystem->RelativePathToFullPath(library, "MOD", path, sizeof(path))) {
           // Webstorage persistence: Servo partitions its per-origin SQLite
           // stores under this directory, so the GMod menu's localStorage
