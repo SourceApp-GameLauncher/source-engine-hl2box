@@ -3192,6 +3192,7 @@ static int luasrc_SysTime (lua_State *L) {
 #define HL2SB_CHANNEL_FIELD_PLAYING  "__hl2sb_playing"
 #define HL2SB_CHANNEL_FIELD_PATCH    "__hl2sb_patch"
 #define HL2SB_CHANNEL_FIELD_PAUSED   "__hl2sb_paused"
+#define HL2SB_CHANNEL_FIELD_LEVEL    "__hl2sb_level"
 
 static CBaseEntity *HL2SB_ChannelEntity( lua_State *L, int nIndex ) {
   lua_getfield( L, nIndex, HL2SB_CHANNEL_FIELD_ENT );
@@ -3307,8 +3308,13 @@ static CSoundPatch *HL2SB_ChannelEnsurePatch( lua_State *L, int nIndex ) {
              soundFilter, pEntity->entindex(), HL2SB_ChannelAudioChannel( L, nIndex ),
              pszSound, SNDLVL_NORM );
 
-  if ( pPatch != NULL )
+  if ( pPatch != NULL ) {
     HL2SB_ChannelSetPatch( L, nIndex, pPatch );
+    lua_getfield( L, nIndex, HL2SB_CHANNEL_FIELD_LEVEL );
+    if ( lua_isnumber( L, -1 ) )
+      HL2SB_SoundPatchSetSoundLevel( pPatch, (soundlevel_t)(int)lua_tonumber( L, -1 ) );
+    lua_pop( L, 1 );
+  }
 
   return pPatch;
 }
@@ -3338,6 +3344,23 @@ static void HL2SB_ChannelShutdown( lua_State *L, int nIndex ) {
   }
 
   HL2SB_ChannelSetBool( L, nIndex, HL2SB_CHANNEL_FIELD_PLAYING, false );
+}
+
+static int luasrc_Channel_SetSoundLevel (lua_State *L) {
+  luaL_checktype( L, 1, LUA_TTABLE );
+  const double flLevel = luaL_checknumber( L, 2 );
+  // Match the reference's signed 32-bit truncation, including invalid inputs.
+  const int nSoundLevel = ( flLevel > -2147483649.0 && flLevel < 2147483648.0 )
+    ? (int)flLevel : (-2147483647 - 1);
+
+  lua_pushinteger( L, nSoundLevel );
+  lua_setfield( L, 1, HL2SB_CHANNEL_FIELD_LEVEL );
+
+  CSoundPatch *pPatch = HL2SB_ChannelPatch( L, 1 );
+  if ( pPatch != NULL && HL2SB_ChannelEntity( L, 1 ) != NULL )
+    HL2SB_SoundPatchSetSoundLevel( pPatch, (soundlevel_t)nSoundLevel );
+
+  return 0;
 }
 
 static int luasrc_Channel_Play (lua_State *L) {
@@ -3577,6 +3600,7 @@ static int luasrc_CreateSound (lua_State *L) {
     { "Stop",         luasrc_Channel_Stop },
     { "Pause",        luasrc_Channel_Pause },
     { "SetVolume",    luasrc_Channel_SetVolume },
+    { "SetSoundLevel", luasrc_Channel_SetSoundLevel },
     { "ChangeVolume", luasrc_Channel_ChangeVolume },
     { "GetVolume",    luasrc_Channel_GetVolume },
     { "SetPitch",     luasrc_Channel_SetPitch },
