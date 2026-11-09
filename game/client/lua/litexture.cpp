@@ -81,8 +81,21 @@ LUA_API lua_ITexture *lua_toitexture( lua_State *L, int idx )
 LUA_API void lua_pushitexture( lua_State *L, lua_ITexture *pTexture )
 {
     lua_ITexture **ppTexture = ( lua_ITexture ** )lua_newuserdata( L, sizeof( pTexture ) );
+    if ( pTexture )
+        pTexture->AddRef();
     *ppTexture = pTexture;
     LUA_SAFE_SET_METATABLE( L, LUA_ITEXTUREMETANAME );
+}
+
+static int HL2SB_ITexture_GC( lua_State *L )
+{
+    lua_ITexture **ppTexture = ( lua_ITexture ** )luaL_checkudata( L, 1, LUA_ITEXTUREMETANAME );
+    if ( *ppTexture )
+    {
+        (*ppTexture)->Release();
+        *ppTexture = NULL;
+    }
+    return 0;
 }
 
 LUALIB_API lua_ITexture *luaL_checkitexture( lua_State *L, int narg )
@@ -213,8 +226,12 @@ LUA_BINDING_END( "boolean", "true if the texture is an error texture, false othe
 
 LUA_BINDING_BEGIN( Texture, Release, "class", "Release the texture." )
 {
-    lua_ITexture *pTexture = LUA_BINDING_ARGUMENT( luaL_checkitexture, 1, "texture" );
-    pTexture->Release();
+    lua_ITexture **ppTexture = ( lua_ITexture ** )luaL_checkudata( L, 1, LUA_ITEXTUREMETANAME );
+    if ( *ppTexture )
+    {
+        (*ppTexture)->Release();
+        *ppTexture = NULL;
+    }
     return 0;
 }
 LUA_BINDING_END()
@@ -1222,6 +1239,9 @@ static int HL2SB_CreateMaterial( lua_State *L )
 LUALIB_API int luaopen_ITexture( lua_State *L )
 {
     LUA_PUSH_NEW_METATABLE( L, LUA_ITEXTUREMETANAME );
+
+    lua_pushcfunction( L, HL2SB_ITexture_GC );
+    lua_setfield( L, -2, "__gc" );
 
     LUA_REGISTRATION_COMMIT( Texture );
 

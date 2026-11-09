@@ -1012,7 +1012,7 @@ static const LuaMetatableAlias_t s_LuaMetatableAliases[] = {
   { "CheckButton",       "CheckButton" },
   { "EditablePanel",     "EditablePanel" },
   { "ModelPanel",        "ModelPanel" },
-  { "ProjectedTexture",  "ProjectedTexture" },  // TODO(port): lc_projected_texture
+  { "ProjectedTexture",  "ProjectedTexture" },
   { "AudioChannel",      "AudioChannel" },      // TODO(port): needs BASS
   { "MoveData",          "MoveData" },          // HL2SB: native CMoveData metatable
   { "CMoveData",         "MoveData" },          // GMod spelling used by FindMetaTable
@@ -1248,6 +1248,7 @@ static const LuaTypeInfo_t s_LuaTypeInfo[] = {
   { LUA_PASFILTERLIBNAME,       "CRecipientFilter",LUA_TYPE_RECIPFILTER,LUA_RECIPIENTFILTERLIBNAME },
   { LUA_MATERIALLIBNAME,        "IMaterial",       LUA_TYPE_MATERIAL,   NULL },
   { LUA_ITEXTUREMETANAME,       "ITexture",        LUA_TYPE_TEXTURE,    NULL },
+  { "ProjectedTexture",        "ProjectedTexture",LUA_TYPE_PROJTEX,    NULL },
   { LUA_CONVARLIBNAME,          "ConVar",          LUA_TYPE_CONVAR,     NULL },
   { LUA_CONCOMMANDLIBNAME,      "ConCommand",      LUA_TYPE_CONVAR,     NULL },
   { LUA_PHYSICSOBJECTLIBNAME,   "PhysObj",         LUA_TYPE_PHYSOBJ,    NULL },
