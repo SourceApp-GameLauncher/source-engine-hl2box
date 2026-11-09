@@ -59,6 +59,8 @@
 #include "netadr.h"
 #include "filesystem.h"
 #include "utlbuffer.h"
+#include "steam/steam_api.h"
+#include "vgui/ISystem.h"
 #include <map>
 #include <atomic>
 #include <mutex>
@@ -73,6 +75,15 @@
 #pragma comment(lib, "winhttp.lib")
 #endif
 #include "tier0/memdbgon.h"
+
+extern CSteamAPIContext *steamapicontext;	// cdll_client_int.h
+
+// The reference build always runs inside Steam, so its missing-interface
+// Warnings are unreachable there; here the game can start without Steam and
+// the menu calls serverlist favorites checks every frame, which would spam
+// the log.  Warnings default off; turn on to diagnose Steam plumbing.
+static ConVar hl2sb_serverlist_warnings( "hl2sb_serverlist_warnings", "0", FCVAR_ARCHIVE,
+	"Print serverlist warnings when Steam interfaces are missing." );
 
 struct HL2SBMenuTimer
 {
@@ -291,6 +302,178 @@ static int HL2SB_MenuCanAddServerToFavorites( lua_State *state )
 	return 1;
 }
 
+//-----------------------------------------------------------------------------
+// serverlist: Steam favorites.  Reference behavior (menusystem library, old
+// reference build): favorites live in the Steam client's own config and are
+// only reached through ISteamMatchmaking; the library keeps a 10 second
+// memory cache of this app's favorite server addresses (ip + port packed
+// into one 64 bit key) and re-enumerates on a cold or expired cache.  A
+// missing Steam interface is never a Lua error - the reference only prints
+// a Warning and answers false, and add/remove silently refuse.
+//-----------------------------------------------------------------------------
+
+static CUtlVector<uint64> s_vecFavoriteServers;	// (port << 32) | ip keys
+static double s_flFavoritesRefreshTime = -1.0;
+
+static void HL2SB_RefreshFavorites( ISteamMatchmaking *matchmaking, ISteamUtils *utils )
+{
+	double now = Plat_FloatTime();
+	if ( s_flFavoritesRefreshTime > 0 && now < s_flFavoritesRefreshTime + 10.0 && s_vecFavoriteServers.Count() > 0 )
+		return;
+
+	s_vecFavoriteServers.Purge();
+	s_flFavoritesRefreshTime = now;
+	if ( matchmaking == NULL )
+		return;
+
+	uint32 unOwnAppID = ( utils != NULL ) ? utils->GetAppID() : 0;
+	int nCount = matchmaking->GetFavoriteGameCount();
+	for ( int i = 0; i < nCount; ++i )
+	{
+		AppId_t appID = 0; uint32 unIP = 0; uint16 connPort = 0, queryPort = 0;
+		uint32 flags = 0, lastPlayed = 0;
+		if ( !matchmaking->GetFavoriteGame( i, &appID, &unIP, &connPort, &queryPort, &flags, &lastPlayed ) )
+			continue;
+		if ( appID != unOwnAppID && appID != 0 ) continue;
+		if ( !( flags & k_unFavoriteFlagFavorite ) ) continue;
+		s_vecFavoriteServers.AddToTail( ( (uint64)connPort << 32 ) | (uint64)unIP );
+	}
+}
+
+static void HL2SB_InvalidateFavorites()
+{
+	s_flFavoritesRefreshTime = -1.0;
+	s_vecFavoriteServers.Purge();
+}
+
+static uint64 HL2SB_FavoriteKey( const netadr_t &adr )
+{
+	return ( (uint64)adr.GetPort() << 32 ) | (uint64)adr.GetIPHostByteOrder();
+}
+
+static int HL2SB_MenuIsServerFavorite( lua_State *state )
+{
+	const char *address = luaL_checkstring( state, 1 );
+	bool favorite = false;
+	ISteamMatchmaking *matchmaking = ( steamapicontext != NULL ) ? steamapicontext->SteamMatchmaking() : NULL;
+	ISteamUtils *utils = ( steamapicontext != NULL ) ? steamapicontext->SteamUtils() : NULL;
+	if ( matchmaking == NULL )
+	{
+		if ( hl2sb_serverlist_warnings.GetBool() )
+			Warning( "IsServerFavorite: SteamMatchmaking does not exist!\n" );
+	}
+	else
+	{
+		HL2SB_RefreshFavorites( matchmaking, utils );
+		netadr_t adr;
+		adr.SetFromString( address, false );
+		favorite = ( s_vecFavoriteServers.Find( HL2SB_FavoriteKey( adr ) ) != s_vecFavoriteServers.InvalidIndex() );
+	}
+	lua_pushboolean( state, favorite ? 1 : 0 );
+	return 1;
+}
+
+static int HL2SB_MenuIsCurrentServerFavorite( lua_State *state )
+{
+	bool favorite = false;
+	ISteamMatchmaking *matchmaking = ( steamapicontext != NULL ) ? steamapicontext->SteamMatchmaking() : NULL;
+	ISteamUtils *utils = ( steamapicontext != NULL ) ? steamapicontext->SteamUtils() : NULL;
+	if ( matchmaking == NULL || utils == NULL )
+	{
+		if ( hl2sb_serverlist_warnings.GetBool() )
+			Warning( "IsCurrentServerFavorite: No SteamUtils or SteamMatchmaking!\n" );
+	}
+	else
+	{
+		INetChannelInfo *net = engine->GetNetChannelInfo();
+		if ( net != NULL )
+		{
+			HL2SB_RefreshFavorites( matchmaking, utils );
+			netadr_t adr;
+			adr.SetFromString( net->GetAddress(), false );
+			favorite = ( s_vecFavoriteServers.Find( HL2SB_FavoriteKey( adr ) ) != s_vecFavoriteServers.InvalidIndex() );
+		}
+	}
+	lua_pushboolean( state, favorite ? 1 : 0 );
+	return 1;
+}
+
+// Shared add/remove body: the reference's add and remove paths are identical
+// apart from the Steam call - both require the matchmaking and utils
+// interfaces, resolve the address without DNS, pass the connection port as
+// both connection and query port with the favorite flag, and refresh the
+// cache right away so the next Is* reads the new state.
+static void HL2SB_ModifyServerFavorites( const char *address, bool add, const char *failureWarning )
+{
+	ISteamMatchmaking *matchmaking = ( steamapicontext != NULL ) ? steamapicontext->SteamMatchmaking() : NULL;
+	ISteamUtils *utils = ( steamapicontext != NULL ) ? steamapicontext->SteamUtils() : NULL;
+	if ( matchmaking == NULL || utils == NULL )
+	{
+		if ( hl2sb_serverlist_warnings.GetBool() )
+			Warning( "%s", failureWarning );
+		return;
+	}
+
+	netadr_t adr;
+	adr.SetFromString( address, false );
+	if ( !adr.IsValid() )
+		return;
+
+	uint32 unIP = adr.GetIPHostByteOrder();
+	uint16 connPort = adr.GetPort();
+	if ( add )
+		matchmaking->AddFavoriteGame( utils->GetAppID(), unIP, connPort, connPort,
+									  k_unFavoriteFlagFavorite, (uint32)time( NULL ) );
+	else
+		matchmaking->RemoveFavoriteGame( utils->GetAppID(), unIP, connPort, connPort,
+										 k_unFavoriteFlagFavorite );
+
+	HL2SB_InvalidateFavorites();
+	HL2SB_RefreshFavorites( matchmaking, utils );
+}
+
+static int HL2SB_MenuAddServerToFavorites( lua_State *state )
+{
+	HL2SB_ModifyServerFavorites( luaL_checkstring( state, 1 ), true, "Failed to add server to favorites.\n" );
+	return 0;
+}
+
+static int HL2SB_MenuRemoveServerFromFavorites( lua_State *state )
+{
+	HL2SB_ModifyServerFavorites( luaL_checkstring( state, 1 ), false, "Failed to remove server from favorites.\n" );
+	return 0;
+}
+
+// serverlist.AddCurrentServerToFavorites( bFavorite ): true adds the server
+// we are connected to, false removes it.  The menu page passes the flag
+// explicitly in both directions.
+static int HL2SB_MenuAddCurrentServerToFavorites( lua_State *state )
+{
+	bool add = lua_toboolean( state, 1 ) ? true : false;
+	INetChannelInfo *net = engine->GetNetChannelInfo();
+	if ( net == NULL )
+		return 0;
+	HL2SB_ModifyServerFavorites( net->GetAddress(), add, "Failed to add server to favorites.\n" );
+	return 0;
+}
+
+// GLOBAL.OpenFolder: reference behavior opens exactly saves/demos/dupes
+// from the game dir with the system shell; any other name is silently
+// ignored.
+static int HL2SB_MenuOpenFolder( lua_State *state )
+{
+	const char *folder = luaL_checkstring( state, 1 );
+	if ( Q_strcmp( folder, "saves" ) != 0 && Q_strcmp( folder, "demos" ) != 0 && Q_strcmp( folder, "dupes" ) != 0 )
+		return 0;
+
+	char path[MAX_PATH];
+	if ( !filesystem->RelativePathToFullPath( folder, "MOD", path, sizeof( path ) ) )
+		return 0;
+
+	vgui::system()->ShellExecute( "open", path );
+	return 0;
+}
+
 static int HL2SB_MenuIsInLoading( lua_State *state )
 {
 	lua_pushboolean( state, engine->IsDrawingLoadingImage() );
@@ -414,7 +597,6 @@ static int HL2SB_GetAPIManifest( lua_State *state )
 	}
 	return 0;
 }
-
 
 static int HL2SB_MenuGuiActivate( lua_State *state )
 {
@@ -757,6 +939,7 @@ static const luaL_Reg gameui_menu_funcs[] =
 	{ "IsInGame", HL2SB_MenuIsInGame },
 	{ "IsInLoading", HL2SB_MenuIsInLoading },
 	{ "CanAddServerToFavorites", HL2SB_MenuCanAddServerToFavorites },
+	{ "OpenFolder", HL2SB_MenuOpenFolder },
 	{ "RunGameUICommand", HL2SB_RunGameUICommand },
 	{ "GetAPIManifest", HL2SB_GetAPIManifest },
 	{ "HL2SB_MenuLayout",     lua_HL2SB_MenuLayout },
@@ -765,8 +948,18 @@ static const luaL_Reg gameui_menu_funcs[] =
 	{ NULL, NULL }
 };
 
-LUALIB_API int luaopen_gameui_menu (lua_State *L)
+	LUALIB_API int luaopen_gameui_menu (lua_State *L)
 {
+	static const luaL_Reg serverlistFuncs[] = {
+		{ "IsServerFavorite", HL2SB_MenuIsServerFavorite },
+		{ "IsCurrentServerFavorite", HL2SB_MenuIsCurrentServerFavorite },
+		{ "AddServerToFavorites", HL2SB_MenuAddServerToFavorites },
+		{ "RemoveServerFromFavorites", HL2SB_MenuRemoveServerFromFavorites },
+		{ "AddCurrentServerToFavorites", HL2SB_MenuAddCurrentServerToFavorites },
+		{ NULL, NULL }
+	};
+	luaL_register( L, "serverlist", serverlistFuncs );
+	lua_pop( L, 1 );
 	static const luaL_Reg permissionFuncs[] = {
 		{ "GetAll", HL2SB_PermissionsGetAll }, { "Grant", HL2SB_PermissionsGrant },
 		{ "Revoke", HL2SB_PermissionsRevoke }, { "IsGranted", HL2SB_PermissionsIsGranted },

@@ -671,6 +671,12 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 	// save these in case other system inits need them
 	factorylist_t factories;
 	factories.engineFactory = appSystemFactory;
+	#ifdef LUA_SDK
+	{
+		extern void HL2SB_BrushSurfaceConnect( CreateInterfaceFn );
+		HL2SB_BrushSurfaceConnect( appSystemFactory );
+	}
+	#endif
 	factories.fileSystemFactory = fileSystemFactory;
 	factories.physicsFactory = physicsFactory;
 	FactoryList_Store( factories );

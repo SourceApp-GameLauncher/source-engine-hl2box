@@ -70,7 +70,7 @@ void LTextEntry::DrawNativeText(const Color &text, const Color &highlight, const
         lua_pop(m_lua_State, 2);
     } else m_DrawFontTall = surface()->GetFontTall(LuaFont_ResolveByName(m_lua_State, font));
     m_bDrawCustomCursor = true;
-    BaseClass::PaintText(false);
+    BaseClass::PaintText(true);
     m_bDrawCustomCursor = false;
 }
 

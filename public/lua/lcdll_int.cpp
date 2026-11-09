@@ -57,6 +57,11 @@ void HL2SB_RegisterMenuGamemodeSettings()
   if ( handle != FILESYSTEM_INVALID_FIND_HANDLE ) filesystem->FindClose( handle );
 }
 
+static int engine_GetDemoPlaybackTimeScale (lua_State *L) {
+  lua_pushnumber( L, engine->GetDemoPlaybackTimeScale() );
+  return 1;
+}
+
 static int engine_ActiveGamemode (lua_State *L) {
   ConVarRef mode( "gamemode" );
   lua_pushstring( L, mode.IsValid() ? mode.GetString() : "sandbox" );
@@ -285,11 +290,16 @@ static int engine_GetAddons (lua_State *L) {
   for (size_t i = 0; i < addons.size(); ++i) {
     lua_newtable(L);
     lua_pushstring(L, addons[i].title.c_str()); lua_setfield(L, -2, "title");
+    std::string file = "addons/" + addons[i].title;
+    lua_pushstring(L, file.c_str()); lua_setfield(L, -2, "file");
+    lua_pushstring(L, ""); lua_setfield(L, -2, "tags");
     lua_pushstring(L, "0"); lua_setfield(L, -2, "wsid");
     lua_pushboolean(L, true); lua_setfield(L, -2, "mounted");
     lua_pushboolean(L, true); lua_setfield(L, -2, "downloaded");
     lua_pushinteger(L, addons[i].models); lua_setfield(L, -2, "models");
     lua_pushinteger(L, 0); lua_setfield(L, -2, "timeadded");
+    lua_pushinteger(L, 0); lua_setfield(L, -2, "updated");
+    lua_pushinteger(L, 0); lua_setfield(L, -2, "size");
     lua_rawseti(L, -2, i + 1);
   }
   return 1;
@@ -684,6 +694,7 @@ static const luaL_Reg enginelib[] = {
   {"GetEngineBuildNumber",   engine_GetEngineBuildNumber},
   {"GetGameDirectory", engine_GetGameDirectory},
   {"ActiveGamemode", engine_ActiveGamemode},
+  {"GetDemoPlaybackTimeScale", engine_GetDemoPlaybackTimeScale},
   {"GetLastTimeStamp", engine_GetLastTimeStamp},
   {"TickInterval",     engine_TickInterval},
   {"GetLevelName",   engine_GetLevelName},

@@ -437,7 +437,28 @@ static int input_SelectWeapon( lua_State *L ) {
   return 0;
 }
 
+static int input_GetAnalogValue( lua_State *L ) {
+  const double value = luaL_checknumber( L, 1 );
+  const int code = ( value > -2147483649.0 && value < 2147483648.0 )
+    ? (int)value : (-2147483647 - 1);
+  int localCode = code;
+#if defined( LINUX )
+  if ( code == 7 ) localCode = JOYSTICK_AXIS( 0, JOY_AXIS_R );
+  if ( code == 8 ) localCode = JOYSTICK_AXIS( 0, JOY_AXIS_U );
+#endif
+  lua_pushnumber( L, localCode >= 0 && localCode <= 27 && localCode < ANALOG_CODE_LAST
+    ? g_pInputSystem->GetAnalogValue( (AnalogCode_t)localCode ) : 0 );
+  return 1;
+}
+
+static int input_GetKeyCode( lua_State *L ) {
+  lua_pushnumber( L, g_pInputSystem->StringToButtonCode( luaL_checkstring( L, 1 ) ) );
+  return 1;
+}
+
 static const luaL_Reg inputlib[] = {
+  {"GetAnalogValue", input_GetAnalogValue},
+  {"GetKeyCode", input_GetKeyCode},
   {"SelectWeapon", input_SelectWeapon},
   {"CandidateListStartsAtOne",   input_CandidateListStartsAtOne},
   {"CheckKeyTrapping",   input_CheckKeyTrapping},
@@ -507,6 +528,15 @@ static const luaL_Reg inputlib[] = {
 */
 LUALIB_API int luaopen_input (lua_State *L) {
   luaL_register(L, LUA_INPUTLIBNAME, inputlib);
+  static const struct { const char *name; int value; } analogCodes[] = {
+    {"ANALOG_MOUSE_X", 0}, {"ANALOG_MOUSE_Y", 1}, {"ANALOG_MOUSE_WHEEL", 3},
+    {"ANALOG_JOY_X", 4}, {"ANALOG_JOY_Y", 5}, {"ANALOG_JOY_Z", 6},
+    {"ANALOG_JOY_R", 7}, {"ANALOG_JOY_U", 8}, {"ANALOG_JOY_V", 9},
+  };
+  for ( unsigned int i = 0; i < sizeof( analogCodes ) / sizeof( analogCodes[0] ); ++i ) {
+    lua_pushinteger( L, analogCodes[i].value );
+    lua_setglobal( L, analogCodes[i].name );
+  }
   lua_pushcfunction( L, input_IsButtonDown );
   lua_setfield( L, -2, "IsButtonDown" );
   return 1;

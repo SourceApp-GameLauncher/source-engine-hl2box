@@ -27,6 +27,9 @@
 #ifdef CLIENT_DLL
 #include "vgui_int.h"
 #include "vgui/Cursor.h"
+#include "vgui/IInputInternal.h"
+#include "vgui/IPanel.h"
+extern vgui::IInputInternal *g_InputInternal;
 #endif
 #include "view_shared.h"       // HL2SB: CViewSetup fields (origin/angles/fov)
 #include "mathlib/lvector.h"   // HL2SB: lua_pushvector
@@ -638,6 +641,44 @@ static int HL2SB_gui_SetMousePos (lua_State *L) {
 }
 
 #ifdef CLIENT_DLL
+static bool HL2SB_gui_CanInjectMouse() {
+  if ((enginevgui && enginevgui->IsGameUIVisible()) || !vgui::input() || !vgui::ipanel() || !g_InputInternal)
+    return false;
+  const vgui::VPANEL focus = vgui::input()->GetFocus();
+  if (!focus) return true;
+  vgui::Panel *panel = vgui::ipanel()->GetPanel(focus, vgui::GetControlsModuleName());
+  return panel && panel->IsVisible();
+}
+
+static int HL2SB_gui_MouseArgument(lua_State *L) {
+  const double number = luaL_checknumber(L, 1);
+  return number > -2147483649.0 && number < 2147483648.0
+    ? (int)number : (-2147483647 - 1);
+}
+
+static int HL2SB_gui_InternalMousePressed(lua_State *L) {
+  if (!HL2SB_gui_CanInjectMouse()) return 0;
+  const vgui::MouseCode code = (vgui::MouseCode)HL2SB_gui_MouseArgument(L);
+  g_InputInternal->SetMouseCodeState(code, vgui::BUTTON_PRESSED);
+  g_InputInternal->InternalMousePressed(code);
+  return 0;
+}
+
+static int HL2SB_gui_InternalMouseReleased(lua_State *L) {
+  if (!HL2SB_gui_CanInjectMouse()) return 0;
+  const vgui::MouseCode code = (vgui::MouseCode)HL2SB_gui_MouseArgument(L);
+  g_InputInternal->SetMouseCodeState(code, vgui::BUTTON_RELEASED);
+  g_InputInternal->InternalMouseReleased(code);
+  return 0;
+}
+
+static int HL2SB_gui_InternalMouseWheeled(lua_State *L) {
+  if (!HL2SB_gui_CanInjectMouse()) return 0;
+  const int delta = HL2SB_gui_MouseArgument(L);
+  g_InputInternal->InternalMouseWheeled(delta);
+  return 0;
+}
+
 static int HL2SB_gui_EnableScreenClicker (lua_State *L) {
   static vgui::DHANDLE<vgui::Panel> clicker;
   const bool enabled = lua_toboolean(L, 1) != 0;
@@ -1444,6 +1485,12 @@ LUALIB_API int luaopen_surface (lua_State *L) {
 #ifdef CLIENT_DLL
   lua_pushcfunction(L, HL2SB_gui_EnableScreenClicker);
   lua_setfield(L, -2, "EnableScreenClicker");
+  lua_pushcfunction(L, HL2SB_gui_InternalMousePressed);
+  lua_setfield(L, -2, "InternalMousePressed");
+  lua_pushcfunction(L, HL2SB_gui_InternalMouseReleased);
+  lua_setfield(L, -2, "InternalMouseReleased");
+  lua_pushcfunction(L, HL2SB_gui_InternalMouseWheeled);
+  lua_setfield(L, -2, "InternalMouseWheeled");
 #endif
   lua_pushcfunction(L, HL2SB_gui_MousePos);
   lua_setfield(L, -2, "MousePos");

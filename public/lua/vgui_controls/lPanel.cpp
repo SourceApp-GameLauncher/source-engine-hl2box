@@ -3650,7 +3650,17 @@ static int Panel_HTMLUpdate(lua_State *L) {
   return 0;
 }
 
+extern void HL2SB_SetTextEntryLanguageVisible(vgui::TextEntry *entry, bool visible);
+
+static int Panel_SetDrawLanguageID(lua_State *L) {
+  vgui::Panel *panel = luaL_checkpanel(L, 1);
+  if (vgui::TextEntry *entry = dynamic_cast<vgui::TextEntry *>(panel))
+    HL2SB_SetTextEntryLanguageVisible(entry, lua_toboolean(L, 2) != 0);
+  return 0;
+}
+
 static const luaL_Reg Panelmeta[] = {
+  {"SetDrawLanguageID", Panel_SetDrawLanguageID},
   {"OpenURL", Panel_HTMLOpenURL},
   {"RunJavascript", Panel_HTMLJavascript},
   {"IsLoading", Panel_HTMLIsLoading},
