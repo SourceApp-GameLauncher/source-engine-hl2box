@@ -17,6 +17,51 @@
 #include <string>
 #include <vector>
 
+// Register mode settings before the menu Lua state reads its ConVars.
+// Reference behavior scans all installed modes and leaves existing commands
+// and variables untouched.
+void HL2SB_RegisterMenuGamemodeSettings()
+{
+  FileFindHandle_t handle = FILESYSTEM_INVALID_FIND_HANDLE;
+  const char *mode = filesystem->FindFirstEx( "gamemodes/*", "GAME", &handle );
+  while ( mode ) {
+    if ( mode[0] != '.' && filesystem->FindIsDirectory( handle ) ) {
+      char path[MAX_PATH];
+      const int length = Q_snprintf( path, sizeof( path ), "gamemodes/%s/%s.txt", mode, mode );
+      if ( length >= 0 && length < (int)sizeof( path ) ) {
+        KeyValues *definition = new KeyValues( "Gamemode" );
+        if ( definition->LoadFromFile( filesystem, path, "GAME" ) ) {
+          KeyValues *settings = definition->FindKey( "settings" );
+          if ( settings ) FOR_EACH_SUBKEY( settings, setting ) {
+            if ( setting->GetInt( "dontcreate", 0 ) ) continue;
+            const char *name = setting->GetString( "name", "" );
+            bool valid = Q_strlen( name ) >= 2;
+            for ( const unsigned char *p = reinterpret_cast<const unsigned char *>( name ); valid && *p; ++p ) {
+              const unsigned char c = *p;
+              valid = ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) ||
+                      ( c >= '0' && c <= '9' ) || c == '!' || c == '+' || c == '-' ||
+                      c == '.' || c == '^' || c == '_' || c == '~';
+            }
+            if ( !valid || g_pCVar->FindCommandBase( name ) ) continue;
+            int flags = FCVAR_ARCHIVE | FCVAR_NOTIFY | ( 1 << 27 );
+            if ( setting->GetInt( "replicate", 1 ) ) flags |= FCVAR_REPLICATED;
+            new ConVar( V_strdup( name ), V_strdup( setting->GetString( "default", "" ) ),
+                        flags, V_strdup( setting->GetString( "help", "" ) ) );
+          }
+        }
+        definition->deleteThis();
+      }
+    }
+    mode = filesystem->FindNext( handle );
+  }
+  if ( handle != FILESYSTEM_INVALID_FIND_HANDLE ) filesystem->FindClose( handle );
+}
+
+static int engine_GetDemoPlaybackTimeScale (lua_State *L) {
+  lua_pushnumber( L, engine->GetDemoPlaybackTimeScale() );
+  return 1;
+}
+
 static int engine_ActiveGamemode (lua_State *L) {
   ConVarRef mode( "gamemode" );
   lua_pushstring( L, mode.IsValid() ? mode.GetString() : "sandbox" );
@@ -245,11 +290,16 @@ static int engine_GetAddons (lua_State *L) {
   for (size_t i = 0; i < addons.size(); ++i) {
     lua_newtable(L);
     lua_pushstring(L, addons[i].title.c_str()); lua_setfield(L, -2, "title");
+    std::string file = "addons/" + addons[i].title;
+    lua_pushstring(L, file.c_str()); lua_setfield(L, -2, "file");
+    lua_pushstring(L, ""); lua_setfield(L, -2, "tags");
     lua_pushstring(L, "0"); lua_setfield(L, -2, "wsid");
     lua_pushboolean(L, true); lua_setfield(L, -2, "mounted");
     lua_pushboolean(L, true); lua_setfield(L, -2, "downloaded");
     lua_pushinteger(L, addons[i].models); lua_setfield(L, -2, "models");
     lua_pushinteger(L, 0); lua_setfield(L, -2, "timeadded");
+    lua_pushinteger(L, 0); lua_setfield(L, -2, "updated");
+    lua_pushinteger(L, 0); lua_setfield(L, -2, "size");
     lua_rawseti(L, -2, i + 1);
   }
   return 1;
@@ -644,6 +694,7 @@ static const luaL_Reg enginelib[] = {
   {"GetEngineBuildNumber",   engine_GetEngineBuildNumber},
   {"GetGameDirectory", engine_GetGameDirectory},
   {"ActiveGamemode", engine_ActiveGamemode},
+  {"GetDemoPlaybackTimeScale", engine_GetDemoPlaybackTimeScale},
   {"GetLastTimeStamp", engine_GetLastTimeStamp},
   {"TickInterval",     engine_TickInterval},
   {"GetLevelName",   engine_GetLevelName},

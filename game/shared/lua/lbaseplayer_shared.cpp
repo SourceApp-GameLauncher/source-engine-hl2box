@@ -197,6 +197,41 @@ static int CBasePlayer_CurrentCommandNumber (lua_State *L) {
 // valid while that player's command is being processed), so this hands back a
 // snapshot table with GMod's field names and the method spellings scripts use.
 //-----------------------------------------------------------------------------
+struct HL2SB_UserCmdScope {
+  lua_State *state;
+  CUserCmd *command;
+  int tableRef;
+};
+
+static CUtlVector<HL2SB_UserCmdScope> s_UserCmdScopes;
+
+void HL2SB_BeginUserCmdScope(lua_State *L, CUserCmd *command, int tableIndex) {
+  lua_pushvalue(L, tableIndex);
+  HL2SB_UserCmdScope scope = { L, command, luaL_ref(L, LUA_REGISTRYINDEX) };
+  s_UserCmdScopes.AddToTail(scope);
+}
+
+void HL2SB_EndUserCmdScope(lua_State *L) {
+  const int index = s_UserCmdScopes.Count() - 1;
+  Assert(index >= 0 && s_UserCmdScopes[index].state == L);
+  if (index < 0 || s_UserCmdScopes[index].state != L) return;
+  luaL_unref(L, LUA_REGISTRYINDEX, s_UserCmdScopes[index].tableRef);
+  s_UserCmdScopes.Remove(index);
+}
+
+static CUserCmd *HL2SB_GetScopedUserCmd(lua_State *L, int tableIndex) {
+  if (tableIndex < 0) tableIndex = lua_gettop(L) + tableIndex + 1;
+  for (int i = s_UserCmdScopes.Count() - 1; i >= 0; --i) {
+    const HL2SB_UserCmdScope &scope = s_UserCmdScopes[i];
+    if (scope.state != L) continue;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, scope.tableRef);
+    const bool match = lua_rawequal(L, tableIndex, -1) != 0;
+    lua_pop(L, 1);
+    if (match) return scope.command;
+  }
+  return NULL;
+}
+
 static int CBasePlayer_CmdKeyDown (lua_State *L) {
   lua_getfield(L, 1, "buttons");
   const int nButtons = lua_tointeger(L, -1);
@@ -289,6 +324,27 @@ static int CBasePlayer_CmdAddKey (lua_State *L) {
   return 0;
 }
 
+static int CBasePlayer_CmdRemoveKey (lua_State *L) {
+  const int key = (int)luaL_checknumber(L, 2);
+  lua_getfield(L, 1, "buttons");
+  const int buttons = (int)lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  lua_pushinteger(L, buttons & ~key);
+  lua_setfield(L, 1, "buttons");
+  CUserCmd *command = HL2SB_GetScopedUserCmd(L, 1);
+  if (command) command->buttons = buttons & ~key;
+  return 0;
+}
+
+static int CBasePlayer_CmdSetMouseY (lua_State *L) {
+  const short mouseY = (short)(int)luaL_checknumber(L, 2);
+  lua_pushinteger(L, mouseY);
+  lua_setfield(L, 1, "mousedy");
+  CUserCmd *command = HL2SB_GetScopedUserCmd(L, 1);
+  if (command) command->mousedy = mouseY;
+  return 0;
+}
+
 static int CBasePlayer_CmdCommandNumber (lua_State *L) {
   lua_getfield(L, 1, "command_number");
   return 1;
@@ -296,6 +352,8 @@ static int CBasePlayer_CmdCommandNumber (lua_State *L) {
 
 static const luaL_Reg HL2SB_UserCmdMeta[] = {
   {"AddKey",             CBasePlayer_CmdAddKey},
+  {"RemoveKey",          CBasePlayer_CmdRemoveKey},
+  {"SetMouseY",          CBasePlayer_CmdSetMouseY},
   {"CommandNumber",      CBasePlayer_CmdCommandNumber},
   {"KeyDown",            CBasePlayer_CmdKeyDown},
   {"GetMouseX",          CBasePlayer_CmdGetMouseX},
@@ -339,6 +397,12 @@ static void HL2SB_EnsureUserCmdMeta (lua_State *L) {
 // into the real CUserCmd afterwards; ClearButtons/ClearMovement/Set* only
 // mutate the table, so they work through that same copy-back.
 void HL2SB_PushUserCmdTable (lua_State *L, const CUserCmd *pCmd) {
+  for (int i = s_UserCmdScopes.Count() - 1; i >= 0; --i) {
+    if (s_UserCmdScopes[i].state == L && s_UserCmdScopes[i].command == pCmd) {
+      lua_rawgeti(L, LUA_REGISTRYINDEX, s_UserCmdScopes[i].tableRef);
+      return;
+    }
+  }
   lua_newtable(L);
 
   lua_pushinteger(L, pCmd->command_number); lua_setfield(L, -2, "command_number");
@@ -373,6 +437,8 @@ void HL2SB_PushUserCmdTable (lua_State *L, const CUserCmd *pCmd) {
   lua_pushcfunction(L, CBasePlayer_CmdSetSideMove);    lua_setfield(L, -2, "SetSideMove");
   lua_pushcfunction(L, CBasePlayer_CmdSetUpMove);      lua_setfield(L, -2, "SetUpMove");
   lua_pushcfunction(L, CBasePlayer_CmdAddKey);         lua_setfield(L, -2, "AddKey");
+  lua_pushcfunction(L, CBasePlayer_CmdRemoveKey);      lua_setfield(L, -2, "RemoveKey");
+  lua_pushcfunction(L, CBasePlayer_CmdSetMouseY);      lua_setfield(L, -2, "SetMouseY");
   lua_pushcfunction(L, CBasePlayer_CmdCommandNumber);  lua_setfield(L, -2, "CommandNumber");
 
   HL2SB_EnsureUserCmdMeta(L);
@@ -3832,6 +3898,7 @@ int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszH
 		lua_pushplayer( L, pPlayer );
 		HL2SB_PushMoveData_Internal( L, pMove );
 		HL2SB_PushUserCmdTable( L, pCmd );
+		HL2SB_BeginUserCmdScope( L, const_cast<CUserCmd *>( pCmd ), -1 );
 		lua_pushvalue( L, -1 );
 		iTableRef = luaL_ref( L, LUA_REGISTRYINDEX );
 	END_LUA_CALL_HOOK( 3, 1 );
@@ -3867,6 +3934,11 @@ int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszH
 			}
 			lua_pop( L, 1 );
 
+			lua_getfield( L, -1, "mousedy" );
+			if ( pMutCmd != NULL && lua_isnumber( L, -1 ) )
+				pMutCmd->mousedy = (short)lua_tointeger( L, -1 );
+			lua_pop( L, 1 );
+
 			lua_getfield( L, -1, "forwardmove" );
 			if ( lua_isnumber( L, -1 ) )
 			{
@@ -3896,6 +3968,7 @@ int HL2SB_LuaMoveHooks( CBasePlayer *pPlayer, CMoveData *pMove, const char *pszH
 		}
 		lua_pop( L, 1 );
 		luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
+		HL2SB_EndUserCmdScope( L );
 	}
 
 	return iTakesOver;
@@ -3909,6 +3982,7 @@ void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd )
 		return;
 
 	HL2SB_PushUserCmdTable( L, pCmd );
+	HL2SB_BeginUserCmdScope( L, pCmd, -1 );
 	const int iTableRef = luaL_ref( L, LUA_REGISTRYINDEX );
 
 	BEGIN_LUA_CALL_HOOK( "StartCommand" );
@@ -3922,6 +3996,11 @@ void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd )
 		lua_getfield( L, -1, "buttons" );
 		if ( lua_isnumber( L, -1 ) )
 			pCmd->buttons = (int)lua_tointeger( L, -1 );
+		lua_pop( L, 1 );
+
+		lua_getfield( L, -1, "mousedy" );
+		if ( lua_isnumber( L, -1 ) )
+			pCmd->mousedy = (short)lua_tointeger( L, -1 );
 		lua_pop( L, 1 );
 
 		lua_getfield( L, -1, "viewangles" );
@@ -3946,6 +4025,7 @@ void HL2SB_LuaStartCommand( CBasePlayer *pPlayer, CUserCmd *pCmd )
 	}
 	lua_pop( L, 1 );
 	luaL_unref( L, LUA_REGISTRYINDEX, iTableRef );
+	HL2SB_EndUserCmdScope( L );
 }
 
 // HL2SB (2026-10-08): the two landing/jump gamemode hooks.  gamemovement.cpp

@@ -1098,6 +1098,12 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	// HL2SB: sound.PlayFile runtime. Registers the paint-buffer stream mix
 	// callback with the engine and starts the decode worker thread.
 	HL2SB_AudioConnect( appSystemFactory );
+#ifdef LUA_SDK
+	{
+		extern void HL2SB_BrushSurfaceConnect( CreateInterfaceFn );
+		HL2SB_BrushSurfaceConnect( appSystemFactory );
+	}
+#endif
 	if ( (random = (IUniformRandomStream *)appSystemFactory(VENGINE_CLIENT_RANDOM_INTERFACE_VERSION, NULL)) == NULL )
 		return false;
 	if ( (gameuifuncs = (IGameUIFuncs * )appSystemFactory( VENGINE_GAMEUIFUNCS_VERSION, NULL )) == NULL )
@@ -1194,6 +1200,8 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	vgui::VGui_InitMatSysInterfacesList( "ClientDLL", &appSystemFactory, 1 );
 
 #if defined ( LUA_SDK )
+	extern void HL2SB_RegisterMenuGamemodeSettings();
+	HL2SB_RegisterMenuGamemodeSettings();
 	// Initialize the GameUI state
 	luasrc_init_gameui();
 
@@ -1389,6 +1397,8 @@ void CHLClient::Shutdown( void )
 #ifdef LUA_SDK
 	extern void HL2SB_MenuRuntimeStop();
 	HL2SB_MenuRuntimeStop();
+	extern void HL2SB_HTMLBackendShutdown();
+	HL2SB_HTMLBackendShutdown();
 	luasrc_shutdown_gameui();
 #endif
 

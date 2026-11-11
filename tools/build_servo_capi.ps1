@@ -11,6 +11,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Toolchain environment the build needs.  These used to come from the calling
+# shell, which does not survive across sessions - without them cargo either
+# stalls re-resolving the registry (default CARGO_HOME, cold cache) or dies in
+# bindgen (no libclang).  Only set what is not already present, so a caller
+# can still override.
+if (-not $env:LIBCLANG_PATH) { $env:LIBCLANG_PATH = 'D:\Program Files\LLVM\bin' }
+if (-not $env:CARGO_HOME) { $env:CARGO_HOME = 'D:\project\servo-cargo-cache' }
+if (-not $env:RUSTUP_TOOLCHAIN) { $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-msvc' }
+
 $upstreamRevision = 'facef05f121a7ac657050eb8d5e450188efcb69f'
 $forkRevision = '43eae6443b8742331bc2d08a27c8ec11001046eb'
 $bridgePatch = Join-Path $PSScriptRoot 'servo/servo-capi.patch'

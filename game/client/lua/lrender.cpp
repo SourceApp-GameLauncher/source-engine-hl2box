@@ -714,6 +714,28 @@ LUA_BINDING_BEGIN( Renders, OverrideAlphaWriteEnable, "library", "Overrides alph
 }
 LUA_BINDING_END()
 
+LUA_BINDING_BEGIN( Renders, OverrideDepthEnable, "library", "Overrides depth testing.", "client" )
+{
+    const bool enable = lua_toboolean( L, 1 ) != 0;
+    const bool depth = lua_toboolean( L, 2 ) != 0;
+    CMatRenderContextPtr context( materials );
+    context->OverrideDepthEnable( enable, depth );
+    return 0;
+}
+LUA_BINDING_END()
+
+LUA_BINDING_BEGIN( Renders, SetLightingMode, "library", "Sets the fixed lighting mode.", "client" )
+{
+    const double number = luaL_checknumber( L, 1 );
+    const int value = ( number > -2147483649.0 && number < 2147483648.0 )
+        ? (int)number : (-2147483647 - 1);
+    const int mode = value < 0 ? 0 : ( value > 2 ? 2 : value );
+    CMatRenderContextPtr context( materials );
+    context->SetIntRenderingParameter( INT_RENDERPARM_ENABLE_FIXED_LIGHTING, mode );
+    return 0;
+}
+LUA_BINDING_END()
+
 LUA_BINDING_BEGIN( Renders, SetViewPort, "library", "Sets the current render viewport.", "client" )
 {
     const int x = (int)luaL_checknumber( L, 1 );
@@ -3418,6 +3440,10 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_setglobal( L, "RT_SIZE_FULL_FRAME_BUFFER" );
     lua_pushinteger( L, RT_SIZE_NO_CHANGE );
     lua_setglobal( L, "RT_SIZE_NO_CHANGE" );
+    lua_pushinteger( L, RT_SIZE_LITERAL );
+    lua_setglobal( L, "RT_SIZE_LITERAL" );
+    lua_pushinteger( L, MATERIAL_RT_DEPTH_SHARED );
+    lua_setglobal( L, "MATERIAL_RT_DEPTH_SHARED" );
     lua_pushinteger( L, MATERIAL_RT_DEPTH_SEPARATE );
     lua_setglobal( L, "MATERIAL_RT_DEPTH_SEPARATE" );
     lua_pushinteger( L, MATERIAL_RT_DEPTH_NONE );
@@ -3426,6 +3452,8 @@ LUALIB_API int luaopen_render( lua_State *L )
     lua_setglobal( L, "IMAGE_FORMAT_DEFAULT" );
     lua_pushinteger( L, IMAGE_FORMAT_RGBA8888 );
     lua_setglobal( L, "IMAGE_FORMAT_RGBA8888" );
+    lua_pushinteger( L, IMAGE_FORMAT_RGB888 );
+    lua_setglobal( L, "IMAGE_FORMAT_RGB888" );
     lua_pushinteger( L, IMAGE_FORMAT_BGR888 );
     lua_setglobal( L, "IMAGE_FORMAT_BGR888" );
     lua_pushinteger( L, IMAGE_FORMAT_BGRA8888 );

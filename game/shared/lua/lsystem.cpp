@@ -635,5 +635,8 @@ LUA_BINDING_END()
 LUALIB_API int( luaopen_Systems )( lua_State* L )
 {
     LUA_REGISTRATION_COMMIT_LIBRARY( Systems );
+    // GMod uses the capitalized spelling; keep the existing alias for callers.
+    lua_getfield( L, -1, "IsOsx" );
+    lua_setfield( L, -2, "IsOSX" );
     return 1;
 }

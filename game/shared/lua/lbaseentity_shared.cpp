@@ -19,6 +19,8 @@ extern ConVar hl2sb_dev_msgs;
 #include "luasrclib.h"
 #include "gamestringpool.h"
 #include "materialsystem/imaterial.h"
+#include "materialsystem/limaterial.h"
+#include "engine/ibrushsurfaceinfo.h"
 #include "model_types.h"
 #include "lbaseentity_shared.h"
 #include "basescripted.h"
@@ -3239,6 +3241,71 @@ static int CBaseEntity_GetSequenceName (lua_State *L) {
     return 1;
   }
   lua_pushstring( L, pAnimating->GetSequenceName( luaL_checkint( L, 2 ) ) );
+  return 1;
+}
+
+static IHL2SBBrushSurfaceInfo *s_pBrushSurfaceInfo = NULL;
+
+void HL2SB_BrushSurfaceConnect( CreateInterfaceFn factory ) {
+  s_pBrushSurfaceInfo = factory ? static_cast<IHL2SBBrushSurfaceInfo *>( factory( HL2SB_BRUSH_SURFACE_INFO_VERSION, NULL ) ) : NULL;
+}
+
+static int HL2SB_SurfaceIndex( lua_State *L ) {
+  return *static_cast<int *>( luaL_checkudata( L, 1, "SurfaceInfo" ) );
+}
+
+static int HL2SB_SurfaceGetMaterial( lua_State *L ) {
+  const int surface = HL2SB_SurfaceIndex( L );
+  lua_pushmaterial( L, s_pBrushSurfaceInfo ? s_pBrushSurfaceInfo->GetMaterial( surface ) : NULL );
+  return 1;
+}
+
+static int HL2SB_SurfaceGetVertices( lua_State *L ) {
+  const int surface = HL2SB_SurfaceIndex( L );
+  const int count = s_pBrushSurfaceInfo ? s_pBrushSurfaceInfo->GetVertexCount( surface ) : 0;
+  lua_createtable( L, count, 0 );
+  for ( int i = 0; i < count; ++i ) {
+    Vector position;
+    if ( s_pBrushSurfaceInfo->GetVertex( surface, i, position ) ) {
+      lua_pushvector( L, position );
+      lua_rawseti( L, -2, i + 1 );
+    }
+  }
+  return 1;
+}
+
+static int HL2SB_SurfaceHasFlag( lua_State *L, unsigned int flag ) {
+  const int surface = HL2SB_SurfaceIndex( L );
+  lua_pushboolean( L, s_pBrushSurfaceInfo && ( s_pBrushSurfaceInfo->GetFlags( surface ) & flag ) != 0 );
+  return 1;
+}
+static int HL2SB_SurfaceIsNoDraw( lua_State *L ) { return HL2SB_SurfaceHasFlag( L, 0x10 ); }
+static int HL2SB_SurfaceIsSky( lua_State *L ) { return HL2SB_SurfaceHasFlag( L, 0x04 ); }
+static int HL2SB_SurfaceIsWater( lua_State *L ) { return HL2SB_SurfaceHasFlag( L, 0x10000 ); }
+
+static const luaL_Reg HL2SB_SurfaceMethods[] = {
+  { "GetMaterial", HL2SB_SurfaceGetMaterial },
+  { "GetVertices", HL2SB_SurfaceGetVertices },
+  { "IsNoDraw", HL2SB_SurfaceIsNoDraw },
+  { "IsSky", HL2SB_SurfaceIsSky },
+  { "IsWater", HL2SB_SurfaceIsWater },
+  { NULL, NULL }
+};
+
+static int CBaseEntity_GetBrushSurfaces( lua_State *L ) {
+  CBaseEntity *entity = luaL_checkentity( L, 1 );
+  if ( entity->IsMarkedForDeletion() || !s_pBrushSurfaceInfo ) return 0;
+  const model_t *model = entity->GetModel();
+  const int count = s_pBrushSurfaceInfo->GetSurfaceCount( model );
+  if ( count < 0 ) return 0;
+  lua_createtable( L, count, 0 );
+  for ( int i = 0; i < count; ++i ) {
+    int *surface = static_cast<int *>( lua_newuserdata( L, sizeof( int ) ) );
+    *surface = s_pBrushSurfaceInfo->GetSurfaceIndex( model, i );
+    luaL_getmetatable( L, "SurfaceInfo" );
+    lua_setmetatable( L, -2 );
+    lua_rawseti( L, -2, i + 1 );
+  }
   return 1;
 }
 
@@ -6967,6 +7034,7 @@ static const luaL_Reg CBaseEntitymeta[] = {
   {"GetClassname", CBaseEntity_GetClassname},
   // HL2SB GMod compat: GMod's spellings (see the note at the definitions).
   {"GetClass", CBaseEntity_GetClass},
+  {"GetBrushSurfaces", CBaseEntity_GetBrushSurfaces},
   {"GetCollisionGroup", CBaseEntity_GetCollisionGroup},
   {"GetDataObject", CBaseEntity_GetDataObject},
   {"GetDebugName", CBaseEntity_GetDebugName},
@@ -7619,6 +7687,17 @@ static const luaL_Reg CBaseEntity_funcs[] = {
 ** Open CBaseEntity object
 */
 LUALIB_API int luaopen_CBaseEntity_shared (lua_State *L) {
+  luaL_newmetatable( L, "SurfaceInfo" );
+  luaL_register( L, NULL, HL2SB_SurfaceMethods );
+  lua_pushvalue( L, -1 );
+  lua_setfield( L, -2, "__index" );
+  lua_pushinteger( L, 43 );
+  lua_setfield( L, -2, "MetaID" );
+  lua_pushstring( L, "SurfaceInfo" );
+  lua_setfield( L, -2, "MetaName" );
+  lua_pushstring( L, "SurfaceInfo" );
+  lua_setfield( L, -2, "__type" );
+  lua_pop( L, 1 );
   luaL_getmetatable(L, LUA_BASEENTITYLIBNAME);
   if (lua_isnoneornil(L, -1)) {
     lua_pop(L, 1);
