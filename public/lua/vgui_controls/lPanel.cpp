@@ -23,6 +23,7 @@
 #include <vgui_controls/Label.h>
 #include <vgui_controls/TextImage.h>
 #include <vgui_controls/TextEntry.h>
+#include <vgui_controls/RichText.h>
 #include <vgui_controls/Frame.h>
 #include <vgui_controls/FocusNavGroup.h>
 #include "panelmetaclassmgr.h"
@@ -48,6 +49,7 @@
 #include "filesystem.h"
 #include "iviewrender.h"
 #include "view_shared.h"
+#include <climits>
 #include <string>
 #include <vector>
 #include <utility>
@@ -702,7 +704,8 @@ static int Panel_IsDropEnabled (lua_State *L) {
 }
 
 static int Panel_IsEnabled (lua_State *L) {
-  lua_pushboolean(L, luaL_checkpanel(L, 1)->IsEnabled());
+  Panel *p = lua_topanel(L, 1);
+  lua_pushboolean(L, p ? p->IsEnabled() : true);
   return 1;
 }
 
@@ -783,7 +786,8 @@ static int Panel_IsValidKeyBindingsContext (lua_State *L) {
 }
 
 static int Panel_IsVisible (lua_State *L) {
-  lua_pushboolean(L, luaL_checkpanel(L, 1)->IsVisible());
+  Panel *p = lua_topanel(L, 1);
+  lua_pushboolean(L, p ? p->IsVisible() : false);
   return 1;
 }
 
@@ -915,8 +919,8 @@ static int Panel_LocalToScreen (lua_State *L) {
   // HL2SB: x/y were declared uninitialised and passed to the in/out method, so
   // the function always returned stack junk.  Take the input coordinates (they
   // default to 0, which yields the panel's own position).
-  int x = luaL_optint(L, 2, 0);
-  int y = luaL_optint(L, 3, 0);
+  int x = (int)luaL_optnumber(L, 2, 0);
+  int y = (int)luaL_optnumber(L, 3, 0);
   luaL_checkpanel(L, 1)->LocalToScreen(x, y);
   lua_pushinteger(L, x);
   lua_pushinteger(L, y);
@@ -924,7 +928,10 @@ static int Panel_LocalToScreen (lua_State *L) {
 }
 
 static int Panel_MakePopup (lua_State *L) {
-  luaL_checkpanel(L, 1)->MakePopup(luaL_optboolean(L, 2, 1), luaL_optboolean(L, 3, 0));
+  Panel *panel = luaL_checkpanel(L, 1);
+  panel->MakePopup(true, false);
+  panel->SetMouseInputEnabled(true);
+  panel->SetKeyBoardInputEnabled(true);
   return 0;
 }
 
@@ -965,8 +972,12 @@ static int Panel_MoveToFront (lua_State *L) {
 //-----------------------------------------------------------------------------
 static int Panel_MoveToBack (lua_State *L) {
   vgui::Panel *pPanel = luaL_checkpanel(L, 1);
-  if (pPanel != NULL)
-    vgui::ipanel()->MoveToBack(pPanel->GetVPanel());
+  if (pPanel != NULL) {
+    if (pPanel->IsPopup())
+      vgui::surface()->MovePopupToBack(pPanel->GetVPanel());
+    else
+      vgui::ipanel()->MoveToBack(pPanel->GetVPanel());
+  }
   return 0;
 }
 
@@ -1119,8 +1130,8 @@ static int Panel_ParentLocalToScreen (lua_State *L) {
   // HL2SB: x/y were declared uninitialised and passed to the in/out method, so
   // the function always returned stack junk.  Take the input coordinates (they
   // default to 0, which yields the panel's own position).
-  int x = luaL_optint(L, 2, 0);
-  int y = luaL_optint(L, 3, 0);
+  int x = (int)luaL_optnumber(L, 2, 0);
+  int y = (int)luaL_optnumber(L, 3, 0);
   luaL_checkpanel(L, 1)->ParentLocalToScreen(x, y);
   lua_pushinteger(L, x);
   lua_pushinteger(L, y);
@@ -1185,7 +1196,7 @@ static int Panel_SetAllowKeyBindingChainToParent (lua_State *L) {
 }
 
 static int Panel_SetAlpha (lua_State *L) {
-  luaL_checkpanel(L, 1)->SetAlpha(luaL_checkint(L, 2));
+  luaL_checkpanel(L, 1)->SetAlpha((int)luaL_checknumber(L, 2));
   return 0;
 }
 
@@ -1334,10 +1345,21 @@ static void Panel_SyncLuaGeometry (lua_State *L, Panel *pPanel) {
   lua_pop(L, 1);
 }
 
+static int Panel_CheckPixel(lua_State *L, int arg) {
+  // VPanel stores positions as signed shorts. Keep fractional pixel input,
+  // and reject coordinates that would wrap or fail Panel::SetPos's assertion.
+  const double value = luaL_checknumber(L, arg);
+  if (!(value > -static_cast<double>(SHRT_MAX) - 1.0 &&
+        value < static_cast<double>(SHRT_MAX) + 1.0))
+    return luaL_argerror(L, arg, "panel coordinate out of range");
+  return static_cast<int>(value);
+}
+
 static int Panel_SetPos (lua_State *L) {
   Panel *pPanel = luaL_checkpanel(L, 1);
-
-  pPanel->SetPos(luaL_checkint(L, 2), luaL_checkint(L, 3));
+  const int x = Panel_CheckPixel(L, 2);
+  const int y = Panel_CheckPixel(L, 3);
+  pPanel->SetPos(x, y);
   Panel_SyncLuaGeometry(L, pPanel);
   return 0;
 }
@@ -1521,35 +1543,30 @@ static int Panel_SetFocusTopLevel (lua_State *L) {
 }
 
 // GMod's cursors are named ("arrow", "sizeall", "sizenwse", ...); the engine
-// wants an HCursor.  Unknown names fall back to the normal arrow.
+// wants an HCursor. Unknown names select the default none cursor.
 static HCursor Panel_CursorFromName (const char *pName) {
-  if ( !pName || !pName[0] || !V_stricmp(pName, "arrow") ) return vgui::dc_arrow;
+  if ( !pName ) return vgui::dc_none;
+  if ( !V_stricmp(pName, "arrow") )     return vgui::dc_arrow;
   if ( !V_stricmp(pName, "hand") )      return vgui::dc_hand;
   if ( !V_stricmp(pName, "sizeall") )   return vgui::dc_sizeall;
   if ( !V_stricmp(pName, "sizenwse") )  return vgui::dc_sizenwse;
   if ( !V_stricmp(pName, "sizenesw") )  return vgui::dc_sizenesw;
   if ( !V_stricmp(pName, "sizewe") )    return vgui::dc_sizewe;
   if ( !V_stricmp(pName, "sizens") )    return vgui::dc_sizens;
-  if ( !V_stricmp(pName, "text") )      return vgui::dc_ibeam;
-  if ( !V_stricmp(pName, "ibeam") )     return vgui::dc_ibeam;
   if ( !V_stricmp(pName, "beam") )      return vgui::dc_ibeam;
-  if ( !V_stricmp(pName, "none") )      return vgui::dc_none;
   if ( !V_stricmp(pName, "blank") )     return vgui::dc_blank;
   if ( !V_stricmp(pName, "hourglass") ) return vgui::dc_hourglass;
-  if ( !V_stricmp(pName, "wait") )      return vgui::dc_hourglass;
+  if ( !V_stricmp(pName, "waitarrow") ) return vgui::dc_waitarrow;
   if ( !V_stricmp(pName, "crosshair") ) return vgui::dc_crosshair;
+  if ( !V_stricmp(pName, "up") )        return vgui::dc_up;
   if ( !V_stricmp(pName, "no") )        return vgui::dc_no;
-  return vgui::dc_arrow;
+  return vgui::dc_none;
 }
 
 static int Panel_SetCursor (lua_State *L) {
   Panel *pPanel = luaL_checkpanel(L, 1);
 
-  if ( lua_type(L, 2) == LUA_TNUMBER ) {
-    pPanel->SetCursor((HCursor)lua_tointeger(L, 2));
-  } else {
-    pPanel->SetCursor(Panel_CursorFromName(luaL_checkstring(L, 2)));
-  }
+  pPanel->SetCursor(Panel_CursorFromName(luaL_checkstring(L, 2)));
 
   return 0;
 }
@@ -1557,7 +1574,7 @@ static int Panel_SetCursor (lua_State *L) {
 // Panel:MouseCapture( b ) -- what DFrame uses while dragging/resizing.
 static int Panel_MouseCapture (lua_State *L) {
   Panel *pPanel = luaL_checkpanel(L, 1);
-  bool bCapture = luaL_optboolean(L, 2, 1);
+  bool bCapture = lua_toboolean(L, 2) != 0;
 
   if ( vgui::input() ) {
     vgui::input()->SetMouseCapture(bCapture ? pPanel->GetVPanel() : (VPANEL)0);
@@ -1570,7 +1587,11 @@ static int Panel_MouseCapture (lua_State *L) {
 // which is not safe to run from a Lua callback, so defer it like the engine's
 // own panels do.
 static int Panel_Remove (lua_State *L) {
-  Panel *pPanel = luaL_checkpanel(L, 1);
+  // Removing a handle whose panel has already been destroyed is harmless.
+  // The handle remains a Lua userdata even after its native panel has gone.
+  luaL_checktype(L, 1, LUA_TUSERDATA);
+  Panel *pPanel = lua_topanel(L, 1);
+  if (!pPanel) return 0;
 
   if ( pPanel && vgui::ivgui() ) {
     vgui::ivgui()->MarkPanelForDeletion(pPanel->GetVPanel());
@@ -1672,7 +1693,14 @@ bool HL2SB_LuaPanelGeometryWrite(lua_State *L) {
 
 static int Panel___index (lua_State *L) {
   Panel *p = lua_topanel(L, 1);
-  if (!p) { lua_pushnil(L); return 1; }
+  if (!p) {
+    const char *key = lua_tostring(L, 2);
+    if (key && !Q_strcmp(key, "Remove")) lua_pushcfunction(L, Panel_Remove);
+    else if (key && !Q_strcmp(key, "IsVisible")) lua_pushcfunction(L, Panel_IsVisible);
+    else if (key && !Q_strcmp(key, "IsEnabled")) lua_pushcfunction(L, Panel_IsEnabled);
+    else lua_pushnil(L);
+    return 1;
+  }
   if (HL2SB_LuaPanelGeometryIndex(L)) return 1;
   Panel_GetRefTable(L);
   if (lua_istable(L, -1)) {
@@ -1772,7 +1800,11 @@ static int Panel___tostring (lua_State *L) {
 // the number straight through.
 //=============================================================================
 static int Panel_Dock (lua_State *L) {
-  luaL_checkpanel(L, 1)->SetDock(luaL_checkint(L, 2));
+  Panel *panel = luaL_checkpanel(L, 1);
+  const double dock = luaL_checknumber(L, 2);
+  if (!(dock > Panel::DOCK_NONE - 1.0 && dock < Panel::DOCK_BOTTOM + 1.0))
+    return luaL_argerror(L, 2, "invalid dock direction");
+  panel->SetDock(static_cast<int>(dock));
   return 0;
 }
 
@@ -1782,7 +1814,12 @@ static int Panel_GetDock (lua_State *L) {
 }
 
 static int Panel_DockPadding (lua_State *L) {
-  luaL_checkpanel(L, 1)->SetDockPadding(luaL_checkint(L, 2), luaL_checkint(L, 3), luaL_checkint(L, 4), luaL_checkint(L, 5));
+  Panel *panel = luaL_checkpanel(L, 1);
+  const int left = Panel_CheckPixel(L, 2);
+  const int top = Panel_CheckPixel(L, 3);
+  const int right = Panel_CheckPixel(L, 4);
+  const int bottom = Panel_CheckPixel(L, 5);
+  panel->SetDockPadding(left, top, right, bottom);
   return 0;
 }
 
@@ -1794,7 +1831,12 @@ static int Panel_GetDockPadding (lua_State *L) {
 }
 
 static int Panel_DockMargin (lua_State *L) {
-  luaL_checkpanel(L, 1)->SetDockMargin(luaL_checkint(L, 2), luaL_checkint(L, 3), luaL_checkint(L, 4), luaL_checkint(L, 5));
+  Panel *panel = luaL_checkpanel(L, 1);
+  const int left = Panel_CheckPixel(L, 2);
+  const int top = Panel_CheckPixel(L, 3);
+  const int right = Panel_CheckPixel(L, 4);
+  const int bottom = Panel_CheckPixel(L, 5);
+  panel->SetDockMargin(left, top, right, bottom);
   return 0;
 }
 
@@ -1891,8 +1933,8 @@ static int Panel_SetDockPadding (lua_State *L) {
 // ScreenToLocal per control.)
 static int Panel_CursorPos (lua_State *L) {
   vgui::Panel *pPanel = luaL_checkpanel(L, 1);
-  int x, y;
-  vgui::input()->GetCursorPos( x, y );
+  int x = 0, y = 0;
+  if (!engine || engine->IsActiveApp()) vgui::input()->GetCursorPos( x, y );
   pPanel->ScreenToLocal( x, y );
   lua_pushinteger(L, x);
   lua_pushinteger(L, y);
@@ -1906,30 +1948,11 @@ static int Panel_IsModal (lua_State *L) {
   return 1;
 }
 
-// Register non-popup controls in the surface's ordered paint list without
-// changing keyboard or mouse input. A topmost flag alone does not paint them.
+extern void HL2SB_PanelSetDrawOnTop(vgui::Panel *panel, bool onTop);
+
 static int Panel_SetDrawOnTop (lua_State *L) {
   Panel *panel = luaL_checkpanel(L, 1);
-  const bool onTop = luaL_checkboolean(L, 2) != 0;
-  Panel_PushTable(L, panel);
-  lua_pushliteral(L, "__hl2sb_DrawOnTopPopup");
-  lua_rawget(L, -2);
-  const bool promoted = lua_toboolean(L, -1) != 0;
-  lua_pop(L, 1);
-  if (onTop && !panel->IsPopup()) {
-    vgui::surface()->CreatePopup(panel->GetVPanel(), false, false, false,
-        panel->IsMouseInputEnabled(), panel->IsKeyBoardInputEnabled());
-    lua_pushboolean(L, true);
-    lua_setfield(L, -2, "__hl2sb_DrawOnTopPopup");
-  } else if (!onTop && promoted) {
-    vgui::surface()->ReleasePanel(panel->GetVPanel());
-    vgui::ipanel()->SetPopup(panel->GetVPanel(), false);
-    lua_pushnil(L);
-    lua_setfield(L, -2, "__hl2sb_DrawOnTopPopup");
-  }
-  lua_pop(L, 1);
-  vgui::ipanel()->SetTopmostPopup(panel->GetVPanel(), onTop);
-  if (onTop) vgui::surface()->MovePopupToFront(panel->GetVPanel());
+  HL2SB_PanelSetDrawOnTop(panel, lua_toboolean(L, 2) != 0);
   return 0;
 }
 
@@ -2182,13 +2205,19 @@ int HL2SB_LuaLabelAlignment(int alignment, bool toNative) {
   return (2 - alignment / 3) * 3 + alignment % 3 + 1;
 }
 
-static int Panel_SetContentAlignment (lua_State *L) {
-  vgui::Panel *pPanel = luaL_checkpanel(L, 1);
-  int alignment = HL2SB_LuaLabelAlignment(luaL_checkint(L, 2), true);
+int HL2SB_LuaCheckLabelAlignment(lua_State *L, int arg) {
+  const double value = luaL_checknumber(L, arg);
+  if (!(value >= 1.0 && value < 10.0))
+    return -1;
+  return HL2SB_LuaLabelAlignment(static_cast<int>(value), true);
+}
 
-  if (alignment >= 0)
-    if (Label *pLabel = dynamic_cast<Label *>(pPanel))
-      pLabel->SetContentAlignment((Label::Alignment)alignment);
+static int Panel_SetContentAlignment (lua_State *L) {
+  if (Label *label = dynamic_cast<Label *>(luaL_checkpanel(L, 1))) {
+    const int alignment = HL2SB_LuaCheckLabelAlignment(L, 2);
+    if (alignment >= 0)
+      label->SetContentAlignment(static_cast<Label::Alignment>(alignment));
+  }
   return 0;
 }
 
@@ -3659,7 +3688,23 @@ static int Panel_SetDrawLanguageID(lua_State *L) {
   return 0;
 }
 
+static int Panel_CopySelected(lua_State *L) {
+  vgui::Panel *panel = luaL_checkpanel(L, 1);
+  if (vgui::TextEntry *entry = dynamic_cast<vgui::TextEntry *>(panel)) entry->CopySelected();
+  if (vgui::RichText *rich = dynamic_cast<vgui::RichText *>(panel)) rich->CopySelected();
+  return 0;
+}
+
+static int Panel_SelectAll(lua_State *L) {
+  vgui::Panel *panel = luaL_checkpanel(L, 1);
+  if (vgui::TextEntry *entry = dynamic_cast<vgui::TextEntry *>(panel)) entry->SelectAllText(false);
+  if (vgui::RichText *rich = dynamic_cast<vgui::RichText *>(panel)) rich->SelectAllText();
+  return 0;
+}
+
 static const luaL_Reg Panelmeta[] = {
+  {"CopySelected", Panel_CopySelected},
+  {"SelectAll", Panel_SelectAll},
   {"SetDrawLanguageID", Panel_SetDrawLanguageID},
   {"OpenURL", Panel_HTMLOpenURL},
   {"RunJavascript", Panel_HTMLJavascript},

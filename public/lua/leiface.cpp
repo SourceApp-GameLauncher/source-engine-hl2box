@@ -14,6 +14,7 @@
 #include "lbaseentity_shared.h"
 #include "lbaseplayer_shared.h"
 #include "linetchannelinfo.h"
+#include "hl2sb_gma.h"
 
 static int engine_ActiveGamemode (lua_State *L) {
   ConVarRef mode( "gamemode" );
@@ -31,6 +32,12 @@ static int engine_ActiveGamemode (lua_State *L) {
 
 static int engine_GetAddons( lua_State *L ) {
   lua_newtable( L );
+  HL2SB_AppendMountedWorkshopAddons( L, 1 );
+  return 1;
+}
+
+static int engine_TickInterval( lua_State *L ) {
+  lua_pushnumber( L, gpGlobals->interval_per_tick );
   return 1;
 }
 
@@ -307,6 +314,7 @@ extern int HL2SB_EngineMountContentSource( lua_State *L );
 extern int HL2SB_EngineSetContentMounted( lua_State *L );
 
 static const luaL_Reg enginelib[] = {
+  {"TickInterval", engine_TickInterval},
   {"GetAddons", engine_GetAddons},
   {"GetGames", HL2SB_EngineGetGames},
   {"GetContentSources", HL2SB_EngineGetContentSources},

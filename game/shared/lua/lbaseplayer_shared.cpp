@@ -10,11 +10,13 @@
 #include "cbase.h"
 #include "convar.h"
 #include "in_buttons.h"
+#include <climits>
 // HL2SB: Player:SetAmmo resolves GMod's ammo-name string through the shared
 // ammo definition (same lookup lua_tofirebulletsinfo uses for bullet.AmmoType).
 #include "ammodef.h"
 #ifdef CLIENT_DLL
 #include "iinput.h"	// HL2SB: input->GetButtonBits (live-command fallback)
+#include "inetchannelinfo.h"
 // HL2SB: raw per-frame mouse deltas from CInput::MouseMove (in_mouse.cpp)
 void HL2SB_GetLastMouseDeltas( int &dx, int &dy );
 class CViewSetup;
@@ -131,8 +133,12 @@ static void HL2SB_EnsureMoveDataMeta( lua_State *L );
 
 
 LUA_API void lua_pushplayer (lua_State *L, CBasePlayer *pPlayer) {
+  // Lua userdata allocation may run finalizers. Store the entity handle
+  // before it can reenter the engine and invalidate the player pointer.
+  CBaseHandle playerHandle;
+  playerHandle.Set(pPlayer);
   CBaseHandle *phPlayer = (CBaseHandle *)lua_newuserdata(L, sizeof(CBaseHandle));
-  phPlayer->Set(pPlayer);
+  CopyConstruct(phPlayer, playerHandle);
   luaL_getmetatable(L, "CBasePlayer");
   lua_setmetatable(L, -2);
 }
@@ -350,11 +356,17 @@ static int CBasePlayer_CmdCommandNumber (lua_State *L) {
   return 1;
 }
 
+static int CBasePlayer_CmdTickCount (lua_State *L) {
+  lua_getfield(L, 1, "tick_count");
+  return 1;
+}
+
 static const luaL_Reg HL2SB_UserCmdMeta[] = {
   {"AddKey",             CBasePlayer_CmdAddKey},
   {"RemoveKey",          CBasePlayer_CmdRemoveKey},
   {"SetMouseY",          CBasePlayer_CmdSetMouseY},
   {"CommandNumber",      CBasePlayer_CmdCommandNumber},
+  {"TickCount",          CBasePlayer_CmdTickCount},
   {"KeyDown",            CBasePlayer_CmdKeyDown},
   {"GetMouseX",          CBasePlayer_CmdGetMouseX},
   {"GetMouseY",          CBasePlayer_CmdGetMouseY},
@@ -629,6 +641,17 @@ static int CBasePlayer_FindUseEntity (lua_State *L) {
   return 1;
 }
 
+static int CBasePlayer_GetPreviousWeapon (lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+#ifdef CLIENT_DLL
+  CBaseCombatWeapon *weapon = player->GetLastWeapon();
+#else
+  CBaseCombatWeapon *weapon = player->Weapon_GetLast();
+#endif
+  lua_pushweapon(L, weapon);
+  return 1;
+}
+
 static int CBasePlayer_GetActiveWeapon (lua_State *L) {
   CBaseCombatWeapon *pWeapon = luaL_checkplayer(L, 1)->GetActiveWeapon();
   lua_pushweapon(L, pWeapon);
@@ -786,6 +809,15 @@ static int CBasePlayer_GetLaggedMovementValue (lua_State *L) {
   lua_pushnumber(L, luaL_checkplayer(L, 1)->GetLaggedMovementValue());
   return 1;
 }
+
+#ifndef CLIENT_DLL
+static int CBasePlayer_SetLaggedMovementValue (lua_State *L) {
+  CBasePlayer *player = luaL_checkplayer(L, 1);
+  const float value = (float)luaL_checknumber(L, 2);
+  if (value >= 0.0f) player->SetLaggedMovementValue(value);
+  return 0;
+}
+#endif
 
 static int CBasePlayer_GetLastKnownPlaceName (lua_State *L) {
   lua_pushstring(L, luaL_checkplayer(L, 1)->GetLastKnownPlaceName());
@@ -1003,8 +1035,11 @@ static int CBasePlayer_GetUserID (lua_State *L) {
 // FIXME: push CBaseViewModel instead
 static int CBasePlayer_GetViewModel (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer( L, 1 );
-  const int nIndex = lua_type( L, 2 ) == LUA_TNUMBER
-      ? (int)clamp( lua_tonumber( L, 2 ), (lua_Number)0, (lua_Number)( MAX_VIEWMODELS - 1 ) )
+  const lua_Number requested = lua_type( L, 2 ) == LUA_TNUMBER ? lua_tonumber( L, 2 ) : 0;
+  // An unordered comparison also rejects NaN before converting to an
+  // index for the engine's fixed-size viewmodel array.
+  const int nIndex = requested >= 0
+      ? static_cast<int>( MIN( requested, static_cast<lua_Number>( MAX_VIEWMODELS - 1 ) ) )
       : 0;
   lua_pushanimating( L, pPlayer->GetViewModel( nIndex ) );
   return 1;
@@ -1952,8 +1987,14 @@ static int CBasePlayer___eq (lua_State *L) {
 static int CBasePlayer_IsListenServerHost (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
 #ifdef CLIENT_DLL
-  // On a listen server the host's client entity index is always 1.
-  lua_pushboolean(L, pPlayer->entindex() == 1);
+  bool isHost = pPlayer->entindex() == 1;
+  if ( isHost && pPlayer->IsLocalPlayer() )
+  {
+    // A remote server can also assign the local player slot 1.
+    const INetChannelInfo *channel = engine->GetNetChannelInfo();
+    isHost = channel && channel->IsLoopback();
+  }
+  lua_pushboolean(L, isHost);
 #else
   lua_pushboolean(L, !engine->IsDedicatedServer() && pPlayer->entindex() == 1);
 #endif
@@ -2657,21 +2698,24 @@ static int CBasePlayer_GetAllowFullRotation (lua_State *L) {
 */
 static int CBasePlayer_KeyDown (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-  const int nKey = luaL_checkint(L, 2);
+  const double key = luaL_checknumber(L, 2);
+  // The reference truncates to a signed 32-bit mask.
+  const int nKey = key > static_cast<double>( INT_MIN ) - 1.0 &&
+    key < static_cast<double>( INT_MAX ) + 1.0 ? static_cast<int>( key ) : INT_MIN;
   lua_pushboolean(L, (pPlayer->m_nButtons & nKey) != 0);
   return 1;
 }
 
 static int CBasePlayer_KeyPressed (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-  const int nKey = luaL_checkint(L, 2);
+  const int nKey = (int)luaL_checknumber(L, 2);
   lua_pushboolean(L, (pPlayer->m_afButtonPressed & nKey) != 0);
   return 1;
 }
 
 static int CBasePlayer_KeyReleased (lua_State *L) {
   CBasePlayer *pPlayer = luaL_checkplayer(L, 1);
-  const int nKey = luaL_checkint(L, 2);
+  const int nKey = (int)luaL_checknumber(L, 2);
   lua_pushboolean(L, (pPlayer->m_afButtonReleased & nKey) != 0);
   return 1;
 }
@@ -3347,6 +3391,7 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"EyeVectors", CBasePlayer_EyeVectors},
   {"FindUseEntity", CBasePlayer_FindUseEntity},
   {"GetActiveWeapon", CBasePlayer_GetActiveWeapon},
+  {"GetPreviousWeapon", CBasePlayer_GetPreviousWeapon},
   {"GetWeapons", CBasePlayer_GetWeapons},
   {"GetAmmoCount", CBasePlayer_GetAmmoCount},
   {"GetAmmo", CBasePlayer_GetAmmo},
@@ -3389,6 +3434,9 @@ static const luaL_Reg CBasePlayermeta[] = {
   {"SetMaxArmor", CBasePlayer_SetMaxArmor},
   {"GetImpulse", CBasePlayer_GetImpulse},
   {"GetLaggedMovementValue", CBasePlayer_GetLaggedMovementValue},
+#ifndef CLIENT_DLL
+  {"SetLaggedMovementValue", CBasePlayer_SetLaggedMovementValue},
+#endif
   {"GetLastKnownPlaceName", CBasePlayer_GetLastKnownPlaceName},
   {"GetNextAttack", CBasePlayer_GetNextAttack},
   {"GetObserverMode", CBasePlayer_GetObserverMode},
@@ -3792,7 +3840,9 @@ static const luaL_Reg HL2SB_MoveDatameta[] = {
   {"GetMaxSpeed",         MoveData_GetMaxSpeed},
   {"SetMaxSpeed",         MoveData_SetMaxSpeed},
   {"GetClientMaxSpeed",   MoveData_GetClientMaxSpeed},
+  {"GetMaxClientSpeed",   MoveData_GetClientMaxSpeed},
   {"SetClientMaxSpeed",   MoveData_SetClientMaxSpeed},
+  {"SetMaxClientSpeed",   MoveData_SetClientMaxSpeed},
   {"GetOrigin",           MoveData_GetOrigin},
   {"SetOrigin",           MoveData_SetOrigin},
   {"GetVelocity",         MoveData_GetVelocity},
