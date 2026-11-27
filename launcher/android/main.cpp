@@ -38,11 +38,11 @@ DLL_EXPORT int Java_zzh_source_launcher_data_jni_GameBridge_setenv(
     return ret;
 }
 
-DLL_EXPORT void Java_zzh_source_launcher_utils_GameBridge_nativeOnActivityResult()
+DLL_EXPORT void Java_zzh_source_launcher_data_jni_GameBridge_nativeOnActivityResult()
 {
 }
 
-DLL_EXPORT void Java_zzh_source_launcher_utils_GameBridge_setArgs(JNIEnv *env, jclass *clazz, jstring str)
+DLL_EXPORT void Java_zzh_source_launcher_data_jni_GameBridge_setArgs(JNIEnv *env, jclass *clazz, jstring str)
 {
     strncpy(java_args, env->GetStringUTFChars(str, NULL), sizeof(java_args) - 1);
     java_args[sizeof(java_args) - 1] = '\0';
