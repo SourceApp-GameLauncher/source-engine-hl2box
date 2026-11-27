@@ -40,6 +40,11 @@
 ConVar rawinput_set_one_time( "rawinput_set_one_time", "0", FCVAR_ARCHIVE|FCVAR_HIDDEN, "");
 #endif
 
+#if defined( ANDROID )
+extern void NotifyMouseVisibilityChanged(bool bVisible);
+extern void NotifyCursorChanged(SDL_Cursor *hCursor);
+#endif
+
 ConVar gl_blit_halfx( "gl_blit_halfx", "0" );
 ConVar gl_blit_halfy( "gl_blit_halfy", "0" );
 ConVar gl_swapdebug( "gl_swapdebug", "0");
@@ -1106,6 +1111,9 @@ void CSDLMgr::SetMouseVisible( bool bState )
 	{
 		m_bCursorVisible = bState;
 		m_bSetMouseVisibleCalled = true;
+#if defined( ANDROID )		
+		NotifyMouseVisibilityChanged(bState);
+#endif
 	}
 }
 
@@ -1123,6 +1131,9 @@ void CSDLMgr::SetMouseCursor( SDL_Cursor *hCursor )
 		else
 		{
 			m_hCursor = hCursor;
+#if defined( ANDROID )
+			NotifyCursorChanged(hCursor);
+#endif
 		}
 		m_bSetMouseCursorCalled = true;
 	}
